@@ -6,8 +6,8 @@ import os
 import frappe
 from frappe.model.document import Document
 
-from grove import gateway_sync
-from grove.provision import build_agent, _app_grove_root, ansible_runner
+from grove import ansible_runner, gateway_sync
+from grove.provision import build_agent, _app_grove_root
 
 
 class ProxyServer(Document):
