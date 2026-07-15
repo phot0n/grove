@@ -1,0 +1,91 @@
+-- Reads the request, asks the Go agent /decide, and on admit rewrites the
+-- upstream + swaps the client key for the engine's internal key. Denials are
+-- returned as OpenAI-shaped error JSON with the agent's status code.
+local cjson = require "cjson.safe"
+local http = require "resty.http"
+
+local AGENT_DECIDE = "http://127.0.0.1:9090/decide"
+
+-- Body is already read (lua_need_request_body on); fall back to the temp file.
+local body = ngx.req.get_body_data()
+if not body then
+	local fpath = ngx.req.get_body_file()
+	if fpath then
+		local fh = io.open(fpath, "rb")
+		if fh then
+			body = fh:read("*a")
+			fh:close()
+		end
+	end
+end
+body = body or ""
+
+local model = ""
+local session = ngx.var.http_x_grove_session
+local obj = cjson.decode(body)
+if type(obj) == "table" then
+	model = obj.model or ""
+	if (not session or session == "") and type(obj.user) == "string" then
+		session = obj.user
+	end
+	-- Guarantee a usage frame on OpenAI streaming so we can meter (§6 job 3).
+	local uri = ngx.var.uri
+	if obj.stream == true and (uri == "/v1/chat/completions" or uri == "/v1/completions") then
+		if type(obj.stream_options) ~= "table" then
+			obj.stream_options = {}
+		end
+		obj.stream_options.include_usage = true
+		local nb = cjson.encode(obj)
+		if nb then
+			ngx.req.set_body_data(nb)
+			body = nb
+		end
+	end
+end
+
+if model ~= "" then
+	ngx.var.grove_model = model
+end
+
+local decide_body = cjson.encode({
+	authorization = ngx.var.http_authorization or "",
+	model = model,
+	bytes = #body,
+	session = session or "",
+})
+
+local httpc = http.new()
+httpc:set_timeout(10000)
+local res, err = httpc:request_uri(AGENT_DECIDE, {
+	method = "POST",
+	body = decide_body,
+	headers = { ["Content-Type"] = "application/json" },
+})
+
+if not res then
+	ngx.log(ngx.ERR, "grove decide unreachable: ", err)
+	ngx.status = 503
+	ngx.header["Content-Type"] = "application/json"
+	ngx.say('{"error":{"message":"gateway unavailable","type":"grove_agent_error"}}')
+	return ngx.exit(503)
+end
+
+local d = cjson.decode(res.body) or {}
+if not d.allow then
+	ngx.status = d.status or 403
+	ngx.header["Content-Type"] = "application/json"
+	ngx.say(cjson.encode({ error = { message = d.reason or "request denied", type = "grove_gateway" } }))
+	return ngx.exit(ngx.status)
+end
+
+-- Admitted. Point at the chosen engine (full URL incl. path) and swap the
+-- client's gateway key for the engine's internal key.
+ngx.var.upstream = d.engine_url .. ngx.var.request_uri
+if d.internal_key and d.internal_key ~= "" then
+	ngx.req.set_header("Authorization", "Bearer " .. d.internal_key)
+end
+ngx.ctx.meter_id = d.meter_id
+ngx.ctx.prefix = d.prefix or ""
+if d.prefix and d.prefix ~= "" then
+	ngx.var.grove_prefix = d.prefix
+end

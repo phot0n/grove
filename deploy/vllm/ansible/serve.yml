@@ -1,0 +1,18 @@
+---
+# Doctype-driven model serve. Run by grove.provision.deploy_model via
+# ansible_runner against a single-host inventory (hosts: all), with EVERY var
+# passed as extra-vars assembled from the Model ⊕ Model Deployment (no
+# group_vars). Host bootstrap (NVIDIA driver + data volume) is NOT here — it runs
+# once per box via provision.yml (Inference Server setup); deploy_model gates on
+# is_provisioned. This play just (re)serves the model.
+#
+# No LiteLLM: the gateway forwards straight to each vLLM instance's port. vLLM 0.24+
+# serves /v1/messages natively (Claude Code, tools, streaming) AND reports the prefix
+# cache (cache_read_input_tokens) that LiteLLM was silently dropping. One vLLM unit
+# per deployment (multi-tenant box), so a single per-box front can't front them all.
+- name: Serve a model on a GPU inference host
+  hosts: all
+  become: true
+  gather_facts: true
+  roles:
+    - vllm

@@ -149,23 +149,22 @@ app_license = "mit"
 # Scheduled Tasks
 # ---------------
 
-# scheduler_events = {
-# 	"all": [
-# 		"grove.tasks.all"
-# 	],
-# 	"daily": [
-# 		"grove.tasks.daily"
-# 	],
-# 	"hourly": [
-# 		"grove.tasks.hourly"
-# 	],
-# 	"weekly": [
-# 		"grove.tasks.weekly"
-# 	],
-# 	"monthly": [
-# 		"grove.tasks.monthly"
-# 	],
-# }
+scheduler_events = {
+	"cron": {
+		"*/2 * * * *": [
+			"grove.gateway_sync.sync_dirty",
+		],
+        "*/5 * * * *": [
+			"grove.usage_pull.pull_all",
+		],
+		# Daily: reactivate rate_limited keys whose current-month usage is back
+		# under budget (month rollover / raised budget). Over-budget keys stay
+		# blocked for the rest of the month — the monthly cap is hard.
+		"0 0 * * *": [
+			"grove.usage_pull.reactivate_rate_limited",
+		],
+	},
+}
 
 # Testing
 # -------
@@ -258,4 +257,3 @@ require_type_annotated_api_methods = True
 # ------------
 # List of apps whose translatable strings should be excluded from this app's translations.
 # ignore_translatable_strings_from = []
-

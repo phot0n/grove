@@ -1,0 +1,46 @@
+{
+ "actions": [],
+ "allow_rename": 0,
+ "autoname": "hash",
+ "creation": "2026-07-01 00:00:00",
+ "doctype": "DocType",
+ "engine": "InnoDB",
+ "field_order": [
+  "api_key",
+  "user",
+  "month",
+  "column_break_tot",
+  "prompt_tokens",
+  "completion_tokens",
+  "cached_tokens",
+  "total_tokens",
+  "request_count",
+  "section_gw",
+  "gateway_usage"
+ ],
+ "fields": [
+  {"fieldname": "api_key", "fieldtype": "Link", "label": "API Key", "options": "API Key", "reqd": 1, "in_list_view": 1},
+  {"fieldname": "user", "fieldtype": "Link", "label": "User", "options": "User", "in_list_view": 1},
+  {"fieldname": "month", "fieldtype": "Data", "label": "Month (YYYY-MM)", "reqd": 1, "in_list_view": 1},
+  {"fieldname": "column_break_tot", "fieldtype": "Column Break"},
+  {"fieldname": "prompt_tokens", "fieldtype": "Int", "label": "Prompt Tokens"},
+  {"fieldname": "completion_tokens", "fieldtype": "Int", "label": "Completion Tokens"},
+  {"fieldname": "total_tokens", "fieldtype": "Int", "label": "Total Tokens", "in_list_view": 1},
+  {"fieldname": "cached_tokens", "fieldtype": "Int", "label": "Cached Tokens", "description": "Prompt tokens served from the prefix cache (subset of Prompt, already in Total). Budget counts total_tokens - cached_tokens."},
+  {"fieldname": "request_count", "fieldtype": "Int", "label": "Request Count"},
+  {"fieldname": "section_gw", "fieldtype": "Section Break", "label": "Per-Gateway Usage (cumulative this month)"},
+  {"fieldname": "gateway_usage", "fieldtype": "Table", "label": "Gateway Usage", "options": "Usage Gateway Row"}
+ ],
+ "links": [],
+ "modified": "2026-07-01 00:02:00",
+ "modified_by": "Administrator",
+ "module": "Grove",
+ "name": "Usage Record",
+ "owner": "Administrator",
+ "permissions": [
+  {"create": 1, "delete": 1, "email": 1, "print": 1, "read": 1, "report": 1, "role": "System Manager", "share": 1, "write": 1}
+ ],
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": []
+}

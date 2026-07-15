@@ -1,0 +1,37 @@
+{
+ "actions": [],
+ "autoname": "hash",
+ "creation": "2026-07-01 00:00:00",
+ "doctype": "DocType",
+ "engine": "InnoDB",
+ "field_order": [
+  "play",
+  "task_name",
+  "host",
+  "status",
+  "duration",
+  "section_output",
+  "output"
+ ],
+ "fields": [
+  {"fieldname": "play", "fieldtype": "Link", "label": "Play", "options": "Ansible Play", "read_only": 1, "in_list_view": 1},
+  {"fieldname": "task_name", "fieldtype": "Data", "label": "Task", "read_only": 1, "in_list_view": 1},
+  {"fieldname": "host", "fieldtype": "Data", "label": "Host", "read_only": 1, "in_list_view": 1},
+  {"fieldname": "status", "fieldtype": "Select", "label": "Status", "options": "ok\nchanged\nfailed\nskipped\nunreachable", "read_only": 1, "in_list_view": 1},
+  {"fieldname": "duration", "fieldtype": "Float", "label": "Duration (s)", "read_only": 1},
+  {"fieldname": "section_output", "fieldtype": "Section Break", "label": "Output"},
+  {"fieldname": "output", "fieldtype": "Code", "label": "Output", "read_only": 1, "options": "JSON"}
+ ],
+ "links": [],
+ "modified": "2026-07-01 00:00:00",
+ "modified_by": "Administrator",
+ "module": "Grove",
+ "name": "Ansible Task",
+ "owner": "Administrator",
+ "permissions": [
+  {"create": 1, "delete": 1, "email": 1, "print": 1, "read": 1, "report": 1, "role": "System Manager", "share": 1, "write": 1}
+ ],
+ "sort_field": "creation",
+ "sort_order": "DESC",
+ "states": []
+}

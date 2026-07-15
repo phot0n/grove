@@ -1,0 +1,27 @@
+{
+ "actions": [],
+ "creation": "2026-07-01 00:00:00",
+ "doctype": "DocType",
+ "engine": "InnoDB",
+ "issingle": 1,
+ "field_order": [
+  "section_gateway",
+  "gateway_host"
+ ],
+ "fields": [
+  {"fieldname": "section_gateway", "fieldtype": "Section Break", "label": "Gateway"},
+  {"fieldname": "gateway_host", "fieldtype": "Data", "label": "Gateway Host", "description": "Public host/IP clients hit; used to build the base_url returned by provision_endpoint."}
+ ],
+ "links": [],
+ "modified": "2026-07-01 00:00:00",
+ "modified_by": "Administrator",
+ "module": "Grove",
+ "name": "Grove Settings",
+ "owner": "Administrator",
+ "permissions": [
+  {"create": 1, "delete": 1, "email": 1, "print": 1, "read": 1, "report": 1, "role": "System Manager", "share": 1, "write": 1}
+ ],
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": []
+}

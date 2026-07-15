@@ -1,0 +1,38 @@
+{
+ "actions": [],
+ "creation": "2026-07-07 00:00:00",
+ "doctype": "DocType",
+ "editable_grid": 1,
+ "engine": "InnoDB",
+ "istable": 1,
+ "field_order": [
+  "gpu_index",
+  "gpu_model",
+  "vram_gb",
+  "status",
+  "allocated_to",
+  "gpu_uuid",
+  "pci_bus_id",
+  "compute_capability"
+ ],
+ "fields": [
+  {"fieldname": "gpu_index", "fieldtype": "Int", "label": "CUDA Index", "reqd": 1, "in_list_view": 1, "columns": 1, "description": "Physical CUDA index on this box (nvidia-smi order). Identity within the machine; used for CUDA_VISIBLE_DEVICES."},
+  {"fieldname": "gpu_model", "fieldtype": "Data", "label": "GPU Model", "in_list_view": 1, "columns": 2},
+  {"fieldname": "vram_gb", "fieldtype": "Int", "label": "VRAM (GB)", "in_list_view": 1, "columns": 1},
+  {"fieldname": "status", "fieldtype": "Select", "label": "Status", "options": "Free\nAllocated\nDraining\nOffline", "default": "Free", "in_list_view": 1, "columns": 1, "description": "Free/Allocated are managed by deploy/teardown. Set Draining/Offline by hand to take a GPU out of the free pool for maintenance."},
+  {"fieldname": "allocated_to", "fieldtype": "Link", "label": "Allocated To", "options": "Model Deployment", "read_only": 1, "in_list_view": 1, "columns": 2, "description": "The Model Deployment currently holding this GPU. Managed automatically."},
+  {"fieldname": "gpu_uuid", "fieldtype": "Data", "label": "UUID", "columns": 2, "description": "Optional nvidia GPU UUID (nvidia-smi -L)."},
+  {"fieldname": "pci_bus_id", "fieldtype": "Data", "label": "PCI Bus ID"},
+  {"fieldname": "compute_capability", "fieldtype": "Data", "label": "Compute Capability"}
+ ],
+ "links": [],
+ "modified": "2026-07-07 00:00:00",
+ "modified_by": "Administrator",
+ "module": "Grove",
+ "name": "Machine GPU",
+ "owner": "Administrator",
+ "permissions": [],
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": []
+}
