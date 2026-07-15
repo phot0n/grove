@@ -3,9 +3,14 @@
 """Provisioning API (§7). The only user-facing surface: register a user, mint an
 API key, and return a ready-to-use inference endpoint. Cold path (Frappe)."""
 
+import hmac
+
 import frappe
 
-# TODO: we'll give central user some kind of "system" role
+# Central authenticates as a dedicated, least-privilege control user (enrolled below).
+CONTROL_USER = "central-control@frappe.cloud"
+CONTROL_ROLE = "Central Control"
+
 
 @frappe.whitelist()
 def provision_key(name: str, email: str, token_limit: int=None, allowed_models: list[str]=None):
@@ -84,3 +89,51 @@ def usage(users, month=None):
 def available_models():
 	"""Return the list of published models."""
 	return frappe.get_all("Model", {"published": 1}, ["name", "display_name"])
+
+
+@frappe.whitelist(allow_guest=True, methods=["POST"])
+def enroll_control_client():
+	"""Exchange the shared bootstrap secret (site config `control_bootstrap_secret`)
+	for Central's own scoped API credential. Guest-auth — the secret is the only
+	proof; re-enrolling rotates the key."""
+	# Read from the raw request and drop it, so the secret is never stored in the Request Log.
+	bootstrap_token = frappe.local.form_dict.pop("bootstrap_token", None)
+	expected = frappe.conf.get("control_bootstrap_secret")
+
+	# Constant-time compare; reject when the secret is unset or wrong.
+	if not (expected and bootstrap_token) or not hmac.compare_digest(str(bootstrap_token), str(expected)):
+		frappe.throw("Invalid bootstrap secret.", frappe.AuthenticationError)
+
+	_ensure_control_role()
+	user = _ensure_control_user()
+
+	# Mint directly: generate_keys() would reject a Guest caller on permission.
+	api_secret = frappe.generate_hash(length=15)
+	user.api_key = user.api_key or frappe.generate_hash(length=15)
+	user.api_secret = api_secret
+	user.save(ignore_permissions=True)
+	frappe.db.commit()  # persist before returning so Central can use the key immediately
+
+	return {"api_key": user.api_key, "api_secret": api_secret, "user": user.name}
+
+
+def _ensure_control_role():
+	if not frappe.db.exists("Role", CONTROL_ROLE):
+		frappe.get_doc({"doctype": "Role", "role_name": CONTROL_ROLE, "desk_access": 1}).insert(ignore_permissions=True)
+
+
+def _ensure_control_user():
+	# Least-privilege system user scoped to the control role; reused across enrolments.
+	if frappe.db.exists("User", CONTROL_USER):
+		return frappe.get_doc("User", CONTROL_USER)
+
+	user = frappe.new_doc("User")
+	user.email = CONTROL_USER
+	user.first_name = "Central Control"
+	user.user_type = "System User"
+	user.send_welcome_email = 0
+	user.enabled = 1
+	user.append("roles", {"role": CONTROL_ROLE})
+	user.insert(ignore_permissions=True)
+
+	return user
