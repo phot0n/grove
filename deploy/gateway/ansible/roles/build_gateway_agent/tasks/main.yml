@@ -1,0 +1,41 @@
+---
+# Build grove-gateway binary on the target server for its architecture.
+# Requires: agent_source (path to gateway_service source on control plane)
+# Provides: /tmp/grove-gateway binary
+
+- name: map system arch to go arch
+  ansible.builtin.set_fact:
+    go_arch: "{{ {'x86_64': 'amd64', 'aarch64': 'arm64', 'armv7l': 'armv6l', 'i386': '386'}.get(ansible_architecture, ansible_architecture) }}"
+
+- name: check go installed
+  ansible.builtin.command: which go
+  register: go_check
+  failed_when: false
+  changed_when: false
+
+- name: install go
+  ansible.builtin.shell: |
+    set -e
+    cd /tmp
+    wget -qO go.tar.gz "https://go.dev/dl/go1.23.0.linux-{{ go_arch }}.tar.gz"
+    tar -C /usr/local -xzf go.tar.gz
+    rm go.tar.gz
+  when: go_check.rc != 0
+
+- name: sync gateway_service source
+  ansible.builtin.copy:
+    src: "{{ agent_source }}/"
+    dest: /tmp/grove-gateway-src
+    remote_src: false
+
+- name: build grove-gateway binary
+  ansible.builtin.shell: |
+    set -e
+    export PATH=/usr/local/go/bin:$PATH
+    export HOME=/tmp
+    export CGO_ENABLED=0
+    export GOARCH={{ go_arch }}
+    cd /tmp/grove-gateway-src
+    go build -ldflags="-s -w" -o /tmp/grove-gateway .
+  environment:
+    PATH: "/usr/local/go/bin:{{ ansible_env.PATH }}"

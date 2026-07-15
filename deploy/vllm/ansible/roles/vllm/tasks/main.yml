@@ -1,0 +1,153 @@
+---
+- name: Install build/runtime apt packages
+  ansible.builtin.apt:
+    name: "{{ vllm_apt_packages }}"
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+  tags: heavy
+
+- name: Verify an NVIDIA driver is present and working
+  ansible.builtin.command: nvidia-smi
+  register: vllm_nvidia_smi
+  changed_when: false
+  failed_when: vllm_nvidia_smi.rc != 0
+  # This role deliberately does NOT install/replace the GPU driver. If this fails,
+  # install a driver that exposes your GPU (e.g. `ubuntu-drivers install --gpgpu ...`)
+  # and reboot, then re-run.
+
+- name: Create vLLM base directory
+  ansible.builtin.file:
+    path: "{{ vllm_home }}"
+    state: directory
+    owner: "{{ vllm_user }}"
+    mode: "0755"
+
+# torch + CUDA wheels are multi-GB; keep pip's build tmp and download cache on
+# the (large) vllm_home volume so a small root disk can't fill up.
+- name: Reclaim root space from any earlier pip attempt
+  ansible.builtin.file:
+    path: /root/.cache/pip
+    state: absent
+
+- name: Create pip build tmp + cache + per-version venv root + per-instance key dir
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: "{{ vllm_user }}"
+    mode: "0755"
+  loop:
+    - "{{ vllm_home }}/tmp"
+    - "{{ vllm_home }}/pip-cache"
+    - "{{ vllm_home }}/venvs"
+    - "{{ vllm_home }}/keys"
+
+- name: Create Python virtualenv
+  ansible.builtin.command: "{{ vllm_python }} -m venv {{ vllm_venv }}"
+  args:
+    creates: "{{ vllm_venv }}/bin/python"
+  tags: heavy
+
+- name: Upgrade pip inside the venv
+  ansible.builtin.pip:
+    name: pip
+    state: latest
+    virtualenv: "{{ vllm_venv }}"
+  tags: heavy
+
+- name: Install vLLM (pulls torch cu13 + flashinfer for Blackwell — can take several minutes)
+  ansible.builtin.pip:
+    name: "vllm{{ ('==' ~ vllm_version) if (vllm_version | length > 0) else '' }}"
+    virtualenv: "{{ vllm_venv }}"
+  environment:
+    TMPDIR: "{{ vllm_home }}/tmp"
+    PIP_CACHE_DIR: "{{ vllm_home }}/pip-cache"
+  tags: heavy
+
+- name: Create cache directories
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: "{{ vllm_user }}"
+    mode: "0755"
+  loop:
+    - "{{ vllm_cache_dir }}/torchinductor"
+    - "{{ vllm_cache_dir }}/triton"
+    - "{{ vllm_cache_dir }}/torch"
+    - "{{ vllm_hf_home }}"
+
+- name: Write Hugging Face token (optional)
+  ansible.builtin.copy:
+    dest: "{{ vllm_hf_home }}/token"
+    content: "{{ vllm_hf_token }}"
+    owner: "{{ vllm_user }}"
+    mode: "0600"
+  when: vllm_hf_token | length > 0
+
+- name: Generate and persist an API key (only when one is not supplied)
+  ansible.builtin.shell: >-
+    openssl rand -hex 24 > {{ vllm_api_key_file }}
+    && chmod 600 {{ vllm_api_key_file }}
+  args:
+    creates: "{{ vllm_api_key_file }}"
+  when: vllm_api_key | length == 0
+
+- name: Read persisted API key
+  ansible.builtin.slurp:
+    src: "{{ vllm_api_key_file }}"
+  register: vllm_api_key_slurp
+  when: vllm_api_key | length == 0
+
+- name: Resolve effective API key
+  ansible.builtin.set_fact:
+    vllm_effective_api_key: >-
+      {{ vllm_api_key if (vllm_api_key | length > 0)
+         else (vllm_api_key_slurp.content | b64decode | trim) }}
+
+- name: Pre-download model weights (optional)
+  ansible.builtin.command: "{{ vllm_venv }}/bin/hf download {{ vllm_model }}"
+  environment:
+    HF_HOME: "{{ vllm_hf_home }}"
+    HF_TOKEN: "{{ vllm_hf_token }}"
+  args:
+    creates: "{{ vllm_hf_home }}/hub/models--{{ vllm_model | replace('/', '--') }}"
+  when: vllm_predownload_model | bool
+  tags: heavy
+
+- name: Install vLLM systemd unit
+  ansible.builtin.template:
+    src: vllm.service.j2
+    dest: "/etc/systemd/system/{{ vllm_unit }}.service"
+    mode: "0644"
+  notify: restart vllm
+
+- name: Enable and start vLLM
+  ansible.builtin.systemd:
+    name: "{{ vllm_unit }}"
+    enabled: true
+    state: started
+    daemon_reload: true
+
+- name: Flush handlers so any unit change is applied before the health check
+  ansible.builtin.meta: flush_handlers
+
+- name: Wait for the vLLM API to become healthy
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ vllm_port }}/v1/models"
+    headers:
+      Authorization: "Bearer {{ vllm_effective_api_key }}"
+    status_code: 200
+  register: vllm_health
+  until: vllm_health.status == 200
+  retries: 90
+  delay: 10
+  changed_when: false
+  when: vllm_wait_for_healthy | bool
+
+- name: Show endpoint summary
+  ansible.builtin.debug:
+    msg:
+      - "vLLM is up: http://{{ ansible_host | default(inventory_hostname) }}:{{ vllm_port }}/v1"
+      - "Instance unit: {{ vllm_unit }}.service  (venv {{ vllm_venv }})"
+      - "Model served as: {{ vllm_served_name }}"
+      - "API key file on host: {{ vllm_api_key_file }}"

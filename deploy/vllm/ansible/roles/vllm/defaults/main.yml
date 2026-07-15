@@ -1,0 +1,56 @@
+---
+# ── Instance identity (multi-tenant box: one unit + port per Model Deployment) ─
+# A box can run many vLLM instances at once. Each is keyed by a unique slug
+# (provision passes the Model Deployment name) → its OWN systemd unit + port +
+# key file + venv. The venv is per-DEPLOYMENT (fully isolated, so instances with
+# different vLLM versions coexist), named <slug>_venv. The weights/compile caches
+# below stay box-shared so co-located instances don't re-download or re-compile.
+vllm_instance: default
+vllm_unit: "vllm-{{ vllm_instance }}"
+
+# ── Install layout ──────────────────────────────────────────────────────────
+vllm_user: root
+vllm_home: /opt/vllm
+vllm_venv: "{{ vllm_home }}/venvs/{{ vllm_instance }}_venv"
+vllm_python: python3.12
+vllm_cache_dir: /root/.cache/vllm
+vllm_hf_home: /root/.cache/huggingface
+vllm_api_key_file: "{{ vllm_home }}/keys/{{ vllm_instance }}.key"
+
+# APT packages needed for vLLM's runtime kernel compilation (torch-inductor + Triton).
+# gcc-13 is required (newer GCC breaks the compile); python3.12-dev provides Python.h.
+# On non-24.04 Ubuntu you may need the deadsnakes PPA for python3.12 — add it before this role.
+vllm_apt_packages:
+  - software-properties-common
+  - build-essential
+  - make
+  - gcc-13
+  - g++-13
+  - python3.12
+  - python3.12-venv
+  - python3.12-dev
+  - curl
+  - git
+  - openssl
+
+# ── Serving infrastructure (model + tuning via extra-vars from provision.py) ──
+vllm_host: 0.0.0.0
+vllm_port: 8080
+vllm_enable_prefix_caching: true
+vllm_enable_prompt_tokens_details: true
+
+# ── Blackwell flashinfer workaround ─────────────────────────────────────────
+# flashinfer JIT-compiles kernels and needs a unified CUDA toolkit (CUDA_HOME) that the
+# pip-only install does not provide. Default sidesteps it with prebuilt FlashAttention +
+# the native sampler. After installing a matching CUDA toolkit you can switch to:
+#   vllm_attention_backend: FLASHINFER
+#   vllm_use_flashinfer_sampler: "1"
+vllm_attention_backend: FLASH_ATTN
+vllm_use_flashinfer_sampler: "0"
+
+# ── Auth / secrets ──────────────────────────────────────────────────────────
+vllm_api_key: ""                       # "" = auto-generate + persist to {{ vllm_home }}/api_key.txt
+vllm_hf_token: ""                      # optional; gated models / faster HF downloads
+
+# ── Health gate ─────────────────────────────────────────────────────────────
+vllm_wait_for_healthy: true            # block until /v1/models returns 200

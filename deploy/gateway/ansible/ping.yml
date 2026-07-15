@@ -1,0 +1,16 @@
+---
+# Connectivity check — proves the Grove ansible runner + streaming works.
+- hosts: all
+  gather_facts: false
+  tasks:
+    - name: ping the host
+      ansible.builtin.ping:
+
+    - name: whoami
+      ansible.builtin.command: whoami
+      register: who
+      changed_when: false
+
+    - name: report
+      ansible.builtin.debug:
+        msg: "grove connected to {{ inventory_hostname }} as {{ who.stdout }}"
