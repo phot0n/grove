@@ -6,7 +6,8 @@ import os
 import frappe
 from frappe.model.document import Document
 
-from grove.provision import _app_grove_root, ansible_runner
+from grove import ansible_runner
+from grove.provision import _app_grove_root
 
 class InferenceServer(Document):
 	@frappe.whitelist()
