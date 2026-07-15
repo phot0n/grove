@@ -9,6 +9,9 @@ readme = "README.md"
 dynamic = ["version"]
 dependencies = [
     # "frappe~=16.0.0" # Installed and managed by bench.
+    # Ansible provisioning (grove/ansible_runner.py). Pinned to 2.18 because 2.19+
+    # requires target Python >= 3.9, but the Ubuntu 20.04 managed nodes ship 3.8.
+    "ansible-core~=2.18.0",
 ]
 
 [build-system]

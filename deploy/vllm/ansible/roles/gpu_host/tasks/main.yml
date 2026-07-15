@@ -1,0 +1,85 @@
+---
+# Prepare a fresh GPU host before the vLLM role: install the NVIDIA driver
+# (reboot to load it) and mount the data volume. Idempotent — safe to re-run.
+
+# ── NVIDIA driver ───────────────────────────────────────────────────────────
+- name: Install kernel headers + ubuntu-drivers-common
+  ansible.builtin.apt:
+    name:
+      - "linux-headers-{{ ansible_kernel }}"
+      - ubuntu-drivers-common
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+
+- name: Install NVIDIA driver
+  ansible.builtin.apt:
+    name: "{{ nvidia_driver_pkg }}"
+    state: present
+  register: nvidia_driver_apt
+
+- name: Probe nvidia-smi
+  ansible.builtin.command: nvidia-smi
+  register: nvidia_smi_probe
+  changed_when: false
+  failed_when: false
+
+- name: Reboot to load the NVIDIA kernel module
+  ansible.builtin.reboot:
+    reboot_timeout: 600
+  when: nvidia_driver_apt.changed or nvidia_smi_probe.rc != 0
+
+- name: Verify the GPU is visible
+  ansible.builtin.command: nvidia-smi --query-gpu=name,memory.total,driver_version --format=csv,noheader
+  register: gpu_info
+  changed_when: false
+
+- name: GPU
+  ansible.builtin.debug:
+    var: gpu_info.stdout_lines
+
+- name: Install GPU monitoring tools (nvtop)
+  ansible.builtin.apt:
+    name: "{{ gpu_host_monitor_packages }}"
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+  when: gpu_host_monitor_packages | length > 0
+
+# ── Data volume ─────────────────────────────────────────────────────────────
+- name: Detect existing filesystem on the data device
+  ansible.builtin.command: "blkid -s TYPE -o value {{ gpu_data_device }}"
+  register: data_fs
+  changed_when: false
+  failed_when: false
+
+- name: Format the data device (only if unformatted)
+  ansible.builtin.command: "mkfs.{{ gpu_data_fstype }} -F {{ gpu_data_device }}"
+  when: (data_fs.stdout | trim) | length == 0
+
+- name: Read the data device UUID
+  ansible.builtin.command: "blkid -s UUID -o value {{ gpu_data_device }}"
+  register: data_uuid
+  changed_when: false
+
+- name: Ensure the mount point exists
+  ansible.builtin.file:
+    path: "{{ gpu_data_mount }}"
+    state: directory
+    mode: "0755"
+
+- name: Persist the mount in /etc/fstab
+  ansible.builtin.lineinfile:
+    path: /etc/fstab
+    regexp: '\s{{ gpu_data_mount }}\s'
+    line: "UUID={{ data_uuid.stdout }} {{ gpu_data_mount }} {{ gpu_data_fstype }} defaults,nofail 0 2"
+
+- name: Is the data volume mounted?
+  ansible.builtin.command: "mountpoint -q {{ gpu_data_mount }}"
+  register: mounted
+  changed_when: false
+  failed_when: false
+
+- name: Mount the data volume
+  ansible.builtin.command: "mount {{ gpu_data_mount }}"
+  when: mounted.rc != 0

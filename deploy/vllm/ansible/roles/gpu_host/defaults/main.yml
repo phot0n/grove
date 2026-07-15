@@ -1,0 +1,14 @@
+---
+# NVIDIA driver to install (proprietary -server variant for datacenter GPUs like
+# the T4). Must be new enough for vLLM's torch CUDA build (cu13 → driver >= 580).
+nvidia_driver_pkg: nvidia-driver-580-server
+
+# Host GPU-monitoring / diagnostic tools installed once with the driver.
+gpu_host_monitor_packages:
+  - nvtop
+
+# Data volume: the large secondary disk that holds the vLLM venv, weights and
+# caches (the root volume is typically tiny). Mounted where vllm_home points.
+gpu_data_device: /dev/nvme1n1
+gpu_data_mount: /opt/vllm
+gpu_data_fstype: ext4

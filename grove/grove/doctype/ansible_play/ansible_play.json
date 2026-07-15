@@ -1,0 +1,45 @@
+{
+ "actions": [],
+ "autoname": "hash",
+ "creation": "2026-07-01 00:00:00",
+ "doctype": "DocType",
+ "engine": "InnoDB",
+ "field_order": [
+  "playbook",
+  "server_type",
+  "server",
+  "status",
+  "column_break_time",
+  "started",
+  "ended",
+  "duration",
+  "section_output",
+  "output"
+ ],
+ "fields": [
+  {"fieldname": "playbook", "fieldtype": "Data", "label": "Playbook", "read_only": 1, "in_list_view": 1},
+  {"fieldname": "server_type", "fieldtype": "Link", "label": "Server Type", "options": "DocType", "read_only": 1, "in_list_view": 1},
+  {"fieldname": "server", "fieldtype": "Dynamic Link", "label": "Server", "options": "server_type", "read_only": 1, "in_list_view": 1},
+  {"fieldname": "status", "fieldtype": "Select", "label": "Status", "options": "Pending\nRunning\nSuccess\nFailure", "default": "Pending", "read_only": 1, "in_list_view": 1},
+  {"fieldname": "column_break_time", "fieldtype": "Column Break"},
+  {"fieldname": "started", "fieldtype": "Datetime", "label": "Started", "read_only": 1},
+  {"fieldname": "ended", "fieldtype": "Datetime", "label": "Ended", "read_only": 1},
+  {"fieldname": "duration", "fieldtype": "Float", "label": "Duration (s)", "read_only": 1},
+  {"fieldname": "section_output", "fieldtype": "Section Break", "label": "Output"},
+  {"fieldname": "output", "fieldtype": "Code", "label": "Output", "read_only": 1, "options": "Text"}
+ ],
+ "links": [
+  {"group": "Tasks", "link_doctype": "Ansible Task", "link_fieldname": "play"}
+ ],
+ "modified": "2026-07-01 00:00:00",
+ "modified_by": "Administrator",
+ "module": "Grove",
+ "name": "Ansible Play",
+ "owner": "Administrator",
+ "permissions": [
+  {"create": 1, "delete": 1, "email": 1, "print": 1, "read": 1, "report": 1, "role": "System Manager", "share": 1, "write": 1}
+ ],
+ "sort_field": "creation",
+ "sort_order": "DESC",
+ "states": []
+}
