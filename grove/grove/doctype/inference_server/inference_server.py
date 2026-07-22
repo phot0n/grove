@@ -6,7 +6,7 @@ import os
 import frappe
 from frappe.model.document import Document
 
-from grove import ansible_runner
+from grove.ansible import Ansible
 from grove.provision import _app_grove_root
 
 
@@ -36,15 +36,12 @@ class InferenceServer(Document):
 		frappe.db.commit()
 
 		project_dir = os.path.join(_app_grove_root(), "deploy", "vllm", "ansible")
-		# Help ansible find the roles when run head-less via ansible_runner.
-		os.environ["ANSIBLE_ROLES_PATH"] = os.path.join(project_dir, "roles")
-		play_name, rc = ansible_runner.run_play(
-			playbook="provision.yml",
+		ansible = Ansible(project_root=project_dir)
+		play_name, rc = ansible.run_playbook(
+			playbook_name="provision.yml",
 			server_type="Inference Server",
 			server_name=self.name,
 			machine_name=self.machine,
-			project_dir=project_dir,
-			extravars={},
 		)
 
 		ok = rc == 0

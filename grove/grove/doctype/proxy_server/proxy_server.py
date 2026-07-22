@@ -6,7 +6,8 @@ import os
 import frappe
 from frappe.model.document import Document
 
-from grove import gateway_sync, ansible_runner
+from grove import gateway_sync
+from grove.ansible import Ansible
 from grove.provision import build_agent, _app_grove_root
 
 
@@ -52,12 +53,12 @@ class ProxyServer(Document):
 		OpenResty/Redis reinstall)."""
 		source = build_agent()
 		project_dir = os.path.join(_app_grove_root(), "deploy", "gateway", "ansible")
-		return ansible_runner.run_play(
-			playbook="deploy_agent.yml",
+		ansible = Ansible(project_root=project_dir)
+		return ansible.run_playbook(
+			playbook_name="deploy_agent.yml",
 			server_type="Proxy Server",
 			server_name=self.name,
 			machine_name=self.machine,
-			project_dir=project_dir,
 			extravars={"agent_source": source},
 		)
 
@@ -81,14 +82,14 @@ class ProxyServer(Document):
 
 		gateway_service_source = build_agent()
 		project_dir = os.path.join(_app_grove_root(), "deploy", "gateway", "ansible")
+		ansible = Ansible(project_root=project_dir)
 
 		admin_token = self.get_password("admin_token")
-		play_name, rc = ansible_runner.run_play(
-			playbook="proxy.yml",
+		play_name, rc = ansible.run_playbook(
+			playbook_name="proxy.yml",
 			server_type="Proxy Server",
 			server_name=self.name,
 			machine_name=self.machine,
-			project_dir=project_dir,
 			extravars={"admin_token": admin_token, "agent_source": gateway_service_source},
 		)
 

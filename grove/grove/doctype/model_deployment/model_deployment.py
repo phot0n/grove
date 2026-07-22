@@ -1,6 +1,7 @@
 # Copyright (c) 2026, Grove and contributors
 # For license information, please see license.txt
 
+import json
 import os
 import re
 import secrets
@@ -8,7 +9,7 @@ import secrets
 import frappe
 from frappe.model.document import Document
 
-from grove import ansible_runner
+from grove.ansible import Ansible
 from grove.provision import _app_grove_root
 
 
@@ -137,6 +138,27 @@ class ModelDeployment(Document):
 			)
 			if p
 		}
+		# Cloud pod: reachable engine ports are only those pre-opened at spawn (the
+		# Machine's port_map) — RunPod can't hot-add ports. Claim the lowest free one from
+		# that pool; full pod → throw. On-prem: lowest free from the base, unbounded.
+		machine = self._machine()
+		prov, port_map = (
+			frappe.db.get_value("Machine", machine, ["cloud_provider", "port_map"])
+			if machine
+			else (None, None)
+		)
+		if prov:
+			if port_map:
+				pool = sorted(int(p) for p in json.loads(port_map) if int(p) != 22)
+			else:  # pod not provisioned yet — fall back to the declared pool shape
+				from grove.cloud_provider.provisioner import ENGINE_PORT_POOL_SIZE
+
+				pool = [ENGINE_PORT_BASE + i for i in range(ENGINE_PORT_POOL_SIZE)]
+			for port in pool:
+				if port not in used:
+					self.engine_port = port
+					return
+			frappe.throw(f"Pod {machine} is full — all {len(pool)} model slots are in use.")
 		port = ENGINE_PORT_BASE
 		while port in used:
 			port += 1
@@ -151,13 +173,27 @@ class ModelDeployment(Document):
 		port and this reqd field are satisfied here."""
 		if not self.inference_server:
 			return  # no box yet → let the reqd check flag engine_url
-		machine_ip = frappe.db.get_value("Inference Server", self.inference_server, "machine_ip")
-		if not machine_ip:
+		inf = frappe.db.get_value(
+			"Inference Server", self.inference_server, ["machine", "machine_ip"], as_dict=True
+		)
+		if not inf or not inf.machine_ip:
 			frappe.throw(
 				f"Inference Server {self.inference_server} has no machine IP "
 				"(set its Machine's public IP) — cannot derive Engine URL."
 			)
-		self.engine_url = f"http://{machine_ip}:{self.engine_port or ENGINE_PORT_BASE}"
+		port = self.engine_port or ENGINE_PORT_BASE
+		# Cloud pod → the vLLM port is NAT'd to a random external port; look it up in the
+		# Machine's port_map. On-prem → the internal port is directly reachable.
+		prov, port_map = frappe.db.get_value("Machine", inf.machine, ["cloud_provider", "port_map"])
+		if prov:
+			ext = json.loads(port_map or "{}").get(str(port))
+			if not ext:
+				frappe.throw(
+					f"Engine port {port} is not exposed on pod {inf.machine} — "
+					"widen the port pool or re-provision."
+				)
+			port = ext
+		self.engine_url = f"http://{inf.machine_ip}:{port}"
 
 	def on_update(self):
 		# A model is "published" only while it has a live deployment — keep the
@@ -182,7 +218,7 @@ class ModelDeployment(Document):
 		the deploy/vllm role (args from the Model launch profile ⊕ this doc), then
 		wire the gateway route."""
 		frappe.enqueue(
-			"deploy_model",
+			"grove.grove.doctype.model_deployment.model_deployment.deploy_model",
 			queue="long",
 			timeout=3600,
 			model_deployment=self.name,
@@ -196,7 +232,7 @@ class ModelDeployment(Document):
 		without a full re-install. Fast path — skips the heavy install/pip/predownload
 		tasks. Restarts the engine, so it drops in-flight requests."""
 		frappe.enqueue(
-			"reconfigure_deployment",
+			"grove.grove.doctype.model_deployment.model_deployment.reconfigure_deployment",
 			queue="long",
 			timeout=1200,
 			model_deployment=self.name,
@@ -209,7 +245,7 @@ class ModelDeployment(Document):
 		its box (multi-tenant teardown). Shared per-version venv + weights are left
 		for other instances. Status → Inactive on success."""
 		frappe.enqueue(
-			"teardown_deployment",
+			"grove.grove.doctype.model_deployment.model_deployment.teardown_deployment",
 			queue="long",
 			timeout=600,
 			model_deployment=self.name,
@@ -221,6 +257,16 @@ def _instance_slug(md_name):
 	"""Systemd-safe per-deployment slug → unit vllm-<slug>.service + key file. One
 	instance per Model Deployment so a box can run many concurrently."""
 	return re.sub(r"[^a-z0-9._-]", "-", md_name.lower())
+
+
+def _vllm_home(inference_server):
+	"""Where vLLM keeps venvs/weights/keys/caches. On a cloud pod the container root is
+	ephemeral (wiped on restart) — use the persistent volume; on-prem uses local /opt."""
+	from grove.cloud_provider.provisioner import VOLUME_MOUNT
+
+	machine = inference_server and frappe.db.get_value("Inference Server", inference_server, "machine")
+	is_cloud = bool(machine and frappe.db.get_value("Machine", machine, "cloud_provider"))
+	return f"{VOLUME_MOUNT}/vllm" if is_cloud else "/opt/vllm"
 
 
 def _vllm_extravars(md, m, key):
@@ -253,6 +299,8 @@ def _vllm_extravars(md, m, key):
 	# sees them. No rows → single-GPU, unpinned (whatever the box exposes).
 	gpu_indexes = sorted(int(r.gpu_index) for r in (md.gpus or []))
 
+	vllm_home = _vllm_home(md.inference_server)
+
 	extravars = {
 		"vllm_model": m.hf_repo,
 		"vllm_served_name": served,
@@ -274,9 +322,10 @@ def _vllm_extravars(md, m, key):
 		"vllm_tool_call_parser": "" if is_embed else (m.tool_call_parser or ""),
 		"vllm_reasoning_parser": "" if is_embed else ((m.reasoning_parser or "") if m.thinking else ""),
 		"vllm_extra_serve_args": extra,
-		# Keep the venv/weights/caches on the mounted data volume (root is tiny).
-		"vllm_hf_home": "/opt/vllm/hf",
-		"vllm_cache_dir": "/opt/vllm/cache",
+		# Keep the venv/weights/caches on the mounted data volume (root is tiny / ephemeral).
+		"vllm_home": vllm_home,
+		"vllm_hf_home": f"{vllm_home}/hf",
+		"vllm_cache_dir": f"{vllm_home}/cache",
 		"vllm_predownload_model": True,
 	}
 	if m.gated:
@@ -319,15 +368,15 @@ def deploy_model(model_deployment):
 	frappe.db.commit()
 
 	project_dir = os.path.join(_app_grove_root(), "deploy", "vllm", "ansible")
-	# Help ansible find the roles when run head-less via ansible_runner.
-	os.environ["ANSIBLE_ROLES_PATH"] = os.path.join(project_dir, "roles")
-	play_name, rc = ansible_runner.run_play(
-		playbook="serve.yml",
+	ansible = Ansible(project_root=project_dir)
+	play_name, rc = ansible.run_playbook(
+		playbook_name="serve.yml",
 		server_type="Inference Server",
 		server_name=inf.name,
 		machine_name=inf.machine,
-		project_dir=project_dir,
 		extravars=extravars,
+		reference_doctype="Model Deployment",
+		reference_docname=md.name,
 	)
 
 	frappe.db.set_value("Model Deployment", md.name, "status", "Active" if rc == 0 else "Broken")
@@ -379,16 +428,16 @@ def reconfigure_deployment(model_deployment):
 	frappe.db.commit()
 
 	project_dir = os.path.join(_app_grove_root(), "deploy", "vllm", "ansible")
-	# Help ansible find the roles when run head-less via ansible_runner.
-	os.environ["ANSIBLE_ROLES_PATH"] = os.path.join(project_dir, "roles")
-	play_name, rc = ansible_runner.run_play(
-		playbook="serve.yml",
+	ansible = Ansible(project_root=project_dir)
+	play_name, rc = ansible.run_playbook(
+		playbook_name="serve.yml",
 		server_type="Inference Server",
 		server_name=inf.name,
 		machine_name=inf.machine,
-		project_dir=project_dir,
 		extravars=extravars,
 		skip_tags=["heavy"],
+		reference_doctype="Model Deployment",
+		reference_docname=md.name,
 	)
 
 	frappe.db.set_value("Model Deployment", md.name, "status", "Active" if rc == 0 else "Broken")
@@ -405,14 +454,15 @@ def teardown_deployment(model_deployment):
 	inf = frappe.get_doc("Inference Server", md.inference_server)
 
 	project_dir = os.path.join(_app_grove_root(), "deploy", "vllm", "ansible")
-	os.environ["ANSIBLE_ROLES_PATH"] = os.path.join(project_dir, "roles")
-	play_name, rc = ansible_runner.run_play(
-		playbook="teardown.yml",
+	ansible = Ansible(project_root=project_dir)
+	play_name, rc = ansible.run_playbook(
+		playbook_name="teardown.yml",
 		server_type="Inference Server",
 		server_name=inf.name,
 		machine_name=inf.machine,
-		project_dir=project_dir,
-		extravars={"vllm_instance": _instance_slug(md.name), "vllm_home": "/opt/vllm"},
+		extravars={"vllm_instance": _instance_slug(md.name), "vllm_home": _vllm_home(md.inference_server)},
+		reference_doctype="Model Deployment",
+		reference_docname=md.name,
 	)
 
 	if rc == 0:

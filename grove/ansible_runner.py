@@ -35,7 +35,13 @@ def _set_global_cli_args(remote_user, tags=None, skip_tags=None):
 		forks=1,
 		remote_user=remote_user,
 		private_key_file=None,
-		ssh_common_args="-o StrictHostKeyChecking=accept-new -o ConnectTimeout=20",
+		# Keepalive so long silent tasks (pip install vllm pulls multi-GB torch for
+		# minutes with no channel output) don't get dropped by a NAT/idle timeout —
+		# which killed the pip child. 30s pings, tolerate ~1h before giving up.
+		ssh_common_args=(
+			"-o StrictHostKeyChecking=accept-new -o ConnectTimeout=20 "
+			"-o ServerAliveInterval=30 -o ServerAliveCountMax=120 -o TCPKeepAlive=yes"
+		),
 		ssh_extra_args=None,
 		sftp_extra_args=None,
 		scp_extra_args=None,
@@ -117,7 +123,7 @@ class AnsibleCallback(CallbackBase):
 class Ansible:
 	"""Runs one playbook against one host, logging to Ansible Play/Task."""
 
-	def __init__(self, playbook_path, host, server_type, server, user="root", port=22, variables=None, tags=None, skip_tags=None):
+	def __init__(self, playbook_path, host, server_type, server, user="root", port=22, variables=None, tags=None, skip_tags=None, reference_doctype=None, reference_docname=None):
 		self.playbook_path = playbook_path
 		self.playbook = os.path.basename(playbook_path)
 		self.host = host
@@ -126,6 +132,8 @@ class Ansible:
 		self.variables = variables or {}
 		self.server_type = server_type
 		self.server = server
+		self.reference_doctype = reference_doctype
+		self.reference_docname = reference_docname
 
 		_set_global_cli_args(self.user, tags=tags, skip_tags=skip_tags)
 		self.loader = DataLoader()
@@ -145,6 +153,8 @@ class Ansible:
 			"doctype": "Ansible Play",
 			"server_type": self.server_type,
 			"server": self.server,
+			"reference_doctype": self.reference_doctype,
+			"reference_docname": self.reference_docname,
 			"playbook": self.playbook,
 			"status": "Pending",
 		}).insert(ignore_permissions=True)
@@ -197,14 +207,22 @@ class Ansible:
 		return frappe.get_doc("Ansible Play", self.play_name)
 
 
-def run_play(playbook, server_type, server_name, machine_name, project_dir, extravars=None, tags=None, skip_tags=None):
+def run_play(playbook, server_type, server_name, machine_name, project_dir, extravars=None, tags=None, skip_tags=None, reference_doctype=None, reference_docname=None):
 	"""Build a single-host inventory from the Machine and run
 	<project_dir>/<playbook>. Returns (ansible_play_name, rc); rc 0 = success.
 	tags restricts the run to matching tasks; skip_tags excludes them (e.g.
-	skip_tags=["heavy"] for a fast reconfigure that skips install/pip/predownload)."""
+	skip_tags=["heavy"] for a fast reconfigure that skips install/pip/predownload).
+	reference_doctype/docname link the Ansible Play to the triggering doc (defaults to server_type/server_name)."""
 	m = frappe.get_doc("Machine", machine_name)
 	if not m.public_ip:
 		frappe.throw(f"Machine {machine_name} has no public_ip")
+
+	# Cloud GPU images (RunPod) ship several pythons; Ansible's interpreter auto-discovery
+	# can land on one lacking apt/cffi bindings → the apt module crashes. Pin the distro
+	# python (has python3-apt + cffi). Extra-var = highest precedence; explicit wins.
+	extravars = dict(extravars or {})
+	if m.cloud_provider:
+		extravars.setdefault("ansible_python_interpreter", "/usr/bin/python3")
 
 	ansible = Ansible(
 		playbook_path=os.path.join(project_dir, playbook),
@@ -213,9 +231,11 @@ def run_play(playbook, server_type, server_name, machine_name, project_dir, extr
 		server=server_name,
 		user=m.ssh_user or "root",
 		port=m.ssh_port or 22,
-		variables=extravars or {},
+		variables=extravars,
 		tags=tags,
 		skip_tags=skip_tags,
+		reference_doctype=reference_doctype,
+		reference_docname=reference_docname,
 	)
 	play = ansible.run()
 	return play.name, (0 if play.status == "Success" else 1)
