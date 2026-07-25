@@ -1,0 +1,30 @@
+{
+ "actions": [],
+ "allow_rename": 1,
+ "autoname": "prompt",
+ "creation": "2026-07-25 00:00:00",
+ "doctype": "DocType",
+ "engine": "InnoDB",
+ "field_order": [
+  "image_provider",
+  "image_path",
+  "full_image"
+ ],
+ "fields": [
+  {"fieldname": "image_provider", "fieldtype": "Link", "label": "Image Provider", "options": "Engine Image Provider", "reqd": 1, "in_list_view": 1, "description": "Registry this image is pulled from; supplies the host prefix and the pull credentials."},
+  {"fieldname": "image_path", "fieldtype": "Data", "label": "Image Path", "reqd": 1, "in_list_view": 1, "description": "Repository path and tag within the registry, e.g. 'vllm/vllm-openai:v0.11.0'. The registry host is prefixed automatically."},
+  {"fieldname": "full_image", "fieldtype": "Data", "label": "Full Image", "read_only": 1, "in_list_view": 1, "description": "Derived '<registry host>/<image path>' — the ref passed to the provider."}
+ ],
+ "links": [],
+ "modified": "2026-07-25 00:00:00",
+ "modified_by": "Administrator",
+ "module": "Grove",
+ "name": "Engine Image",
+ "owner": "Administrator",
+ "permissions": [
+  {"create": 1, "delete": 1, "email": 1, "print": 1, "read": 1, "report": 1, "role": "System Manager", "share": 1, "write": 1}
+ ],
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": []
+}
