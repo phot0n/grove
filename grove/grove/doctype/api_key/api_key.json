@@ -1,6 +1,5 @@
 {
  "actions": [],
- "allow_rename": 0,
  "autoname": "hash",
  "creation": "2026-07-01 00:00:00",
  "doctype": "DocType",
@@ -14,30 +13,94 @@
   "column_break_limits",
   "allowed_models",
   "max_tokens",
-  "rate_limited",
-  "last_used"
+  "rate_limited"
  ],
  "fields": [
-  {"fieldname": "user", "fieldtype": "Link", "label": "User", "options": "User", "reqd": 1, "in_list_view": 1},
-  {"fieldname": "status", "fieldtype": "Select", "label": "Status", "options": "active\nrevoked", "default": "active", "in_list_view": 1},
-  {"fieldname": "dirty", "fieldtype": "Check", "label": "Pending Sync", "default": "0", "read_only": 1, "description": "Set on change; cleared once a full reconcile run has pushed this key to every Active proxy."},
-  {"fieldname": "key_hash", "fieldtype": "Data", "label": "Key Hash", "read_only": 1, "hidden": 1},
-  {"fieldname": "api_secret", "fieldtype": "Password", "label": "API Secret", "read_only": 1, "description": "Full key; encrypted at rest. Shown once on creation, retrievable for reveal-later."},
-  {"fieldname": "column_break_limits", "fieldtype": "Column Break"},
-  {"fieldname": "allowed_models", "fieldtype": "Small Text", "label": "Allowed Models", "description": "Comma-separated model_id list; blank = all published"},
-  {"fieldname": "max_tokens", "fieldtype": "Int", "label": "Max Tokens / Month", "description": "total_tokens this key may consume per calendar month (UTC); blank/0 = unlimited. Enforced by the control plane against the monthly Usage Record total — when reached, rate_limited is set and pushed to the gateways (reactive, resets each month)."},
-  {"fieldname": "rate_limited", "fieldtype": "Check", "label": "Rate Limited (budget)", "default": "0", "read_only": 1, "description": "System-set: this key hit its monthly token budget. Surfaced to gateways as status=rate_limited (→ 429). Cleared by the daily grove.usage_pull.reactivate_rate_limited once current-month usage is back under budget (month rollover / raised budget); stays blocked for the rest of the month otherwise."},
-  {"fieldname": "last_used", "fieldtype": "Datetime", "label": "Last Used", "read_only": 1}
+  {
+   "fieldname": "user",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "User",
+   "options": "User",
+   "reqd": 1
+  },
+  {
+   "default": "active",
+   "fieldname": "status",
+   "fieldtype": "Select",
+   "in_list_view": 1,
+   "label": "Status",
+   "options": "active\nrevoked",
+   "read_only": 1
+  },
+  {
+   "default": "0",
+   "description": "Set on change; cleared once a full reconcile run has pushed this key to every Active proxy.",
+   "fieldname": "dirty",
+   "fieldtype": "Check",
+   "label": "Pending Sync",
+   "read_only": 1
+  },
+  {
+   "fieldname": "key_hash",
+   "fieldtype": "Data",
+   "hidden": 1,
+   "label": "Key Hash",
+   "read_only": 1
+  },
+  {
+   "description": "Full key; encrypted at rest. Shown once on creation, retrievable for reveal-later.",
+   "fieldname": "api_secret",
+   "fieldtype": "Password",
+   "label": "API Secret",
+   "read_only": 1
+  },
+  {
+   "fieldname": "column_break_limits",
+   "fieldtype": "Column Break"
+  },
+  {
+   "description": "Comma-separated model_id list; blank = all published",
+   "fieldname": "allowed_models",
+   "fieldtype": "Small Text",
+   "label": "Allowed Models"
+  },
+  {
+   "description": "total_tokens this key may consume per calendar month (UTC); blank/0 = unlimited. Enforced by the control plane against the monthly Usage Record total \u2014 when reached, rate_limited is set and pushed to the gateways (reactive, resets each month).",
+   "fieldname": "max_tokens",
+   "fieldtype": "Int",
+   "label": "Max Tokens / Month"
+  },
+  {
+   "default": "0",
+   "description": "System-set: this key hit its monthly token budget. Surfaced to gateways as status=rate_limited (\u2192 429). Cleared by the daily grove.usage_pull.reactivate_rate_limited once current-month usage is back under budget (month rollover / raised budget); stays blocked for the rest of the month otherwise.",
+   "fieldname": "rate_limited",
+   "fieldtype": "Check",
+   "label": "Rate Limited (budget)",
+   "read_only": 1
+  }
  ],
  "links": [],
- "modified": "2026-07-01 00:01:00",
+ "modified": "2026-07-26 01:33:04.128564",
  "modified_by": "Administrator",
  "module": "Grove",
  "name": "API Key",
+ "naming_rule": "Random",
  "owner": "Administrator",
  "permissions": [
-  {"create": 1, "delete": 1, "email": 1, "print": 1, "read": 1, "report": 1, "role": "System Manager", "share": 1, "write": 1}
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "System Manager",
+   "share": 1,
+   "write": 1
+  }
  ],
+ "row_format": "Dynamic",
  "sort_field": "modified",
  "sort_order": "DESC",
  "states": []

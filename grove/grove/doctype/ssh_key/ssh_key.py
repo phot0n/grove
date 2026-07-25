@@ -6,6 +6,18 @@ from frappe.model.document import Document
 
 
 class SSHKey(Document):
+	# begin: auto-generated types
+	# This code is auto-generated. Do not modify anything in this block.
+
+	from typing import TYPE_CHECKING
+
+	if TYPE_CHECKING:
+		from frappe.types import DF
+
+		key_name: DF.Data
+		public_key: DF.SmallText
+	# end: auto-generated types
+
 	def validate(self):
 		self.public_key = (self.public_key or "").strip()
 		# Cheap sanity check: an OpenSSH public key starts with its type token.
@@ -17,5 +29,5 @@ def injected_public_keys():
 	"""Newline-joined public keys of every active SSH Key — the PUBLIC_KEY env
 	injected into a pod at spawn so root's authorized_keys gets all of them.
 	Control-plane key is required here or Ansible can't SSH into the pod."""
-	keys = frappe.get_all("SSH Key", filters={"active": 1}, pluck="public_key")
+	keys = frappe.get_all("SSH Key", pluck="public_key")
 	return "\n".join(k.strip() for k in keys if k and k.strip())
