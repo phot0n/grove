@@ -86,6 +86,7 @@
   {"fieldname": "column_break_serve", "fieldtype": "Column Break"},
   {"fieldname": "dtype", "fieldtype": "Select", "label": "dtype", "options": "auto\nbfloat16\nfloat16\nfloat32", "default": "auto"},
   {"fieldname": "gpu_memory_utilization", "fieldtype": "Float", "label": "GPU Memory Utilization", "default": "0.9", "precision": "2"},
+  {"fieldname": "attention_backend", "fieldtype": "Select", "label": "Attention Backend", "options": "auto\nFLASH_ATTN\nXFORMERS\nFLASHINFER", "default": "auto", "description": "Injected as VLLM_ATTENTION_BACKEND env (not a serve flag). auto = let vLLM pick."},
   {"fieldname": "max_model_len", "fieldtype": "Int", "label": "Max Model Len", "description": "→ --max-model-len. Per-box cap for the KV cache; ≤ the model's native context. Blank = 8192."},
 
   {"fieldname": "section_extra", "fieldtype": "Section Break", "label": "Extra"},

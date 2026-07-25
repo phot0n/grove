@@ -31,7 +31,7 @@
   {"fieldname": "private_ip", "fieldtype": "Data", "label": "Private IP"},
   {"fieldname": "ssh_user", "fieldtype": "Data", "label": "SSH User", "default": "root"},
   {"fieldname": "ssh_port", "fieldtype": "Int", "label": "SSH Port", "default": "22"},
-  {"fieldname": "ssh_key", "fieldtype": "Link", "label": "SSH Key", "options": "Region"},
+  {"fieldname": "ssh_key", "fieldtype": "Link", "label": "SSH Key", "options": "SSH Key", "description": "Key authorised on this box. Blank = the control plane's own local key (what Ansible connects with by default)."},
   {"fieldname": "section_gpus", "fieldtype": "Section Break", "label": "GPUs", "description": "GPUs on this box (one row per GPU). On-prem: declare them here. Cloud: set them on the linked Pod instead — the provisioner mirrors the Pod's GPUs here after spawn, so don't hand-edit them for a cloud machine."},
   {"fieldname": "gpus", "fieldtype": "Table", "label": "GPUs", "options": "Machine GPU"}
  ],
