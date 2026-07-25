@@ -75,14 +75,16 @@ def _effective_keys(proxy):
 
 def _routes_for_proxy(proxy_name):
 	"""deploy:<model> table (global — same for every proxy since deployments are no
-	longer proxy-scoped): every model with a Model Deployment maps to its Active
-	engines (empty list → the agent deletes the key → 503). proxy_name is unused,
-	kept for the sync_routes call signature."""
+	longer proxy-scoped): every model maps to its Active engines (empty list → the
+	agent deletes the key → 503). Seeded with EVERY Model so an unpublished one
+	(last MD deleted, Pod no longer Running) is explicitly sent as empty and pruned
+	from Redis — otherwise its stale key survives and keeps showing in /v1/models.
+	proxy_name is unused, kept for the sync_routes call signature."""
 	deps = frappe.get_all(
 		"Model Deployment",
-		fields=["name", "model", "engine_url", "status"],
+		fields=["name", "model", "engine_url", "status", "inference_server"],
 	)
-	routes = {}
+	routes = {m: [] for m in frappe.get_all("Model", pluck="name")}
 	for d in deps:
 		routes.setdefault(d.model, [])
 		if d.status == "Active":
@@ -91,7 +93,24 @@ def _routes_for_proxy(proxy_name):
 				"engine_url": d.engine_url,
 				"internal_key": internal_key,
 				"healthy": True,
+				"server": d.inference_server or d.name,  # request-id target part
 			})
+
+	# Standalone serving Pods (a vLLM image serving the Model directly — no Model Deployment)
+	# register the same way: deploy:<model> → engine. Only Running pods with a derived
+	# engine_url contribute; others are dropped so the agent 503s instead of routing to a
+	# dead endpoint. A model served by both an MD and a Pod gets both engines (load-balanced).
+	for p in frappe.get_all("Pod", filters={"status": "Running"}, fields=["name", "model", "engine_url"]):
+		if not p.engine_url:
+			continue
+		routes.setdefault(p.model, [])
+		internal_key = frappe.get_doc("Pod", p.name).get_password("api_key") or ""
+		routes[p.model].append({
+			"engine_url": p.engine_url,
+			"internal_key": internal_key,
+			"healthy": True,
+			"server": p.name,  # request-id target part
+		})
 	return routes
 
 
@@ -163,7 +182,10 @@ def sync_dirty(trigger="Scheduled"):
 		return None
 	try:
 		dirty_keys = frappe.get_all("API Key", filters={"dirty": 1}, fields=["name", "modified"])
-		has_deps = bool(frappe.db.count("Model Deployment"))
+		# Routes come from Model Deployments AND standalone serving Pods (Running).
+		has_deps = bool(frappe.db.count("Model Deployment")) or bool(
+			frappe.db.count("Pod", {"status": "Running"})
+		)
 		if not dirty_keys and not has_deps:
 			return None
 

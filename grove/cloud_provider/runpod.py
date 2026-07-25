@@ -6,6 +6,7 @@ public IP + external port mapping back off the API (RunPod random-maps each expo
 port → `portMappings`). Pure HTTP client — no Frappe deps; the provisioner assembles
 keys/env/ports."""
 
+import shlex
 import time
 
 import requests
@@ -15,12 +16,12 @@ RUNPOD_API_URL = "https://rest.runpod.io/v1"
 RUNPOD_GRAPHQL_URL = "https://api.runpod.io/graphql"
 
 # CUDA + sshd base image. RunPod pods already ship NVIDIA drivers; this just needs an
-# OS + sshd so Ansible can connect. Tunable per Machine (image_name field) — this is the
-# fallback when the Machine leaves it blank.
+# OS + sshd so Ansible can connect. A Pod always names its own image (Engine Image link or
+# the manual field), so this is the fallback for direct API callers only.
 # Ubuntu 24.04 — ships python3.12 (default, with python3-apt) + gcc-13 natively, which is
-# what the vLLM Ansible role expects. A 22.04 image breaks its apt step (no python3.12).
+# what the vLLM Ansible role expects.
 DEFAULT_IMAGE = "runpod/pytorch:1.0.2-cu1281-torch280-ubuntu2404"
-DEFAULT_CONTAINER_DISK_GB = 20
+DEFAULT_CONTAINER_DISK_GB = 10
 
 
 class RunPodError(Exception):
@@ -67,10 +68,16 @@ class RunPodClient:
 		container_disk_in_gb=DEFAULT_CONTAINER_DISK_GB,
 		cloud_type="SECURE",
 		name=None,
+		template_id=None,
+		docker_start_cmd=None,
+		container_registry_auth_id=None,
 	):
 		"""Create an on-demand pod. `ports` is the pool list (build_ports); `env` is a
-		dict (e.g. {"PUBLIC_KEY": <keys>} for SSH). Returns the parsed pod (see
-		_parse_pod) — publicIp/ports may be absent until running, so poll_pod_ready()."""
+		dict (e.g. {"PUBLIC_KEY": <keys>} for SSH). `template_id` supplies the image (then
+		image_name is ignored); `docker_start_cmd` overrides the image's default start
+		command; `container_registry_auth_id` (see get_registry_auth_id) authenticates the
+		pull for a private image. Returns the parsed pod (see _parse_pod) — publicIp/ports
+		may be absent until running, so poll_pod_ready()."""
 		body = {
 			"computeType": "GPU",
 			"cloudType": cloud_type,
@@ -78,17 +85,48 @@ class RunPodClient:
 			"gpuCount": gpu_count,
 			"volumeInGb": volume_in_gb,
 			"containerDiskInGb": container_disk_in_gb,
-			"imageName": image_name or DEFAULT_IMAGE,
 			"ports": ports,
 			"volumeMountPath": volume_mount_path,
 			"env": env or {},
 		}
+		# Template provides the image; otherwise use the given image (or the base default).
+		if template_id:
+			body["templateId"] = template_id
+		else:
+			body["imageName"] = image_name or DEFAULT_IMAGE
+		if docker_start_cmd:
+			# RunPod REST v1 wants dockerStartCmd as an argv ARRAY, not a string. shlex
+			# keeps any quoted extra_serve_args intact.
+			body["dockerStartCmd"] = (
+				docker_start_cmd if isinstance(docker_start_cmd, list) else shlex.split(docker_start_cmd)
+			)
+		if container_registry_auth_id:
+			body["containerRegistryAuthId"] = container_registry_auth_id
 		if name:
 			body["name"] = name
 		pod = self._request("POST", "/pods", body)
 		if not pod.get("id"):
 			raise RunPodError(f"Failed to spawn pod (no id): {pod}")
 		return self._parse_pod(pod)
+
+	def get_registry_auth_id(self, name, username, password):
+		"""Register pull credentials with RunPod → the id passed as containerRegistryAuthId at
+		pod-create (RunPod takes no inline credentials). Names are unique per account, so an
+		existing entry under `name` is dropped and rewritten — RunPod owns this state, and
+		re-registering keeps it from drifting off the credentials Grove holds."""
+		existing = self._request("GET", "/containerregistryauth")
+		if isinstance(existing, dict):
+			existing = existing.get("containerRegistryAuths") or []
+		for auth in existing:
+			if auth.get("name") == name:
+				self._request("DELETE", f"/containerregistryauth/{auth['id']}")
+		auth = self._request(
+			"POST", "/containerregistryauth",
+			{"name": name, "username": username, "password": password},
+		)
+		if not auth.get("id"):
+			raise RunPodError(f"Failed to create registry auth (no id): {auth}")
+		return auth["id"]
 
 	def get_pod(self, pod_id):
 		"""Fetch a pod → parsed (id, desired_status, public_ip, ssh_port, port_map)."""
@@ -127,6 +165,18 @@ class RunPodClient:
 	def terminate_pod(self, pod_id):
 		"""Terminate a pod — frees GPU, disk and billing."""
 		self._request("DELETE", f"/pods/{pod_id}")
+		return True
+
+	def stop_pod(self, pod_id):
+		"""Stop a pod: releases the GPU (desiredStatus → EXITED) but keeps the pod and its
+		volume, so it can be started again. Volume storage is still billed."""
+		self._request("POST", f"/pods/{pod_id}/stop")
+		return True
+
+	def start_pod(self, pod_id):
+		"""Start/resume a stopped pod. Needs its GPU type to be free again, and the port
+		mapping is re-drawn — re-read endpoints after this."""
+		self._request("POST", f"/pods/{pod_id}/start")
 		return True
 
 	def list_gpu_types(self):

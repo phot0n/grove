@@ -1,0 +1,28 @@
+{
+ "actions": [],
+ "creation": "2026-07-22 00:00:00",
+ "doctype": "DocType",
+ "editable_grid": 1,
+ "engine": "InnoDB",
+ "istable": 1,
+ "field_order": [
+  "internal_port",
+  "protocol",
+  "external_port"
+ ],
+ "fields": [
+  {"fieldname": "internal_port", "fieldtype": "Int", "label": "Internal Port", "reqd": 1, "in_list_view": 1, "columns": 3, "description": "Port opened inside the pod (declared at spawn — the provider can't hot-add). 22 = SSH; the rest are the vLLM engine pool."},
+  {"fieldname": "protocol", "fieldtype": "Select", "label": "Protocol", "options": "tcp\nhttp", "default": "tcp", "in_list_view": 1, "columns": 2},
+  {"fieldname": "external_port", "fieldtype": "Int", "label": "External Port", "read_only": 1, "in_list_view": 1, "columns": 3, "description": "Provider-mapped public port. Filled after spawn; moves on pod restart (Sync re-reads it)."}
+ ],
+ "links": [],
+ "modified": "2026-07-22 00:00:00",
+ "modified_by": "Administrator",
+ "module": "Grove",
+ "name": "Pod Port",
+ "owner": "Administrator",
+ "permissions": [],
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": []
+}

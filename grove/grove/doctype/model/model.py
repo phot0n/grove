@@ -15,13 +15,15 @@ class Model(Document):
 
 
 def has_active_deployment(model, exclude=None):
-	"""True if `model` has >=1 Active Model Deployment. `exclude` drops one
-	deployment name (used from Model Deployment.on_trash, where the row still
-	exists in the DB during delete)."""
+	"""True if `model` has a live deployment: >=1 Active Model Deployment (on-prem) OR a
+	Running standalone Pod (cloud). `exclude` drops one deployment name (used from Model
+	Deployment.on_trash, where the row still exists in the DB during delete)."""
 	filters = {"model": model, "status": "Active"}
 	if exclude:
 		filters["name"] = ("!=", exclude)
-	return bool(frappe.db.get_all("Model Deployment", filters=filters, limit=1))
+	if frappe.db.get_all("Model Deployment", filters=filters, limit=1):
+		return True
+	return bool(frappe.db.get_all("Pod", filters={"model": model, "status": "Running"}, limit=1))
 
 
 def sync_published(model, exclude=None):
