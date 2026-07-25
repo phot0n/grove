@@ -15,6 +15,10 @@
   "is_embedding",
   "enable_prefix_caching",
   "gated",
+  "section_shape",
+  "attention_heads",
+  "hidden_layers",
+  "weights_gb",
   "section_tools",
   "enable_auto_tool_choice",
   "tool_call_parser",
@@ -23,33 +27,166 @@
   "reasoning_parser"
  ],
  "fields": [
-  {"fieldname": "display_name", "fieldtype": "Data", "label": "Display Name", "reqd": 1, "in_list_view": 1, "description": "Names the doc: lowercased with spaces/underscores as dashes (e.g. 'Qwen3.5 Coder' → qwen3.5-coder). That name is the client-facing model id — set at creation, not changed if you edit this later."},
-  {"fieldname": "hf_repo", "fieldtype": "Data", "label": "HF Repo", "description": "→ vllm serve <repo>; the name is the --served-model-name."},
-  {"fieldname": "published", "fieldtype": "Check", "label": "Published", "default": "1", "in_list_view": 1},
-  {"fieldname": "section_launch", "fieldtype": "Section Break", "label": "vLLM Launch Profile", "description": "The args required to serve this model (mapped to deploy/vllm role vars). Blank = flag omitted / role default."},
-  {"fieldname": "quantization", "fieldtype": "Select", "label": "Quantization", "options": "\nawq\nawq_marlin\ngptq\ngptq_marlin\nfp8", "description": "Blank = none/auto-detect from the repo. → --quantization"},
-  {"fieldname": "column_break_launch", "fieldtype": "Column Break"},
-  {"fieldname": "modality", "fieldtype": "Select", "label": "Modality", "options": "text\nmultimodal", "default": "text", "description": "multimodal → adds --language-model-only (serve the text LLM only)."},
-  {"fieldname": "is_embedding", "fieldtype": "Check", "label": "Is Embedding Model", "default": "0", "description": "Pooling/embedding model — served at /v1/embeddings, not chat. → --task embed; the chat-only tool/reasoning flags are skipped."},
-  {"fieldname": "enable_prefix_caching", "fieldtype": "Check", "label": "Enable Prefix Caching", "default": "1", "description": "→ --enable-prefix-caching"},
-  {"fieldname": "gated", "fieldtype": "Check", "label": "Gated", "default": "0", "description": "Needs an HF token to download (passed as HF_TOKEN)."},
-
-  {"fieldname": "section_tools", "fieldtype": "Section Break", "label": "Tools & Reasoning"},
-  {"fieldname": "enable_auto_tool_choice", "fieldtype": "Check", "label": "Enable Auto Tool Choice", "default": "1", "description": "→ --enable-auto-tool-choice"},
-  {"fieldname": "tool_call_parser", "fieldtype": "Data", "label": "Tool Call Parser", "description": "→ --tool-call-parser. e.g. hermes (Qwen2.5), qwen3_coder (Qwen3.6/3.5)."},
-  {"fieldname": "column_break_reason", "fieldtype": "Column Break"},
-  {"fieldname": "thinking", "fieldtype": "Check", "label": "Reasoning Model", "default": "0", "description": "If set, the reasoning parser below is applied."},
-  {"fieldname": "reasoning_parser", "fieldtype": "Data", "label": "Reasoning Parser", "description": "→ --reasoning-parser (only when Reasoning Model is checked). e.g. qwen3."}
+  {
+   "description": "Names the doc: lowercased with spaces/underscores as dashes (e.g. 'Qwen3.5 Coder' \u2192 qwen3.5-coder). That name is the client-facing model id \u2014 set at creation, not changed if you edit this later.",
+   "fieldname": "display_name",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Display Name",
+   "reqd": 1
+  },
+  {
+   "description": "\u2192 vllm serve ; the name is the --served-model-name.",
+   "fieldname": "hf_repo",
+   "fieldtype": "Data",
+   "label": "HF Repo"
+  },
+  {
+   "default": "1",
+   "fieldname": "published",
+   "fieldtype": "Check",
+   "in_list_view": 1,
+   "label": "Published",
+   "read_only": 1
+  },
+  {
+   "description": "The args required to serve this model (mapped to deploy/vllm role vars). Blank = flag omitted / role default.",
+   "fieldname": "section_launch",
+   "fieldtype": "Section Break",
+   "label": "vLLM Launch Profile"
+  },
+  {
+   "description": "Blank = none/auto-detect from the repo. \u2192 --quantization",
+   "fieldname": "quantization",
+   "fieldtype": "Select",
+   "label": "Quantization",
+   "options": "\nawq\nawq_marlin\ngptq\ngptq_marlin\nfp8"
+  },
+  {
+   "fieldname": "column_break_launch",
+   "fieldtype": "Column Break"
+  },
+  {
+   "default": "text",
+   "description": "multimodal \u2192 adds --language-model-only (serve the text LLM only).",
+   "fieldname": "modality",
+   "fieldtype": "Select",
+   "label": "Modality",
+   "options": "text\nmultimodal"
+  },
+  {
+   "default": "0",
+   "description": "Pooling/embedding model \u2014 served at /v1/embeddings, not chat. \u2192 --task embed; the chat-only tool/reasoning flags are skipped.",
+   "fieldname": "is_embedding",
+   "fieldtype": "Check",
+   "label": "Is Embedding Model"
+  },
+  {
+   "default": "1",
+   "description": "\u2192 --enable-prefix-caching",
+   "fieldname": "enable_prefix_caching",
+   "fieldtype": "Check",
+   "label": "Enable Prefix Caching"
+  },
+  {
+   "default": "0",
+   "description": "Needs an HF token to download (passed as HF_TOKEN).",
+   "fieldname": "gated",
+   "fieldtype": "Check",
+   "label": "Gated"
+  },
+  {
+   "description": "From the repo's config.json. Used to reject a GPU split the model can't run before it reaches the box. Blank = that check is skipped.",
+   "fieldname": "section_shape",
+   "fieldtype": "Section Break",
+   "label": "Architecture"
+  },
+  {
+   "description": "num_attention_heads. vLLM shards heads across the tensor-parallel group, so this must divide evenly by tensor-parallel size (e.g. 64 heads cannot run on 6 GPUs).",
+   "fieldname": "attention_heads",
+   "fieldtype": "Int",
+   "label": "Attention Heads"
+  },
+  {
+   "description": "num_hidden_layers. Split across the pipeline-parallel group, so this must divide evenly by pipeline-parallel size.",
+   "fieldname": "hidden_layers",
+   "fieldtype": "Int",
+   "label": "Hidden Layers"
+  },
+  {
+   "description": "Size of the weights, summed per dtype from the repo's safetensors index. A placement whose GPUs can't hold this much is rejected \u2014 note it counts weights only, so the KV cache and activations need headroom on top.",
+   "fieldname": "weights_gb",
+   "fieldtype": "Float",
+   "label": "Weights (GB)",
+   "precision": "2"
+  },
+  {
+   "fieldname": "section_tools",
+   "fieldtype": "Section Break",
+   "label": "Tools & Reasoning"
+  },
+  {
+   "default": "1",
+   "description": "\u2192 --enable-auto-tool-choice",
+   "fieldname": "enable_auto_tool_choice",
+   "fieldtype": "Check",
+   "label": "Enable Auto Tool Choice"
+  },
+  {
+   "description": "\u2192 --tool-call-parser. e.g. hermes (Qwen2.5), qwen3_coder (Qwen3.6/3.5).",
+   "fieldname": "tool_call_parser",
+   "fieldtype": "Data",
+   "label": "Tool Call Parser"
+  },
+  {
+   "fieldname": "column_break_reason",
+   "fieldtype": "Column Break"
+  },
+  {
+   "default": "0",
+   "description": "If set, the reasoning parser below is applied.",
+   "fieldname": "thinking",
+   "fieldtype": "Check",
+   "label": "Reasoning Model"
+  },
+  {
+   "description": "\u2192 --reasoning-parser (only when Reasoning Model is checked). e.g. qwen3.",
+   "fieldname": "reasoning_parser",
+   "fieldtype": "Data",
+   "label": "Reasoning Parser"
+  }
  ],
- "links": [],
- "modified": "2026-07-02 00:04:00",
+ "links": [
+  {
+   "group": "Placements",
+   "link_doctype": "Model Deployment",
+   "link_fieldname": "model"
+  },
+  {
+   "group": "Placements",
+   "link_doctype": "Pod",
+   "link_fieldname": "model"
+  }
+ ],
+ "modified": "2026-07-26 01:28:23.867757",
  "modified_by": "Administrator",
  "module": "Grove",
  "name": "Model",
  "owner": "Administrator",
  "permissions": [
-  {"create": 1, "delete": 1, "email": 1, "print": 1, "read": 1, "report": 1, "role": "System Manager", "share": 1, "write": 1}
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "System Manager",
+   "share": 1,
+   "write": 1
+  }
  ],
+ "row_format": "Dynamic",
  "sort_field": "modified",
  "sort_order": "DESC",
  "states": []
