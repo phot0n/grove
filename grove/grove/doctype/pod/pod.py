@@ -1,6 +1,7 @@
 # Copyright (c) 2026, Grove and contributors
 # For license information, please see license.txt
 
+import json
 import secrets
 
 import frappe
@@ -14,6 +15,47 @@ _ENGINE_PORT = 8080
 
 
 class Pod(Document):
+	# begin: auto-generated types
+	# This code is auto-generated. Do not modify anything in this block.
+
+	from typing import TYPE_CHECKING
+
+	if TYPE_CHECKING:
+		from frappe.types import DF
+		from grove.grove.doctype.pod_env.pod_env import PodEnv
+		from grove.grove.doctype.pod_port.pod_port import PodPort
+
+		aliases: DF.SmallText | None
+		api_key: DF.Password | None
+		attention_backend: DF.Literal["auto", "FLASH_ATTN", "XFORMERS", "FLASHINFER"]
+		cloud_provider: DF.Link
+		container_disk_gb: DF.Int
+		dtype: DF.Literal["auto", "bfloat16", "float16", "float32"]
+		engine_image: DF.Link | None
+		engine_url: DF.Data | None
+		env: DF.Table[PodEnv]
+		extra_serve_args: DF.SmallText | None
+		gpu_count: DF.Int
+		gpu_memory_utilization: DF.Float
+		gpu_type_id: DF.Data | None
+		image_name: DF.Data | None
+		max_model_len: DF.Int
+		model: DF.Link | None
+		pipeline_parallel_size: DF.Int
+		pod_id: DF.Data | None
+		ports: DF.Table[PodPort]
+		public_ip: DF.Data | None
+		serve_command: DF.Code | None
+		serve_port: DF.Int
+		ssh_port: DF.Int
+		ssh_user: DF.Data | None
+		startup_command: DF.SmallText | None
+		status: DF.Literal["Pending", "Provisioning", "Loading", "Running", "Stopped", "Terminated"]
+		template_id: DF.Data | None
+		volume_in_gb: DF.Int
+		volume_mount_path: DF.Data | None
+	# end: auto-generated types
+
 	"""A cloud GPU pod (e.g. RunPod), modelled on the provider's pod-create request: GPU
 	list, port pool, image/template, startup command, volume, SSH, env.
 
@@ -44,9 +86,24 @@ class Pod(Document):
 				frappe.throw(
 					f"Serve Port {serve_port} is not in the Ports table — add it so it's opened at spawn."
 				)
-			self.serve_command = ServeCommand.for_pod(self).command
+			serve = ServeCommand.for_pod(self)
+			if errors := serve.placement_errors:
+				frappe.throw("<br>".join(errors))
+			self.serve_command = serve.command
 		else:
 			self.serve_command = ""
+
+	@property
+	def gpu_vram_gb(self):
+		"""VRAM per GPU for this pod's GPU type, from the Cloud Provider's cached type list.
+		None until that cache is fetched (or for a type the provider no longer lists)."""
+		if not (self.cloud_provider and self.gpu_type_id):
+			return None
+		cached = frappe.db.get_value("Cloud Provider", self.cloud_provider, "gpu_types")
+		for gpu_type in json.loads(cached or "[]"):
+			if gpu_type.get("id") == self.gpu_type_id:
+				return gpu_type.get("memoryInGb")
+		return None
 
 	@property
 	def resolved_image(self):

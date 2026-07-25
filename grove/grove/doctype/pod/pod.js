@@ -7,7 +7,7 @@ frappe.ui.form.on('Pod', {
 		if (frm.is_new()) return;
 
 		// No provider pod yet → offer Spawn. Once spawned → Sync / Restart / Terminate.
-		if (!frm.doc.pod_id) {
+		if (!frm.doc.pod_id && (frm.doc.status === 'Pending' || frappe.boot.developer_mode)) {
 			frm.add_custom_button(__('Spawn'), () => {
 				frm.call('spawn').then(() => frm.reload_doc());
 			});

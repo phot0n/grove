@@ -23,9 +23,75 @@ def serve(model=None, **tuning):
 	return ServeCommand("qwen3-35b", model if model is not None else dict(CHAT_MODEL), **tuning)
 
 
+class TestParallelism(unittest.TestCase):
+	def test_tensor_parallel_is_gpus_left_after_pipeline_stages(self):
+		self.assertEqual(serve(gpu_count=8).tensor_parallel_size, 8)
+		self.assertEqual(serve(gpu_count=8, pipeline_parallel_size=2).tensor_parallel_size, 4)
+		self.assertEqual(serve(gpu_count=4, pipeline_parallel_size=4).tensor_parallel_size, 1)
+
+	def test_pipeline_flag_only_when_used(self):
+		self.assertNotIn("--pipeline-parallel-size", serve(gpu_count=8).args)
+		args = serve(gpu_count=8, pipeline_parallel_size=2).args
+		self.assertEqual(args[args.index("--pipeline-parallel-size") + 1], "2")
+		self.assertEqual(args[args.index("--tensor-parallel-size") + 1], "4")
+
+	def test_heads_must_divide_by_tensor_parallel_size(self):
+		model = dict(CHAT_MODEL, attention_heads=64)
+		self.assertEqual(serve(model, gpu_count=8).placement_errors, [])  # 64 / 8 ✓
+		errors = serve(model, gpu_count=6).placement_errors  # 64 heads on 6 GPUs ✗
+		self.assertEqual(len(errors), 1)
+		self.assertIn("64 attention heads", errors[0])
+
+	def test_heads_checked_against_derived_tensor_parallel_size(self):
+		# 6 GPUs alone can't shard 64 heads, but PP=2 leaves TP=3 — still not a divisor.
+		model = dict(CHAT_MODEL, attention_heads=64)
+		self.assertTrue(serve(model, gpu_count=6, pipeline_parallel_size=2).placement_errors)
+		# 8 GPUs with PP=2 leaves TP=4, which divides 64.
+		self.assertEqual(serve(model, gpu_count=8, pipeline_parallel_size=2).placement_errors, [])
+
+	def test_gpus_must_divide_into_pipeline_stages(self):
+		errors = serve(gpu_count=6, pipeline_parallel_size=4).placement_errors
+		self.assertIn("do not divide evenly", errors[0])
+
+	def test_layers_must_divide_by_pipeline_stages(self):
+		model = dict(CHAT_MODEL, hidden_layers=61)
+		self.assertTrue(serve(model, gpu_count=4, pipeline_parallel_size=2).placement_errors)
+		self.assertEqual(serve(model, gpu_count=4).placement_errors, [])  # PP=1 → no split
+
+	def test_blank_shape_skips_checks(self):
+		self.assertEqual(serve(gpu_count=6).placement_errors, [])  # no heads/layers on Model
+
+
+class TestVramFit(unittest.TestCase):
+	# DeepSeek-V4-Flash's real figures: 148 GB of weights, 64 heads.
+	BIG = dict(CHAT_MODEL, weights_gb=148.0, attention_heads=64)
+
+	def test_weights_larger_than_gpus_is_rejected(self):
+		errors = serve(self.BIG, gpu_count=2, gpu_vram_gb=80).placement_errors  # 144 usable
+		self.assertEqual(len(errors), 1)
+		self.assertIn("148", errors[0])
+
+	def test_weights_that_fit_pass(self):
+		self.assertEqual(serve(self.BIG, gpu_count=4, gpu_vram_gb=80).placement_errors, [])
+
+	def test_gpu_memory_utilization_shrinks_the_budget(self):
+		# 2 x 80 at 0.95 = 152 GB usable — fits; at 0.9 it's 144 and does not.
+		self.assertEqual(
+			serve(self.BIG, gpu_count=2, gpu_vram_gb=80, gpu_memory_utilization=0.95).placement_errors, []
+		)
+		self.assertTrue(serve(self.BIG, gpu_count=2, gpu_vram_gb=80).placement_errors)
+
+	def test_unknown_vram_skips_the_check(self):
+		self.assertEqual(serve(self.BIG, gpu_count=1).placement_errors, [])  # no gpu_vram_gb
+
+	def test_unfetched_weights_skip_the_check(self):
+		model = dict(CHAT_MODEL, attention_heads=64)  # no weights_gb
+		self.assertEqual(serve(model, gpu_count=8, gpu_vram_gb=8).placement_errors, [])
+
+
 class TestServeCommand(unittest.TestCase):
 	def test_chat_model_flags(self):
-		args = serve(tensor_parallel_size=2, max_model_len=32768).args
+		args = serve(gpu_count=2, max_model_len=32768).args
 		self.assertEqual(args[:3], ["--served-model-name", "qwen3-35b", "--host"])
 		for flag, value in (
 			("--port", "8080"),

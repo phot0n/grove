@@ -24,6 +24,7 @@
   "section_gpus",
   "gpus",
   "tensor_parallel_size",
+  "pipeline_parallel_size",
   "section_extra",
   "aliases",
   "extra_serve_args"
@@ -46,7 +47,8 @@
   {"fieldname": "max_model_len", "fieldtype": "Int", "label": "Max Model Len", "description": "→ --max-model-len. Cap for the KV cache; ≤ the model's native context. Blank = 8192. Depends on this box's VRAM headroom."},
   {"fieldname": "section_gpus", "fieldtype": "Section Break", "label": "GPUs", "description": "Which GPUs on this box the engine runs on. Add one row per GPU (CUDA index from the Machine's GPU table). N rows → --tensor-parallel-size N + CUDA_VISIBLE_DEVICES pinned to those indices. Marked Allocated on Deploy, freed on Tear Down."},
   {"fieldname": "gpus", "fieldtype": "Table", "label": "GPUs", "options": "Model Deployment GPU"},
-  {"fieldname": "tensor_parallel_size", "fieldtype": "Int", "label": "Tensor Parallel Size", "read_only": 1, "description": "Derived = number of GPU rows. 1 = single-GPU. →  --tensor-parallel-size."},
+  {"fieldname": "tensor_parallel_size", "fieldtype": "Int", "label": "Tensor Parallel Size", "read_only": 1, "description": "Derived = GPU rows / pipeline parallel size. 1 = single-GPU. → --tensor-parallel-size."},
+  {"fieldname": "pipeline_parallel_size", "fieldtype": "Int", "label": "Pipeline Parallel Size", "default": "1", "description": "Stages to split the model's layers across (--pipeline-parallel-size). 1 = pure tensor parallel. Must divide the number of GPU rows evenly."},
   {"fieldname": "section_extra", "fieldtype": "Section Break", "label": "Extra"},
   {"fieldname": "aliases", "fieldtype": "Small Text", "label": "Aliases", "description": "Extra --served-model-name values (comma/space separated); old client model-names keep working."},
   {"fieldname": "extra_serve_args", "fieldtype": "Small Text", "label": "Extra Serve Args", "description": "Freeform extra `vllm serve` flags appended verbatim, e.g. --kv-cache-dtype fp8 --max-num-seqs 64."}
