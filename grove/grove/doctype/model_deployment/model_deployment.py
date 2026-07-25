@@ -34,6 +34,13 @@ class ModelDeployment(Document):
 	# columns. No GPU rows → single-GPU, unpinned (back-compat). No cross-deployment
 	# allocation tracking — the operator assigns indices deliberately.
 
+	@property
+	def gpu_vram_gb(self):
+		"""VRAM per pinned GPU, taken as the smallest of them — a mixed box is capped by its
+		smallest card. None until the Machine GPU rows carry a VRAM figure."""
+		sizes = [row.vram_gb for row in self.gpus or [] if row.vram_gb]
+		return min(sizes) if sizes else None
+
 	def _machine(self):
 		"""The Machine backing this deployment's Inference Server (or None)."""
 		if not self.inference_server:
@@ -58,17 +65,60 @@ class ModelDeployment(Document):
 			if r.gpu_index in seen:
 				frappe.throw(f"GPU index {r.gpu_index} is listed twice.")
 			seen.add(r.gpu_index)
-		self.tensor_parallel_size = len(self.gpus or []) or 1
 
-		machine = self._machine()
-		if not machine:
-			return  # no box yet → reqd check on inference_server will flag it
-		for r in self.gpus or []:
-			row = self._machine_gpu(machine, r.gpu_index)
-			if not row:
-				frappe.throw(f"Machine {machine} has no GPU with CUDA index {r.gpu_index}.")
-			r.gpu_model = row.gpu_model
-			r.vram_gb = row.vram_gb
+		# Fill the display columns first — the placement check reads vram_gb off these rows.
+		# No box yet → the reqd check on inference_server flags it; the split is still checked.
+		if machine := self._machine():
+			for r in self.gpus or []:
+				row = self._machine_gpu(machine, r.gpu_index)
+				if not row:
+					frappe.throw(f"Machine {machine} has no GPU with CUDA index {r.gpu_index}.")
+				r.gpu_model = row.gpu_model
+				r.vram_gb = row.vram_gb
+
+		self.reject_claimed_gpus()
+
+		serve = ServeCommand.for_deployment(self)
+		if errors := serve.placement_errors:
+			frappe.throw("<br>".join(errors))
+		self.tensor_parallel_size = serve.tensor_parallel_size
+
+	def reject_claimed_gpus(self):
+		"""A GPU backs one engine at a time — two vLLMs on one card split its VRAM and both
+		then OOM at a size each thought it had. Read live off the other Active deployments on
+		this box rather than a stored flag, so it always matches what's really running.
+		Called on save for early feedback, and again at deploy time because a sibling can go
+		Active in between (status moves via db.set_value, which skips validate)."""
+		declared = {int(r.gpu_index) for r in self.gpus or []}
+		if not (declared and self.inference_server):
+			return
+		siblings = frappe.get_all(
+			"Model Deployment",
+			filters={
+				"inference_server": self.inference_server,
+				"name": ["!=", self.name or ""],
+				"status": "Active",
+			},
+			pluck="name",
+		)
+		if not siblings:
+			return
+		clashes = {}
+		for row in frappe.get_all(
+			"Model Deployment GPU",
+			filters={"parent": ["in", siblings], "parenttype": "Model Deployment"},
+			fields=["parent", "gpu_index"],
+		):
+			if int(row.gpu_index) in declared:
+				clashes.setdefault(row.parent, []).append(int(row.gpu_index))
+		if clashes:
+			frappe.throw(
+				"<br>".join(
+					f"GPU {', '.join(str(i) for i in sorted(indices))} on {self.inference_server} "
+					f"is already serving Active deployment {deployment}."
+					for deployment, indices in clashes.items()
+				)
+			)
 
 	def _assign_engine_port(self):
 		"""Allocate a box-local vLLM port once (multi-tenant box: one port per
@@ -234,6 +284,9 @@ def deploy_model(model_deployment):
 			f"Inference Server {inf.name} is not provisioned — run its Setup "
 			"(host bootstrap) before deploying a model onto it."
 		)
+	# Re-checked here, not just on save: another deployment can have gone Active in the
+	# meantime, and status moves by db.set_value, which never runs validate.
+	md.reject_claimed_gpus()
 
 	# Grove owns the internal key: generate once and serve with it, so the gateway
 	# (which stores it as the deployment's internal_api_key) always matches.
