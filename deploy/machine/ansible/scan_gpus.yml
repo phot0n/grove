@@ -1,0 +1,17 @@
+---
+# Read the box's GPU inventory off nvidia-smi. Run by machine.scan_gpus, which parses the
+# task output back into the Machine's GPU child rows. Read-only — nothing on the host changes.
+# Lives under deploy/machine (not deploy/vllm): this describes the hardware, and holds
+# whether or not the box ever serves a model.
+- name: Scan GPUs
+  hosts: all
+  become: true
+  gather_facts: false
+  tasks:
+    # The task NAME is the contract: machine.scan_gpus finds this task's Ansible Task doc by
+    # it to read stdout. CSV so the parse stays trivial; nounits keeps memory a bare MiB int.
+    - name: query nvidia-smi
+      ansible.builtin.command:
+        cmd: nvidia-smi --query-gpu=index,name,memory.total,uuid --format=csv,noheader,nounits
+      register: nvidia_smi
+      changed_when: false
