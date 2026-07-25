@@ -1,13 +1,12 @@
 # Copyright (c) 2026, Grove and contributors
 # For license information, please see license.txt
 
-import os
 
 import frappe
 from frappe.model.document import Document
 
 from grove.ansible import Ansible
-from grove.provision import _app_grove_root
+from grove.utils import ansible_project_dir
 
 
 class InferenceServer(Document):
@@ -35,7 +34,7 @@ class InferenceServer(Document):
 		frappe.db.set_value("Inference Server", self.name, "status", "Installing")
 		frappe.db.commit()
 
-		project_dir = os.path.join(_app_grove_root(), "deploy", "vllm", "ansible")
+		project_dir = ansible_project_dir("vllm")
 		ansible = Ansible(project_root=project_dir)
 		play_name, rc = ansible.run_playbook(
 			playbook_name="provision.yml",

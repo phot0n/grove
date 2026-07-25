@@ -9,10 +9,7 @@ import os
 import frappe
 
 from grove import ansible_runner
-
-
-def _app_grove_root():
-	return os.path.dirname(frappe.get_app_path("grove"))
+from grove.utils import app_grove_root
 
 
 class Ansible:
@@ -53,7 +50,7 @@ class Ansible:
 		if project_root:
 			self.project_root = project_root
 		else:
-			self.project_root = os.path.join(_app_grove_root(), "deploy", "ansible")
+			self.project_root = os.path.join(app_grove_root(), "deploy", "ansible")
 
 	def run(self):
 		"""Execute playbook in ad-hoc mode (direct server connection, no Frappe tracking).

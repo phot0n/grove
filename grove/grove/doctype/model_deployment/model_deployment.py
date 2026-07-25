@@ -1,7 +1,6 @@
 # Copyright (c) 2026, Grove and contributors
 # For license information, please see license.txt
 
-import os
 import re
 import secrets
 
@@ -9,7 +8,7 @@ import frappe
 from frappe.model.document import Document
 
 from grove.ansible import Ansible
-from grove.provision import _app_grove_root
+from grove.utils import ansible_project_dir
 from grove.serve_command import ServeCommand
 
 
@@ -250,7 +249,7 @@ def deploy_model(model_deployment):
 	frappe.db.set_value("Model Deployment", md.name, "status", "Provisioning")
 	frappe.db.commit()
 
-	project_dir = os.path.join(_app_grove_root(), "deploy", "vllm", "ansible")
+	project_dir = ansible_project_dir("vllm")
 	ansible = Ansible(project_root=project_dir)
 	play_name, rc = ansible.run_playbook(
 		playbook_name="serve.yml",
@@ -306,7 +305,7 @@ def reconfigure_deployment(model_deployment):
 	frappe.db.set_value("Model Deployment", md.name, "status", "Provisioning")
 	frappe.db.commit()
 
-	project_dir = os.path.join(_app_grove_root(), "deploy", "vllm", "ansible")
+	project_dir = ansible_project_dir("vllm")
 	ansible = Ansible(project_root=project_dir)
 	play_name, rc = ansible.run_playbook(
 		playbook_name="serve.yml",
@@ -332,7 +331,7 @@ def teardown_deployment(model_deployment):
 	md = frappe.get_doc("Model Deployment", model_deployment)
 	inf = frappe.get_doc("Inference Server", md.inference_server)
 
-	project_dir = os.path.join(_app_grove_root(), "deploy", "vllm", "ansible")
+	project_dir = ansible_project_dir("vllm")
 	ansible = Ansible(project_root=project_dir)
 	play_name, rc = ansible.run_playbook(
 		playbook_name="teardown.yml",

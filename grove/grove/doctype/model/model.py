@@ -4,8 +4,18 @@
 import frappe
 from frappe.model.document import Document
 
+from grove.utils import slugify
+
 
 class Model(Document):
+	def autoname(self):
+		"""Name = slugged Display Name. The name is the client-facing model id (what
+		clients send as `model` and what routes are keyed by), so it's set once at insert
+		— editing Display Name later does NOT rename it and break live clients."""
+		self.name = slugify(self.display_name)
+		if not self.name:
+			frappe.throw("Display Name must contain at least one letter or digit.")
+
 	def validate(self):
 		# `published` is the user-facing catalog gate (allowed_models blank = all
 		# published). A model is only publishable while it actually has a live
