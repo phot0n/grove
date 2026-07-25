@@ -8,7 +8,6 @@
  "field_order": [
   "name",
   "provider_type",
-  "api_url",
   "api_key",
   "status",
   "section_gpu_types",
