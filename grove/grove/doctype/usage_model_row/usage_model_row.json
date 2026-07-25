@@ -1,0 +1,34 @@
+{
+ "actions": [],
+ "creation": "2026-07-23 00:00:00",
+ "doctype": "DocType",
+ "editable_grid": 1,
+ "engine": "InnoDB",
+ "istable": 1,
+ "field_order": [
+  "model",
+  "prompt_tokens",
+  "completion_tokens",
+  "total_tokens",
+  "cached_tokens",
+  "request_count"
+ ],
+ "fields": [
+  {"fieldname": "model", "fieldtype": "Link", "label": "Model", "options": "Model", "in_list_view": 1, "columns": 3},
+  {"fieldname": "prompt_tokens", "fieldtype": "Int", "label": "Prompt Tokens", "in_list_view": 1},
+  {"fieldname": "completion_tokens", "fieldtype": "Int", "label": "Completion Tokens", "in_list_view": 1},
+  {"fieldname": "total_tokens", "fieldtype": "Int", "label": "Total Tokens", "in_list_view": 1},
+  {"fieldname": "cached_tokens", "fieldtype": "Int", "label": "Cached Tokens", "in_list_view": 1},
+  {"fieldname": "request_count", "fieldtype": "Int", "label": "Requests", "in_list_view": 1}
+ ],
+ "links": [],
+ "modified": "2026-07-23 00:00:00",
+ "modified_by": "Administrator",
+ "module": "Grove",
+ "name": "Usage Model Row",
+ "owner": "Administrator",
+ "permissions": [],
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": []
+}

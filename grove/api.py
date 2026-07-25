@@ -56,10 +56,10 @@ def revoke_key(api_key):
 
 @frappe.whitelist()
 def usage(users, month=None):
-	from datetime import datetime, timezone
+	from frappe.utils import now_datetime
 
 	if not month:
-		month = datetime.now(timezone.utc).strftime("%Y-%m")
+		month = now_datetime().strftime("%Y-%m")
 
 	if isinstance(users, str):
 		users = [users]

@@ -8,6 +8,7 @@ type Route struct {
 	Healthy     bool    `json:"healthy"`
 	Region      string  `json:"region"`
 	Load        float64 `json:"load"`
+	Server      string  `json:"server"` // inference-server / pod id — the request-id's target part
 }
 
 // pickRoute implements Tier-1 selection with session stickiness (§6 jobs 5-6):

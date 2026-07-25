@@ -90,7 +90,7 @@ class ProxyServer(Document):
 			server_type="Proxy Server",
 			server_name=self.name,
 			machine_name=self.machine,
-			extravars={"admin_token": admin_token, "agent_source": gateway_service_source},
+			extravars={"admin_token": admin_token, "agent_source": gateway_service_source, "gateway_id": self.name},
 		)
 
 		frappe.db.set_value("Proxy Server", self.name, "status", "Active" if rc == 0 else "Broken")

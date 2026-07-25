@@ -103,7 +103,9 @@
     - name: agent.env (admin token from the control plane)
       ansible.builtin.copy:
         dest: /etc/grove-gateway/agent.env
-        content: "GROVE_ADMIN_TOKEN={{ admin_token }}\n"
+        content: |
+          GROVE_ADMIN_TOKEN={{ admin_token }}
+          GROVE_GATEWAY_ID={{ gateway_id | default('') }}
         mode: "0600"
       notify: restart grove-gateway
 

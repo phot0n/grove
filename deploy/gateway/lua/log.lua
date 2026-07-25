@@ -13,6 +13,7 @@ usage = (usage:gsub("^data:%s*", "")) -- strip SSE prefix if present
 local payload = cjson.encode({
 	meter_id = ctx.meter_id,
 	prefix = ctx.prefix or "",
+	model = ctx.model or "",
 	usage = usage,
 })
 

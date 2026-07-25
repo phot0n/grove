@@ -86,6 +86,17 @@ if d.internal_key and d.internal_key ~= "" then
 end
 ngx.ctx.meter_id = d.meter_id
 ngx.ctx.prefix = d.prefix or ""
+ngx.ctx.model = model  -- for per-model usage metering in the log phase
 if d.prefix and d.prefix ~= "" then
 	ngx.var.grove_prefix = d.prefix
+end
+
+-- Traceable request-id (gr-<gateway>-<server>-<keyprefix>-<rand>, built by the agent). Standard
+-- X-Request-Id only: vLLM adopts it as its request_id (chatcmpl-<id>) and OpenAI-aware tooling
+-- reads it; ours is canonical, overriding any client-supplied value. Also recorded in the
+-- access log (rid=).
+if d.request_id and d.request_id ~= "" then
+	ngx.req.set_header("X-Request-Id", d.request_id)   -- to the engine
+	ngx.header["X-Request-Id"] = d.request_id          -- back to the client
+	ngx.var.grove_request_id = d.request_id            -- access-log rid=
 end

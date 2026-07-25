@@ -15,6 +15,8 @@
   "cached_tokens",
   "total_tokens",
   "request_count",
+  "section_models",
+  "model_usage",
   "section_gw",
   "gateway_usage"
  ],
@@ -28,7 +30,9 @@
   {"fieldname": "total_tokens", "fieldtype": "Int", "label": "Total Tokens", "in_list_view": 1},
   {"fieldname": "cached_tokens", "fieldtype": "Int", "label": "Cached Tokens", "description": "Prompt tokens served from the prefix cache (subset of Prompt, already in Total). Budget counts total_tokens - cached_tokens."},
   {"fieldname": "request_count", "fieldtype": "Int", "label": "Request Count"},
-  {"fieldname": "section_gw", "fieldtype": "Section Break", "label": "Per-Gateway Usage (cumulative this month)"},
+  {"fieldname": "section_models", "fieldtype": "Section Break", "label": "Per-Model Usage"},
+  {"fieldname": "model_usage", "fieldtype": "Table", "label": "Model Usage", "options": "Usage Model Row"},
+  {"fieldname": "section_gw", "fieldtype": "Section Break", "label": "Per-Gateway Usage"},
   {"fieldname": "gateway_usage", "fieldtype": "Table", "label": "Gateway Usage", "options": "Usage Gateway Row"}
  ],
  "links": [],
