@@ -20,9 +20,13 @@
   "gpu_memory_utilization",
   "column_break_tuning",
   "attention_backend",
+  "max_model_len",
   "section_gpus",
   "gpus",
-  "tensor_parallel_size"
+  "tensor_parallel_size",
+  "section_extra",
+  "aliases",
+  "extra_serve_args"
  ],
  "fields": [
   {"fieldname": "model", "fieldtype": "Link", "label": "Model", "options": "Model", "reqd": 1, "in_list_view": 1},
@@ -39,9 +43,13 @@
   {"fieldname": "gpu_memory_utilization", "fieldtype": "Float", "label": "GPU Memory Utilization", "default": "0.9", "description": "→ --gpu-memory-utilization (0-1). Depends on the GPU's VRAM headroom."},
   {"fieldname": "column_break_tuning", "fieldtype": "Column Break"},
   {"fieldname": "attention_backend", "fieldtype": "Select", "label": "Attention Backend", "options": "auto\nFLASH_ATTN\nXFORMERS\nFLASHINFER", "default": "auto"},
+  {"fieldname": "max_model_len", "fieldtype": "Int", "label": "Max Model Len", "description": "→ --max-model-len. Cap for the KV cache; ≤ the model's native context. Blank = 8192. Depends on this box's VRAM headroom."},
   {"fieldname": "section_gpus", "fieldtype": "Section Break", "label": "GPUs", "description": "Which GPUs on this box the engine runs on. Add one row per GPU (CUDA index from the Machine's GPU table). N rows → --tensor-parallel-size N + CUDA_VISIBLE_DEVICES pinned to those indices. Marked Allocated on Deploy, freed on Tear Down."},
   {"fieldname": "gpus", "fieldtype": "Table", "label": "GPUs", "options": "Model Deployment GPU"},
-  {"fieldname": "tensor_parallel_size", "fieldtype": "Int", "label": "Tensor Parallel Size", "read_only": 1, "description": "Derived = number of GPU rows. 1 = single-GPU. →  --tensor-parallel-size."}
+  {"fieldname": "tensor_parallel_size", "fieldtype": "Int", "label": "Tensor Parallel Size", "read_only": 1, "description": "Derived = number of GPU rows. 1 = single-GPU. →  --tensor-parallel-size."},
+  {"fieldname": "section_extra", "fieldtype": "Section Break", "label": "Extra"},
+  {"fieldname": "aliases", "fieldtype": "Small Text", "label": "Aliases", "description": "Extra --served-model-name values (comma/space separated); old client model-names keep working."},
+  {"fieldname": "extra_serve_args", "fieldtype": "Small Text", "label": "Extra Serve Args", "description": "Freeform extra `vllm serve` flags appended verbatim, e.g. --kv-cache-dtype fp8 --max-num-seqs 64."}
  ],
  "links": [],
  "modified": "2026-07-01 00:04:00",

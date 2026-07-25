@@ -11,7 +11,6 @@
   "published",
   "section_launch",
   "quantization",
-  "max_model_len",
   "column_break_launch",
   "modality",
   "is_embedding",
@@ -22,10 +21,7 @@
   "tool_call_parser",
   "column_break_reason",
   "thinking",
-  "reasoning_parser",
-  "section_extra",
-  "aliases",
-  "extra_serve_args"
+  "reasoning_parser"
  ],
  "fields": [
   {"fieldname": "display_name", "fieldtype": "Data", "label": "Display Name", "in_list_view": 1},
@@ -33,7 +29,6 @@
   {"fieldname": "published", "fieldtype": "Check", "label": "Published", "default": "1", "in_list_view": 1},
   {"fieldname": "section_launch", "fieldtype": "Section Break", "label": "vLLM Launch Profile", "description": "The args required to serve this model (mapped to deploy/vllm role vars). Blank = flag omitted / role default."},
   {"fieldname": "quantization", "fieldtype": "Select", "label": "Quantization", "options": "\nawq\nawq_marlin\ngptq\ngptq_marlin\nfp8", "description": "Blank = none/auto-detect from the repo. → --quantization"},
-  {"fieldname": "max_model_len", "fieldtype": "Int", "label": "Max Model Len", "description": "→ --max-model-len. Cap for the KV cache; ≤ the model's native context."},
   {"fieldname": "column_break_launch", "fieldtype": "Column Break"},
   {"fieldname": "modality", "fieldtype": "Select", "label": "Modality", "options": "text\nmultimodal", "default": "text", "description": "multimodal → adds --language-model-only (serve the text LLM only)."},
   {"fieldname": "is_embedding", "fieldtype": "Check", "label": "Is Embedding Model", "default": "0", "description": "Pooling/embedding model — served at /v1/embeddings, not chat. → --task embed; the chat-only tool/reasoning flags are skipped."},
@@ -45,11 +40,7 @@
   {"fieldname": "tool_call_parser", "fieldtype": "Data", "label": "Tool Call Parser", "description": "→ --tool-call-parser. e.g. hermes (Qwen2.5), qwen3_coder (Qwen3.6/3.5)."},
   {"fieldname": "column_break_reason", "fieldtype": "Column Break"},
   {"fieldname": "thinking", "fieldtype": "Check", "label": "Reasoning Model", "default": "0", "description": "If set, the reasoning parser below is applied."},
-  {"fieldname": "reasoning_parser", "fieldtype": "Data", "label": "Reasoning Parser", "description": "→ --reasoning-parser (only when Reasoning Model is checked). e.g. qwen3."},
-
-  {"fieldname": "section_extra", "fieldtype": "Section Break", "label": "Extra"},
-  {"fieldname": "aliases", "fieldtype": "Small Text", "label": "Aliases", "description": "Extra --served-model-name values (comma/space separated); old client model-names keep working."},
-  {"fieldname": "extra_serve_args", "fieldtype": "Small Text", "label": "Extra Serve Args", "description": "Freeform extra `vllm serve` flags appended verbatim, e.g. --kv-cache-dtype fp8 --max-num-seqs 64."}
+  {"fieldname": "reasoning_parser", "fieldtype": "Data", "label": "Reasoning Parser", "description": "→ --reasoning-parser (only when Reasoning Model is checked). e.g. qwen3."}
  ],
  "links": [],
  "modified": "2026-07-02 00:04:00",

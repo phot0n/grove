@@ -34,10 +34,11 @@ vllm_apt_packages:
   - openssl
 
 # ── Serving infrastructure (model + tuning via extra-vars from provision.py) ──
-vllm_host: 0.0.0.0
+# vllm_serve_args is the whole `vllm serve` flag list, built by grove.serve_command
+# (ServeCommand) — the same builder the container placement uses. The unit template only
+# renders it, so the two placements can't drift.
 vllm_port: 8080
-vllm_enable_prefix_caching: true
-vllm_enable_prompt_tokens_details: true
+vllm_serve_args: []
 
 # ── Blackwell flashinfer workaround ─────────────────────────────────────────
 # flashinfer JIT-compiles kernels and needs a unified CUDA toolkit (CUDA_HOME) that the

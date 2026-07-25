@@ -1,7 +1,6 @@
 # Copyright (c) 2026, Grove and contributors
 # For license information, please see license.txt
 
-import json
 import os
 import re
 import secrets
@@ -11,6 +10,7 @@ from frappe.model.document import Document
 
 from grove.ansible import Ansible
 from grove.provision import _app_grove_root
+from grove.serve_command import ServeCommand
 
 
 ENGINE_PORT_BASE = 8080
@@ -29,12 +29,11 @@ class ModelDeployment(Document):
 		self._derive_engine_url()
 		self._validate_gpus()
 
-	# ── GPU allocation ────────────────────────────────────────────────────────
-	# GPUs live as child rows on the box's Machine (Machine GPU). A deployment
-	# names the CUDA indices it wants (self.gpus). validate() checks they exist +
-	# aren't held by another deployment and fills the display columns; the actual
-	# Free→Allocated flip happens at deploy time (allocate_gpus) and is reversed on
-	# teardown/trash (free_gpus). No GPU rows → single-GPU, unpinned (back-compat).
+	# ── GPU pinning ───────────────────────────────────────────────────────────
+	# GPUs live as child rows on the box's Machine (Machine GPU). A deployment names the
+	# CUDA indices it wants (self.gpus); validate() checks they exist and fills the display
+	# columns. No GPU rows → single-GPU, unpinned (back-compat). No cross-deployment
+	# allocation tracking — the operator assigns indices deliberately.
 
 	def _machine(self):
 		"""The Machine backing this deployment's Inference Server (or None)."""
@@ -47,14 +46,14 @@ class ModelDeployment(Document):
 		rows = frappe.get_all(
 			"Machine GPU",
 			filters={"parent": machine, "parenttype": "Machine", "gpu_index": gpu_index},
-			fields=["name", "gpu_model", "vram_gb", "status", "allocated_to"],
+			fields=["name", "gpu_model", "vram_gb"],
 			limit=1,
 		)
 		return rows[0] if rows else None
 
 	def _validate_gpus(self):
-		"""Derive tensor_parallel_size, reject duplicate/unknown/busy GPUs, and
-		fill each row's display columns from its Machine GPU."""
+		"""Derive tensor_parallel_size, reject duplicate/unknown GPUs, and fill each row's
+		display columns from its Machine GPU."""
 		seen = set()
 		for r in self.gpus or []:
 			if r.gpu_index in seen:
@@ -69,53 +68,8 @@ class ModelDeployment(Document):
 			row = self._machine_gpu(machine, r.gpu_index)
 			if not row:
 				frappe.throw(f"Machine {machine} has no GPU with CUDA index {r.gpu_index}.")
-			if row.allocated_to and row.allocated_to != self.name:
-				frappe.throw(
-					f"GPU {r.gpu_index} on {machine} is already allocated to {row.allocated_to}."
-				)
 			r.gpu_model = row.gpu_model
 			r.vram_gb = row.vram_gb
-
-	def allocate_gpus(self):
-		"""Mark this deployment's declared GPUs Allocated on their Machine, and free
-		any it previously held but no longer names (GPU set changed). Idempotent —
-		safe to call on every (re)deploy. Called from provision at serve time."""
-		machine = self._machine()
-		if not machine:
-			return
-		declared = {int(r.gpu_index) for r in self.gpus or []}
-		# Release GPUs we hold but no longer want.
-		for held in frappe.get_all(
-			"Machine GPU", filters={"allocated_to": self.name}, fields=["name", "gpu_index"]
-		):
-			if int(held.gpu_index) not in declared:
-				frappe.db.set_value(
-					"Machine GPU", held.name, {"status": "Free", "allocated_to": ""},
-					update_modified=False,
-				)
-		# Claim the declared GPUs.
-		for idx in declared:
-			row = self._machine_gpu(machine, idx)
-			if not row:
-				frappe.throw(f"Machine {machine} has no GPU with CUDA index {idx}.")
-			if row.allocated_to and row.allocated_to != self.name:
-				frappe.throw(
-					f"GPU {idx} on {machine} is already allocated to {row.allocated_to}."
-				)
-			frappe.db.set_value(
-				"Machine GPU", row.name, {"status": "Allocated", "allocated_to": self.name},
-				update_modified=False,
-			)
-
-	def free_gpus(self):
-		"""Release every Machine GPU held by this deployment. Called on teardown/trash."""
-		for name in frappe.get_all(
-			"Machine GPU", filters={"allocated_to": self.name}, pluck="name"
-		):
-			frappe.db.set_value(
-				"Machine GPU", name, {"status": "Free", "allocated_to": ""},
-				update_modified=False,
-			)
 
 	def _assign_engine_port(self):
 		"""Allocate a box-local vLLM port once (multi-tenant box: one port per
@@ -138,27 +92,6 @@ class ModelDeployment(Document):
 			)
 			if p
 		}
-		# Cloud pod: reachable engine ports are only those pre-opened at spawn (the
-		# Machine's port_map) — RunPod can't hot-add ports. Claim the lowest free one from
-		# that pool; full pod → throw. On-prem: lowest free from the base, unbounded.
-		machine = self._machine()
-		prov, port_map = (
-			frappe.db.get_value("Machine", machine, ["cloud_provider", "port_map"])
-			if machine
-			else (None, None)
-		)
-		if prov:
-			if port_map:
-				pool = sorted(int(p) for p in json.loads(port_map) if int(p) != 22)
-			else:  # pod not provisioned yet — fall back to the declared pool shape
-				from grove.cloud_provider.provisioner import ENGINE_PORT_POOL_SIZE
-
-				pool = [ENGINE_PORT_BASE + i for i in range(ENGINE_PORT_POOL_SIZE)]
-			for port in pool:
-				if port not in used:
-					self.engine_port = port
-					return
-			frappe.throw(f"Pod {machine} is full — all {len(pool)} model slots are in use.")
 		port = ENGINE_PORT_BASE
 		while port in used:
 			port += 1
@@ -173,27 +106,14 @@ class ModelDeployment(Document):
 		port and this reqd field are satisfied here."""
 		if not self.inference_server:
 			return  # no box yet → let the reqd check flag engine_url
-		inf = frappe.db.get_value(
-			"Inference Server", self.inference_server, ["machine", "machine_ip"], as_dict=True
-		)
-		if not inf or not inf.machine_ip:
+		machine_ip = frappe.db.get_value("Inference Server", self.inference_server, "machine_ip")
+		if not machine_ip:
 			frappe.throw(
 				f"Inference Server {self.inference_server} has no machine IP "
 				"(set its Machine's public IP) — cannot derive Engine URL."
 			)
 		port = self.engine_port or ENGINE_PORT_BASE
-		# Cloud pod → the vLLM port is NAT'd to a random external port; look it up in the
-		# Machine's port_map. On-prem → the internal port is directly reachable.
-		prov, port_map = frappe.db.get_value("Machine", inf.machine, ["cloud_provider", "port_map"])
-		if prov:
-			ext = json.loads(port_map or "{}").get(str(port))
-			if not ext:
-				frappe.throw(
-					f"Engine port {port} is not exposed on pod {inf.machine} — "
-					"widen the port pool or re-provision."
-				)
-			port = ext
-		self.engine_url = f"http://{inf.machine_ip}:{port}"
+		self.engine_url = f"http://{machine_ip}:{port}"
 
 	def on_update(self):
 		# A model is "published" only while it has a live deployment — keep the
@@ -204,8 +124,6 @@ class ModelDeployment(Document):
 			sync_published(self.model)
 
 	def on_trash(self):
-		# Release any GPUs this deployment still holds (teardown may not have run).
-		self.free_gpus()
 		# Deleting this deployment may drop the model's last Active placement.
 		# Exclude self — the row is still in the DB during on_trash.
 		from grove.grove.doctype.model.model import sync_published
@@ -259,69 +177,38 @@ def _instance_slug(md_name):
 	return re.sub(r"[^a-z0-9._-]", "-", md_name.lower())
 
 
-def _vllm_home(inference_server):
-	"""Where vLLM keeps venvs/weights/keys/caches. On a cloud pod the container root is
-	ephemeral (wiped on restart) — use the persistent volume; on-prem uses local /opt."""
-	from grove.cloud_provider.provisioner import VOLUME_MOUNT
-
-	machine = inference_server and frappe.db.get_value("Inference Server", inference_server, "machine")
-	is_cloud = bool(machine and frappe.db.get_value("Machine", machine, "cloud_provider"))
-	return f"{VOLUME_MOUNT}/vllm" if is_cloud else "/opt/vllm"
+# Where vLLM keeps venvs/weights/keys/caches on the box.
+VLLM_HOME = "/opt/vllm"
 
 
 def _vllm_extravars(md, m, key):
 	"""Assemble the vLLM Ansible extra-vars from the Model launch profile (m) ⊕ this
 	deployment (md) ⊕ the internal key. Shared by deploy_model (full serve) and
-	reconfigure_deployment (unit-only) so the two paths can never drift."""
-	# Embedding/pooling models serve /v1/embeddings, not chat — force --task embed
-	# and drop the chat-only tool/reasoning flags (meaningless for pooling).
-	is_embed = bool(m.is_embedding)
-
-	# Extra `vllm serve` flags. dtype is a per-box tuning knob → from the
-	# deployment (md); quantization/modality are model-intrinsic → from the Model (m).
-	extra = []
-	if is_embed:
-		extra += ["--task", "embed"]
-	if (md.dtype or "auto") != "auto":
-		extra += ["--dtype", md.dtype]
-	if m.quantization:
-		extra += ["--quantization", m.quantization]
-	if m.modality == "text":
-		extra.append("--language-model-only")
-	if m.extra_serve_args:
-		extra += m.extra_serve_args.split()
-
-	aliases = (m.aliases or "").replace(",", " ").split()
-	served = " ".join([md.model, *aliases])
+	reconfigure_deployment (unit-only) so the two paths can never drift. The `vllm serve`
+	flags come from ServeCommand — the same builder the Pod (container) placement uses; the
+	unit template only renders them."""
+	serve = ServeCommand.for_deployment(md)
 
 	# GPU pinning: the deployment names CUDA indices on its box (md.gpus). N GPUs →
 	# tensor-parallel across exactly those, with CUDA_VISIBLE_DEVICES so vLLM only
 	# sees them. No rows → single-GPU, unpinned (whatever the box exposes).
 	gpu_indexes = sorted(int(r.gpu_index) for r in (md.gpus or []))
 
-	vllm_home = _vllm_home(md.inference_server)
+	vllm_home = VLLM_HOME
 
 	extravars = {
 		"vllm_model": m.hf_repo,
-		"vllm_served_name": served,
+		"vllm_served_name": " ".join([md.model, *serve.aliases]),
+		"vllm_serve_args": serve.args,
 		# One systemd unit + port + key file + venv per deployment (multi-tenant box).
 		# Slug from the MD name → unit vllm-<instance>.service, venv <instance>_venv.
 		"vllm_instance": _instance_slug(md.name),
 		"vllm_version": md.engine_version or "",  # "" = latest; else pip vllm==<ver>
-		"vllm_port": md.engine_port or 8080,
+		"vllm_port": serve.port,
 		"vllm_api_key": key,
-		"vllm_gpu_memory_utilization": md.gpu_memory_utilization or 0.9,
-		"vllm_tensor_parallel_size": len(gpu_indexes) or 1,
 		"vllm_cuda_visible_devices": ",".join(str(i) for i in gpu_indexes),
-		"vllm_max_model_len": m.max_model_len or 8192,
 		"vllm_attention_backend": md.attention_backend or "auto",
 		"vllm_use_flashinfer_sampler": "0",
-		"vllm_enable_prefix_caching": bool(m.enable_prefix_caching),
-		# Chat-only knobs → off for embedding models.
-		"vllm_enable_auto_tool_choice": bool(m.enable_auto_tool_choice) and not is_embed,
-		"vllm_tool_call_parser": "" if is_embed else (m.tool_call_parser or ""),
-		"vllm_reasoning_parser": "" if is_embed else ((m.reasoning_parser or "") if m.thinking else ""),
-		"vllm_extra_serve_args": extra,
 		# Keep the venv/weights/caches on the mounted data volume (root is tiny / ephemeral).
 		"vllm_home": vllm_home,
 		"vllm_hf_home": f"{vllm_home}/hf",
@@ -359,10 +246,6 @@ def deploy_model(model_deployment):
 		frappe.db.commit()
 
 	extravars = _vllm_extravars(md, m, key)
-
-	# Reserve this deployment's GPUs on the box before serving (Free→Allocated);
-	# raises if any is already held by another deployment. Freed on teardown/trash.
-	md.allocate_gpus()
 
 	frappe.db.set_value("Model Deployment", md.name, "status", "Provisioning")
 	frappe.db.commit()
@@ -420,10 +303,6 @@ def reconfigure_deployment(model_deployment):
 
 	extravars = _vllm_extravars(md, m, key)
 
-	# Re-sync GPU allocation in case the deployment's GPU set was edited; also
-	# releases any GPU it dropped. Raises on conflict with another deployment.
-	md.allocate_gpus()
-
 	frappe.db.set_value("Model Deployment", md.name, "status", "Provisioning")
 	frappe.db.commit()
 
@@ -460,15 +339,17 @@ def teardown_deployment(model_deployment):
 		server_type="Inference Server",
 		server_name=inf.name,
 		machine_name=inf.machine,
-		extravars={"vllm_instance": _instance_slug(md.name), "vllm_home": _vllm_home(md.inference_server)},
+		extravars={
+			"vllm_instance": _instance_slug(md.name),
+			"vllm_home": VLLM_HOME,
+		},
 		reference_doctype="Model Deployment",
 		reference_docname=md.name,
 	)
 
 	if rc == 0:
 		# Release the box-local port (0 = free → reallocated on a later redeploy;
-		# the Int column is NOT NULL, so 0 not None) and this deployment's GPUs.
-		md.free_gpus()
+		# the Int column is NOT NULL, so 0 not None).
 		frappe.db.set_value(
 			"Model Deployment", md.name, {"status": "Inactive", "engine_port": 0}
 		)

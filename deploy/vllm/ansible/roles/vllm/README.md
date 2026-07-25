@@ -43,14 +43,22 @@ See [`defaults/main.yml`](defaults/main.yml) for the full list. Most-used:
 | Variable | Default | Notes |
 |---|---|---|
 | `vllm_model` | `Qwen/Qwen3-32B-FP8` | Any HF repo vLLM supports |
-| `vllm_served_name` | `qwen3-32b-fp8` | Name clients pass as `model` |
-| `vllm_max_model_len` | `40960` | >native needs YaRN in `vllm_extra_serve_args` |
-| `vllm_gpu_memory_utilization` | `0.92` | Fraction of VRAM |
+| `vllm_served_name` | `qwen3-32b-fp8` | Name clients pass as `model` (unit Description only) |
+| `vllm_serve_args` | `[]` | The whole `vllm serve` flag list — see below |
 | `vllm_api_key` | `""` | Blank → auto-generated + persisted |
 | `vllm_hf_token` | `""` | For gated models / faster downloads |
 | `vllm_version` | `""` | Blank → latest; or pin e.g. `0.22.1` |
 | `vllm_predownload_model` | `true` | Fetch weights during the play |
-| `vllm_extra_serve_args` | `[]` | e.g. `["--kv-cache-dtype fp8"]` |
+
+The individual serve flags (`--max-model-len`, `--gpu-memory-utilization`, the tool/reasoning
+parsers, …) are **not** role variables. Grove builds the full list in
+`grove/serve_command.py` (`ServeCommand`) from the Model ⊕ the Model Deployment and passes it
+as `vllm_serve_args`; the container placement (Pod) uses the same builder, so the two can't
+drift. Running the role by hand means passing the flags yourself:
+
+```yaml
+vllm_serve_args: ["--served-model-name", "qwen3-32b-fp8", "--host", "0.0.0.0", "--port", "8080"]
+```
 
 ### Switching to flashinfer (best Blackwell FP8 perf)
 
@@ -65,12 +73,15 @@ vllm_use_flashinfer_sampler: "1"
 
 ## Serving a different / non-Qwen model
 
-Override the parsers too, e.g. for a plain instruct model with no reasoning channel:
+From Grove, edit the Model — the parsers are Model fields and `ServeCommand` reads them live.
+Running the role standalone, put them in `vllm_serve_args`:
 
 ```yaml
 vllm_model: meta-llama/Llama-3.3-70B-Instruct
-vllm_served_name: llama-3.3-70b
-vllm_reasoning_parser: ""        # disable
-vllm_tool_call_parser: llama3_json
+vllm_serve_args:
+  - "--served-model-name"
+  - "llama-3.3-70b"
+  - "--tool-call-parser"
+  - "llama3_json"
 vllm_hf_token: "hf_..."          # gated repo
 ```
