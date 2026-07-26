@@ -1,17 +1,3 @@
-{% set serve_args = [
-  '--served-model-name ' ~ vllm_served_name,
-  '--host ' ~ vllm_host,
-  '--port ' ~ (vllm_port | string),
-  '--gpu-memory-utilization ' ~ (vllm_gpu_memory_utilization | string),
-  '--max-model-len ' ~ (vllm_max_model_len | string),
-] %}
-{% if (vllm_tensor_parallel_size | int) > 1 %}{% set _ = serve_args.append('--tensor-parallel-size ' ~ (vllm_tensor_parallel_size | string)) %}{% endif %}
-{% if vllm_enable_prefix_caching %}{% set _ = serve_args.append('--enable-prefix-caching') %}{% endif %}
-{% if vllm_enable_prompt_tokens_details %}{% set _ = serve_args.append('--enable-prompt-tokens-details') %}{% endif %}
-{% if vllm_reasoning_parser | length > 0 %}{% set _ = serve_args.append('--reasoning-parser ' ~ vllm_reasoning_parser) %}{% endif %}
-{% if vllm_enable_auto_tool_choice %}{% set _ = serve_args.append('--enable-auto-tool-choice') %}{% endif %}
-{% if vllm_tool_call_parser | length > 0 %}{% set _ = serve_args.append('--tool-call-parser ' ~ vllm_tool_call_parser) %}{% endif %}
-{% set serve_args = serve_args + vllm_extra_serve_args %}
 [Unit]
 Description=vLLM {{ vllm_served_name }} ({{ vllm_model }}) instance {{ vllm_instance }} on :{{ vllm_port }} [vllm {{ vllm_version | default('latest', true) }}]
 After=network-online.target
@@ -41,8 +27,7 @@ Environment=VLLM_USE_FLASHINFER_SAMPLER={{ vllm_use_flashinfer_sampler }}
 {% if vllm_effective_api_key | length > 0 %}
 Environment=VLLM_API_KEY={{ vllm_effective_api_key }}
 {% endif %}
-ExecStart={{ vllm_venv }}/bin/vllm serve {{ vllm_model }} \
-  {{ serve_args | join(' \\\n  ') }}
+ExecStart={{ vllm_venv }}/bin/vllm serve {{ vllm_model }} {{ vllm_serve_args | join(' ') }}
 Restart=on-failure
 RestartSec=10
 LimitNOFILE=65536

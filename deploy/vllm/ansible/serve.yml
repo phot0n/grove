@@ -1,5 +1,5 @@
 ---
-# Doctype-driven model serve. Run by grove.provision.deploy_model via
+# Doctype-driven model serve. Run by model_deployment.deploy_model via
 # ansible_runner against a single-host inventory (hosts: all), with EVERY var
 # passed as extra-vars assembled from the Model ⊕ Model Deployment (no
 # group_vars). Host bootstrap (NVIDIA driver + data volume) is NOT here — it runs

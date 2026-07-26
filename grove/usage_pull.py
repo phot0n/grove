@@ -131,18 +131,34 @@ def _pull_proxy(proxy_name):
 	month = datetime.now(timezone.utc).strftime("%Y-%m")
 	for prefix, h in usages.items():
 		amounts = {f: int(h.get(f, 0) or 0) for f in _FIELDS}
+		per_model = _per_model(h)
 		# Record only for keys registered here; unregistered (e.g. manual test
 		# keys) are dropped — the gateway already deleted the counter on read.
 		if any(amounts.values()) and (user := frappe.db.get_value("API Key", prefix, "user")):
-			_add_delta(proxy_name, prefix, user, month, amounts)
+			_add_delta(proxy_name, prefix, user, month, amounts, per_model)
 
 	frappe.db.commit()
 	return len(usages)
 
 
-def _add_delta(proxy_name, prefix, user, month, amounts):
+def _per_model(h):
+	"""Split the per-model breakdown out of a drained usage hash. The gateway writes
+	per-model counters as `m:<metric>:<model>` fields alongside the flat aggregate, so
+	one atomic drain carries both. → {model: {metric: delta}}."""
+	per_model = {}
+	for k, v in h.items():
+		if not k.startswith("m:"):
+			continue
+		metric, _, model = k[2:].partition(":")  # model may contain ':' — keep the rest
+		if metric in _FIELDS and model:
+			per_model.setdefault(model, {})[metric] = int(v or 0)
+	return per_model
+
+
+def _add_delta(proxy_name, prefix, user, month, amounts, per_model=None):
 	"""ADD a pulled delta to the (api_key, month) Usage Record's per-gateway row,
-	then roll the doc totals up from the rows (zero-loss aggregate)."""
+	then roll the doc totals up from the rows (zero-loss aggregate). per_model deltas
+	accumulate into per-model rows (summed across gateways, like the top-level totals)."""
 	if name := frappe.db.exists("Usage Record", {"month": month, "api_key": prefix}):
 		doc = frappe.get_doc("Usage Record", name)
 	else:
@@ -161,4 +177,17 @@ def _add_delta(proxy_name, prefix, user, month, amounts):
 	# Top-level totals = sum of per-gateway rows.
 	for f in _FIELDS:
 		doc.set(f, sum(gr.get(f) or 0 for gr in doc.gateway_usage))
+
+	# Per-model breakdown: add-accumulate (drain is delete-on-read, so deltas). Skip
+	# models no longer in the Model doctype so a stale name can't fail the whole pull;
+	# their tokens still land in the flat totals above.
+	for model, deltas in (per_model or {}).items():
+		if not frappe.db.exists("Model", model):
+			continue
+		mrow = next((r for r in doc.model_usage if r.model == model), None)
+		if not mrow:
+			mrow = doc.append("model_usage", {"model": model})
+		for f in _FIELDS:
+			mrow.set(f, (mrow.get(f) or 0) + int(deltas.get(f, 0)))
+
 	doc.save(ignore_permissions=True)

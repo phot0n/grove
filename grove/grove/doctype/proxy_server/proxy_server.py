@@ -1,13 +1,12 @@
 # Copyright (c) 2026, Grove and contributors
 # For license information, please see license.txt
 
-import os
-
 import frappe
 from frappe.model.document import Document
 
-from grove import gateway_sync, ansible_runner
-from grove.provision import build_agent, _app_grove_root
+from grove import gateway_sync
+from grove.ansible import Ansible
+from grove.utils import ansible_project_dir, gateway_service_source
 
 
 class ProxyServer(Document):
@@ -50,14 +49,14 @@ class ProxyServer(Document):
 	def _deploy_agent(self):
 		"""Push gateway_service source to Proxy Server, build + restart (no
 		OpenResty/Redis reinstall)."""
-		source = build_agent()
-		project_dir = os.path.join(_app_grove_root(), "deploy", "gateway", "ansible")
-		return ansible_runner.run_play(
-			playbook="deploy_agent.yml",
+		source = gateway_service_source()
+		project_dir = ansible_project_dir("gateway")
+		ansible = Ansible(project_root=project_dir)
+		return ansible.run_playbook(
+			playbook_name="deploy_agent.yml",
 			server_type="Proxy Server",
 			server_name=self.name,
 			machine_name=self.machine,
-			project_dir=project_dir,
 			extravars={"agent_source": source},
 		)
 
@@ -79,17 +78,17 @@ class ProxyServer(Document):
 		frappe.db.set_value("Proxy Server", self.name, "status", "Installing")
 		frappe.db.commit()
 
-		gateway_service_source = build_agent()
-		project_dir = os.path.join(_app_grove_root(), "deploy", "gateway", "ansible")
+		source = gateway_service_source()
+		project_dir = ansible_project_dir("gateway")
+		ansible = Ansible(project_root=project_dir)
 
 		admin_token = self.get_password("admin_token")
-		play_name, rc = ansible_runner.run_play(
-			playbook="proxy.yml",
+		play_name, rc = ansible.run_playbook(
+			playbook_name="proxy.yml",
 			server_type="Proxy Server",
 			server_name=self.name,
 			machine_name=self.machine,
-			project_dir=project_dir,
-			extravars={"admin_token": admin_token, "agent_source": gateway_service_source},
+			extravars={"admin_token": admin_token, "agent_source": source, "gateway_id": self.name},
 		)
 
 		frappe.db.set_value("Proxy Server", self.name, "status", "Active" if rc == 0 else "Broken")

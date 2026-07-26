@@ -1,7 +1,7 @@
 ---
 # Tear down ONE vLLM instance on a multi-tenant box: stop + disable + remove its
 # systemd unit, per-instance key file, and its (exclusive) per-deployment venv. Run
-# by grove.provision.teardown_deployment with extra-var vllm_instance. Deliberately
+# by model_deployment.teardown_deployment with extra-var vllm_instance. Deliberately
 # leaves the box-shared weights/compile caches intact — other instances still use them.
 - name: Tear down a vLLM instance
   hosts: all

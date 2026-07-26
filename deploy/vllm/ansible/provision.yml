@@ -1,6 +1,6 @@
 ---
 # One-time host bootstrap for an Inference Server: NVIDIA driver + data volume
-# (gpu_host role). Run by grove.provision.provision_server via ansible_runner
+# (gpu_host role). Run by inference_server.setup via ansible_runner
 # against a single-host inventory (hosts: all). Separate lifecycle from
 # serve.yml — a box is provisioned once, then serves many models. site.yml still
 # bundles this role for a manual full bring-up.

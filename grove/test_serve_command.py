@@ -1,0 +1,140 @@
+# Copyright (c) 2026, Grove and contributors
+# For license information, please see license.txt
+"""ServeCommand argument assembly. Pure — the Model row is passed in, so no site needed."""
+
+import unittest
+
+from grove.serve_command import ServeCommand
+
+CHAT_MODEL = {
+	"hf_repo": "Qwen/Qwen3-35B",
+	"quantization": "fp8",
+	"modality": "text",
+	"enable_prefix_caching": True,
+	"enable_auto_tool_choice": True,
+	"tool_call_parser": "hermes",
+	"thinking": True,
+	"reasoning_parser": "qwen3",
+}
+
+
+def serve(model=None, **tuning):
+	tuning.setdefault("port", 8080)
+	return ServeCommand("qwen3-35b", model if model is not None else dict(CHAT_MODEL), **tuning)
+
+
+class TestParallelism(unittest.TestCase):
+	def test_tensor_parallel_is_gpus_left_after_pipeline_stages(self):
+		self.assertEqual(serve(gpu_count=8).tensor_parallel_size, 8)
+		self.assertEqual(serve(gpu_count=8, pipeline_parallel_size=2).tensor_parallel_size, 4)
+		self.assertEqual(serve(gpu_count=4, pipeline_parallel_size=4).tensor_parallel_size, 1)
+
+	def test_pipeline_flag_only_when_used(self):
+		self.assertNotIn("--pipeline-parallel-size", serve(gpu_count=8).args)
+		args = serve(gpu_count=8, pipeline_parallel_size=2).args
+		self.assertEqual(args[args.index("--pipeline-parallel-size") + 1], "2")
+		self.assertEqual(args[args.index("--tensor-parallel-size") + 1], "4")
+
+	def test_heads_must_divide_by_tensor_parallel_size(self):
+		model = dict(CHAT_MODEL, attention_heads=64)
+		self.assertEqual(serve(model, gpu_count=8).placement_errors, [])  # 64 / 8 ✓
+		errors = serve(model, gpu_count=6).placement_errors  # 64 heads on 6 GPUs ✗
+		self.assertEqual(len(errors), 1)
+		self.assertIn("64 attention heads", errors[0])
+
+	def test_heads_checked_against_derived_tensor_parallel_size(self):
+		# 6 GPUs alone can't shard 64 heads, but PP=2 leaves TP=3 — still not a divisor.
+		model = dict(CHAT_MODEL, attention_heads=64)
+		self.assertTrue(serve(model, gpu_count=6, pipeline_parallel_size=2).placement_errors)
+		# 8 GPUs with PP=2 leaves TP=4, which divides 64.
+		self.assertEqual(serve(model, gpu_count=8, pipeline_parallel_size=2).placement_errors, [])
+
+	def test_gpus_must_divide_into_pipeline_stages(self):
+		errors = serve(gpu_count=6, pipeline_parallel_size=4).placement_errors
+		self.assertIn("do not divide evenly", errors[0])
+
+	def test_layers_must_divide_by_pipeline_stages(self):
+		model = dict(CHAT_MODEL, hidden_layers=61)
+		self.assertTrue(serve(model, gpu_count=4, pipeline_parallel_size=2).placement_errors)
+		self.assertEqual(serve(model, gpu_count=4).placement_errors, [])  # PP=1 → no split
+
+	def test_blank_shape_skips_checks(self):
+		self.assertEqual(serve(gpu_count=6).placement_errors, [])  # no heads/layers on Model
+
+
+class TestVramFit(unittest.TestCase):
+	# DeepSeek-V4-Flash's real figures: 148 GB of weights, 64 heads.
+	BIG = dict(CHAT_MODEL, weights_gb=148.0, attention_heads=64)
+
+	def test_weights_larger_than_gpus_is_rejected(self):
+		errors = serve(self.BIG, gpu_count=2, gpu_vram_gb=80).placement_errors  # 144 usable
+		self.assertEqual(len(errors), 1)
+		self.assertIn("148", errors[0])
+
+	def test_weights_that_fit_pass(self):
+		self.assertEqual(serve(self.BIG, gpu_count=4, gpu_vram_gb=80).placement_errors, [])
+
+	def test_gpu_memory_utilization_shrinks_the_budget(self):
+		# 2 x 80 at 0.95 = 152 GB usable — fits; at 0.9 it's 144 and does not.
+		self.assertEqual(
+			serve(self.BIG, gpu_count=2, gpu_vram_gb=80, gpu_memory_utilization=0.95).placement_errors, []
+		)
+		self.assertTrue(serve(self.BIG, gpu_count=2, gpu_vram_gb=80).placement_errors)
+
+	def test_unknown_vram_skips_the_check(self):
+		self.assertEqual(serve(self.BIG, gpu_count=1).placement_errors, [])  # no gpu_vram_gb
+
+	def test_unfetched_weights_skip_the_check(self):
+		model = dict(CHAT_MODEL, attention_heads=64)  # no weights_gb
+		self.assertEqual(serve(model, gpu_count=8, gpu_vram_gb=8).placement_errors, [])
+
+
+class TestServeCommand(unittest.TestCase):
+	def test_chat_model_flags(self):
+		args = serve(gpu_count=2, max_model_len=32768).args
+		self.assertEqual(args[:3], ["--served-model-name", "qwen3-35b", "--host"])
+		for flag, value in (
+			("--port", "8080"),
+			("--tensor-parallel-size", "2"),
+			("--max-model-len", "32768"),
+			("--quantization", "fp8"),
+			("--tool-call-parser", "hermes"),
+			("--reasoning-parser", "qwen3"),
+		):
+			self.assertEqual(args[args.index(flag) + 1], value, flag)
+		for flag in ("--language-model-only", "--enable-prefix-caching", "--enable-auto-tool-choice"):
+			self.assertIn(flag, args)
+
+	def test_defaults_when_tuning_blank(self):
+		args = serve().args
+		self.assertEqual(args[args.index("--max-model-len") + 1], "8192")
+		self.assertEqual(args[args.index("--gpu-memory-utilization") + 1], "0.9")
+		self.assertEqual(args[args.index("--tensor-parallel-size") + 1], "1")
+		self.assertNotIn("--dtype", args)  # dtype auto → vLLM decides
+
+	def test_embedding_model_drops_chat_flags(self):
+		model = dict(CHAT_MODEL, is_embedding=True)
+		args = serve(model).args
+		for flag in ("--enable-auto-tool-choice", "--tool-call-parser", "--reasoning-parser"):
+			self.assertNotIn(flag, args)
+		self.assertIn("--enable-prefix-caching", args)  # not chat-only
+
+	def test_thinking_off_drops_reasoning_parser(self):
+		args = serve(dict(CHAT_MODEL, thinking=False)).args
+		self.assertNotIn("--reasoning-parser", args)
+
+	def test_aliases_and_extra_args(self):
+		args = serve(aliases="old-name, older-name", extra_serve_args="--kv-cache-dtype fp8").args
+		self.assertEqual(args[:4], ["--served-model-name", "qwen3-35b", "old-name", "older-name"])
+		self.assertEqual(args[-2:], ["--kv-cache-dtype", "fp8"])  # appended verbatim, last
+
+	def test_command_is_repo_then_args(self):
+		command = serve().command
+		self.assertTrue(command.startswith("Qwen/Qwen3-35B --served-model-name qwen3-35b "))
+
+	def test_command_empty_without_repo(self):
+		self.assertEqual(serve(dict(CHAT_MODEL, hf_repo=None)).command, "")
+
+
+if __name__ == "__main__":
+	unittest.main()

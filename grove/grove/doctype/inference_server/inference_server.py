@@ -1,16 +1,64 @@
 # Copyright (c) 2026, Grove and contributors
 # For license information, please see license.txt
 
-import os
 
 import frappe
 from frappe.model.document import Document
 
-from grove import ansible_runner
-from grove.provision import _app_grove_root
+from grove.ansible import Ansible
+from grove.utils import ansible_project_dir
 
 
 class InferenceServer(Document):
+	# begin: auto-generated types
+	# This code is auto-generated. Do not modify anything in this block.
+
+	from typing import TYPE_CHECKING
+
+	if TYPE_CHECKING:
+		from frappe.types import DF
+
+		is_provisioned: DF.Check
+		machine: DF.Link
+		machine_ip: DF.Data | None
+		region: DF.Link | None
+		status: DF.Literal["Pending", "Installing", "Active", "Broken"]
+	# end: auto-generated types
+
+	@frappe.whitelist()
+	def get_gpu_allocation(self):
+		"""The box's GPUs and which deployments hold them, computed live: the cards come
+		from the Machine, the claims from every Active Model Deployment on this server.
+		Nothing is stored, so it can't drift out of step with what's actually running.
+
+		Two deployments naming the same CUDA index is not prevented anywhere — the row
+		reports every claimant so the clash is visible rather than silently halving VRAM."""
+		if not self.machine:
+			return []
+		gpus = frappe.get_all(
+			"Machine GPU",
+			filters={"parent": self.machine, "parenttype": "Machine"},
+			fields=["gpu_index", "gpu_model", "vram_gb"],
+			order_by="gpu_index",
+		)
+		claims = {}
+		for deployment in frappe.get_all(
+			"Model Deployment",
+			filters={"inference_server": self.name, "status": "Active"},
+			fields=["name", "model"],
+		):
+			for row in frappe.get_all(
+				"Model Deployment GPU",
+				filters={"parent": deployment.name, "parenttype": "Model Deployment"},
+				fields=["gpu_index"],
+			):
+				claims.setdefault(row.gpu_index, []).append(deployment)
+		for gpu in gpus:
+			holders = claims.get(gpu.gpu_index, [])
+			gpu.deployments = holders
+			gpu.status = ("Allocated" if len(holders) == 1 else "Conflict") if holders else "Free"
+		return gpus
+
 	@frappe.whitelist()
 	def setup(self):
 		"""Button: one-time host bootstrap (NVIDIA driver + data volume) via the
@@ -35,16 +83,13 @@ class InferenceServer(Document):
 		frappe.db.set_value("Inference Server", self.name, "status", "Installing")
 		frappe.db.commit()
 
-		project_dir = os.path.join(_app_grove_root(), "deploy", "vllm", "ansible")
-		# Help ansible find the roles when run head-less via ansible_runner.
-		os.environ["ANSIBLE_ROLES_PATH"] = os.path.join(project_dir, "roles")
-		play_name, rc = ansible_runner.run_play(
-			playbook="provision.yml",
+		project_dir = ansible_project_dir("vllm")
+		ansible = Ansible(project_root=project_dir)
+		play_name, rc = ansible.run_playbook(
+			playbook_name="provision.yml",
 			server_type="Inference Server",
 			server_name=self.name,
 			machine_name=self.machine,
-			project_dir=project_dir,
-			extravars={},
 		)
 
 		ok = rc == 0

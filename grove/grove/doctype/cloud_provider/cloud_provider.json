@@ -1,0 +1,40 @@
+{
+ "actions": [],
+ "allow_rename": 0,
+ "autoname": "prompt",
+ "creation": "2026-07-17 00:00:00",
+ "doctype": "DocType",
+ "engine": "InnoDB",
+ "field_order": [
+  "name",
+  "provider_type",
+  "api_key",
+  "status",
+  "section_gpu_types",
+  "gpu_types",
+  "gpu_types_updated",
+  "gpu_types_html"
+ ],
+ "fields": [
+  {"fieldname": "name", "fieldtype": "Data", "label": "Name", "reqd": 1, "in_list_view": 1, "read_only": 1},
+  {"fieldname": "provider_type", "fieldtype": "Select", "label": "Provider", "options": "runpod\naws", "reqd": 1, "in_list_view": 1},
+  {"fieldname": "api_key", "fieldtype": "Password", "label": "API Key", "reqd": 1, "description": "Provider API key (encrypted)"},
+  {"fieldname": "status", "fieldtype": "Select", "label": "Status", "options": "active\ninactive", "default": "active", "in_list_view": 1},
+  {"fieldname": "section_gpu_types", "fieldtype": "Section Break", "label": "GPU Types", "depends_on": "eval:doc.provider_type=='runpod'", "collapsible": 1},
+  {"fieldname": "gpu_types", "fieldtype": "JSON", "label": "GPU Types (raw)", "read_only": 1, "hidden": 1, "description": "Cached provider GPU-type list; refreshed by the Fetch GPU Types button (background job)."},
+  {"fieldname": "gpu_types_updated", "fieldtype": "Datetime", "label": "GPU Types Last Fetched", "read_only": 1},
+  {"fieldname": "gpu_types_html", "fieldtype": "HTML", "label": "GPU Types"}
+ ],
+ "links": [],
+ "modified": "2026-07-17 00:01:00",
+ "modified_by": "Administrator",
+ "module": "Grove",
+ "name": "Cloud Provider",
+ "owner": "Administrator",
+ "permissions": [
+  {"create": 1, "delete": 1, "email": 1, "print": 1, "read": 1, "report": 1, "role": "System Manager", "share": 1, "write": 1}
+ ],
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": []
+}

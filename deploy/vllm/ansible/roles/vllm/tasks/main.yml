@@ -62,6 +62,12 @@
   environment:
     TMPDIR: "{{ vllm_home }}/tmp"
     PIP_CACHE_DIR: "{{ vllm_home }}/pip-cache"
+  # Run detached + poll: the pip pulls multi-GB wheels for many minutes with no channel
+  # output, and some hosts (e.g. RunPod's TCP proxy) cap connection duration and drop a
+  # long-held SSH session. async keeps pip alive on the box while Ansible reconnects to
+  # poll status, so a mid-install disconnect can't kill it.
+  async: 5400
+  poll: 15
   tags: heavy
 
 - name: Create cache directories
@@ -112,6 +118,10 @@
   args:
     creates: "{{ vllm_hf_home }}/hub/models--{{ vllm_model | replace('/', '--') }}"
   when: vllm_predownload_model | bool
+  # Weights are many GB → same long-silent-download problem as the pip step; run detached
+  # + poll so a dropped SSH session can't abort the download.
+  async: 7200
+  poll: 15
   tags: heavy
 
 - name: Install vLLM systemd unit

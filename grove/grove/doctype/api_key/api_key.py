@@ -16,6 +16,24 @@ def hash_secret(secret: str) -> str:
 
 
 class APIKey(Document):
+	# begin: auto-generated types
+	# This code is auto-generated. Do not modify anything in this block.
+
+	from typing import TYPE_CHECKING
+
+	if TYPE_CHECKING:
+		from frappe.types import DF
+
+		allowed_models: DF.SmallText | None
+		api_secret: DF.Password | None
+		dirty: DF.Check
+		key_hash: DF.Data | None
+		max_tokens: DF.Int
+		rate_limited: DF.Check
+		status: DF.Literal["active", "revoked"]
+		user: DF.Link
+	# end: auto-generated types
+
 	def before_insert(self):
 		# Mint the secret once. key_hash (sha256) is what the gateway keys on and
 		# what revoke looks up; api_secret holds the full key in a Password field

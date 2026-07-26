@@ -1,0 +1,342 @@
+{
+ "actions": [],
+ "allow_rename": 1,
+ "autoname": "prompt",
+ "creation": "2026-07-22 00:00:00",
+ "doctype": "DocType",
+ "engine": "InnoDB",
+ "field_order": [
+  "tab_pod",
+  "cloud_provider",
+  "model",
+  "column_break_head",
+  "status",
+  "pod_id",
+  "section_image",
+  "engine_image",
+  "image_name",
+  "template_id",
+  "column_break_cwib",
+  "startup_command",
+  "section_compute",
+  "gpu_type_id",
+  "gpu_count",
+  "pipeline_parallel_size",
+  "column_break_compute",
+  "volume_in_gb",
+  "container_disk_gb",
+  "volume_mount_path",
+  "section_net",
+  "public_ip",
+  "ssh_user",
+  "ssh_port",
+  "column_break_ports",
+  "ports",
+  "section_env",
+  "env",
+  "tab_vllm",
+  "section_serve",
+  "serve_port",
+  "api_key",
+  "column_break_serve",
+  "dtype",
+  "gpu_memory_utilization",
+  "attention_backend",
+  "max_model_len",
+  "section_extra",
+  "aliases",
+  "extra_serve_args",
+  "engine_url",
+  "serve_command"
+ ],
+ "fields": [
+  {
+   "fieldname": "tab_pod",
+   "fieldtype": "Tab Break",
+   "label": "Pod"
+  },
+  {
+   "description": "Provider to spawn on (e.g. RunPod).",
+   "fieldname": "cloud_provider",
+   "fieldtype": "Link",
+   "label": "Cloud Provider",
+   "options": "Cloud Provider",
+   "reqd": 1
+  },
+  {
+   "description": "Set \u2192 this is a standalone vLLM-serving pod. The Model's intrinsic config (repo, quantization, parsers, \u2026) is read live from the Model at build time; only per-pod tuning is set in the vLLM Serving tab.",
+   "fieldname": "model",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "Model",
+   "options": "Model"
+  },
+  {
+   "fieldname": "column_break_head",
+   "fieldtype": "Column Break"
+  },
+  {
+   "default": "Pending",
+   "fieldname": "status",
+   "fieldtype": "Select",
+   "in_list_view": 1,
+   "label": "Status",
+   "options": "Pending\nProvisioning\nLoading\nRunning\nStopped\nTerminated",
+   "read_only": 1
+  },
+  {
+   "description": "Provider's pod id. Blank until spawned; cleared on terminate. A restart respawns \u2192 new id.",
+   "fieldname": "pod_id",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Pod ID",
+   "read_only": 1
+  },
+  {
+   "fieldname": "section_image",
+   "fieldtype": "Section Break",
+   "label": "Image / Startup"
+  },
+  {
+   "description": "Image to spawn, with its registry and pull credentials. Wins over the manual Image below. Ignored if a Template is set.",
+   "fieldname": "engine_image",
+   "fieldtype": "Link",
+   "label": "Engine Image",
+   "options": "Engine Image"
+  },
+  {
+   "description": "Escape hatch for a one-off image ref, e.g. 'vllm/vllm-openai:latest' \u2014 full path including registry host, public pulls only (no credentials). Used only when Engine Image is blank; ignored if a Template is set.",
+   "fieldname": "image_name",
+   "fieldtype": "Data",
+   "label": "Image"
+  },
+  {
+   "description": "Provider template id. If set, the template supplies the image (Image field ignored).",
+   "fieldname": "template_id",
+   "fieldtype": "Data",
+   "label": "Template ID"
+  },
+  {
+   "fieldname": "section_compute",
+   "fieldtype": "Section Break",
+   "label": "Compute"
+  },
+  {
+   "description": "Provider's GPU id (e.g. 'NVIDIA L40S'). Use the Cloud Provider 'Fetch GPU Types' button for valid ids.",
+   "fieldname": "gpu_type_id",
+   "fieldtype": "Data",
+   "label": "GPU Type ID"
+  },
+  {
+   "default": "1",
+   "description": "Number of GPUs to request. All the same type (homogeneous pod). Split as tensor-parallel x pipeline-parallel.",
+   "fieldname": "gpu_count",
+   "fieldtype": "Int",
+   "label": "GPU Count"
+  },
+  {
+   "default": "1",
+   "description": "Stages to split the model's layers across (--pipeline-parallel-size). 1 = pure tensor parallel. Tensor-parallel size is derived as GPU Count / this, so both must divide the GPU count evenly.",
+   "fieldname": "pipeline_parallel_size",
+   "fieldtype": "Int",
+   "label": "Pipeline Parallel Size"
+  },
+  {
+   "fieldname": "column_break_compute",
+   "fieldtype": "Column Break"
+  },
+  {
+   "default": "50",
+   "description": "Persistent volume disk, mounted at the mount path below. Survives pod restart.",
+   "fieldname": "volume_in_gb",
+   "fieldtype": "Int",
+   "label": "Volume (GB)"
+  },
+  {
+   "default": "20",
+   "description": "Ephemeral container root disk. Wiped on restart.",
+   "fieldname": "container_disk_gb",
+   "fieldtype": "Int",
+   "label": "Container Disk (GB)"
+  },
+  {
+   "default": "/data",
+   "description": "Where the persistent volume mounts. HF_HOME defaults under here so weights survive restart.",
+   "fieldname": "volume_mount_path",
+   "fieldtype": "Data",
+   "label": "Volume Mount Path"
+  },
+  {
+   "fieldname": "section_env",
+   "fieldtype": "Section Break",
+   "label": "Environment"
+  },
+  {
+   "description": "Extra env injected into the container. Merged over provisioner defaults (PUBLIC_KEY, HF_HOME, VLLM_API_KEY) \u2014 user rows win on conflict.",
+   "fieldname": "env",
+   "fieldtype": "Table",
+   "label": "Env Vars",
+   "options": "Pod Env"
+  },
+  {
+   "fieldname": "section_net",
+   "fieldtype": "Section Break",
+   "label": "Networking / SSH"
+  },
+  {
+   "description": "Filled after spawn; shared by all exposed ports. Can move on pod restart (Sync re-reads).",
+   "fieldname": "public_ip",
+   "fieldtype": "Data",
+   "label": "Public IP",
+   "read_only": 1
+  },
+  {
+   "default": "root",
+   "fieldname": "ssh_user",
+   "fieldtype": "Data",
+   "label": "SSH User"
+  },
+  {
+   "description": "External port mapped to internal 22. Filled after spawn.",
+   "fieldname": "ssh_port",
+   "fieldtype": "Int",
+   "label": "SSH Port",
+   "read_only": 1
+  },
+  {
+   "fieldname": "column_break_ports",
+   "fieldtype": "Column Break"
+  },
+  {
+   "description": "TCP ports to open at spawn (the provider can't hot-add). Needs 22 (SSH) + the serve port + any extra engine ports. Defaults seeded on create.",
+   "fieldname": "ports",
+   "fieldtype": "Table",
+   "label": "Ports",
+   "options": "Pod Port"
+  },
+  {
+   "depends_on": "eval:doc.model",
+   "fieldname": "tab_vllm",
+   "fieldtype": "Tab Break",
+   "label": "Serving"
+  },
+  {
+   "description": "Per-pod serve knobs (not model-intrinsic).",
+   "fieldname": "section_serve",
+   "fieldtype": "Section Break",
+   "label": "Serve"
+  },
+  {
+   "default": "8080",
+   "description": "Internal port vLLM listens on \u2014 must be in the Ports table (opened at spawn). Reached externally via its mapped port.",
+   "fieldname": "serve_port",
+   "fieldtype": "Int",
+   "label": "Serve Port"
+  },
+  {
+   "description": "vLLM --api-key, injected as VLLM_API_KEY env (kept out of the visible command). Auto-generated if blank.",
+   "fieldname": "api_key",
+   "fieldtype": "Password",
+   "label": "API Key"
+  },
+  {
+   "fieldname": "column_break_serve",
+   "fieldtype": "Column Break"
+  },
+  {
+   "default": "auto",
+   "fieldname": "dtype",
+   "fieldtype": "Select",
+   "label": "dtype",
+   "options": "auto\nbfloat16\nfloat16\nfloat32"
+  },
+  {
+   "default": "0.9",
+   "fieldname": "gpu_memory_utilization",
+   "fieldtype": "Float",
+   "label": "GPU Memory Utilization",
+   "precision": "2"
+  },
+  {
+   "default": "auto",
+   "description": "Injected as VLLM_ATTENTION_BACKEND env (not a serve flag). auto = let vLLM pick.",
+   "fieldname": "attention_backend",
+   "fieldtype": "Select",
+   "label": "Attention Backend",
+   "options": "auto\nFLASH_ATTN\nXFORMERS\nFLASHINFER"
+  },
+  {
+   "description": "\u2192 --max-model-len. Per-box cap for the KV cache; \u2264 the model's native context. Blank = 8192.",
+   "fieldname": "max_model_len",
+   "fieldtype": "Int",
+   "label": "Max Model Len"
+  },
+  {
+   "fieldname": "section_extra",
+   "fieldtype": "Section Break",
+   "label": "Extra"
+  },
+  {
+   "description": "Extra --served-model-name values (comma/space separated); old client model-names keep working.",
+   "fieldname": "aliases",
+   "fieldtype": "Small Text",
+   "label": "Aliases"
+  },
+  {
+   "description": "Freeform extra `vllm serve` flags appended verbatim, e.g. --kv-cache-dtype fp8 --max-num-seqs 64.",
+   "fieldname": "extra_serve_args",
+   "fieldtype": "Small Text",
+   "label": "Extra Serve Args"
+  },
+  {
+   "description": "Where the gateway forwards: http://:. Derived on sync; blank when not Running. Registered as a route for this Model in the gateway.",
+   "fieldname": "engine_url",
+   "fieldtype": "Data",
+   "label": "Engine URL",
+   "read_only": 1
+  },
+  {
+   "description": "Derived from the fields above \u2192 the pod's dockerStartCmd. Read-only; the api-key rides VLLM_API_KEY env, not shown here.",
+   "fieldname": "serve_command",
+   "fieldtype": "Code",
+   "label": "Serve Command",
+   "options": "Shell",
+   "read_only": 1
+  },
+  {
+   "depends_on": "eval:!doc.model",
+   "description": "Overrides the image's default start command (dockerStartCmd). Used only when no Model is set (base-image pods). With a Model, the derived Serve Command (vLLM Serving tab) is used instead.",
+   "fieldname": "startup_command",
+   "fieldtype": "Small Text",
+   "label": "Startup Command"
+  },
+  {
+   "fieldname": "column_break_cwib",
+   "fieldtype": "Column Break"
+  }
+ ],
+ "links": [],
+ "modified": "2026-07-26 03:12:06.851346",
+ "modified_by": "Administrator",
+ "module": "Grove",
+ "name": "Pod",
+ "naming_rule": "Set by user",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "System Manager",
+   "share": 1,
+   "write": 1
+  }
+ ],
+ "row_format": "Dynamic",
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": []
+}
