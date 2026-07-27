@@ -23,7 +23,7 @@ def provision_key(name: str, email: str, token_limit: int=None, allowed_models: 
 		user.insert()
 
 	# 3. Mint the key (controller generates secret + hash, pushes to gateways).
-	key = frappe.new_doc("API Key")
+	key = frappe.new_doc("Grove API Key")
 	key.user = email
 	key.status = "active"
 	key.allowed_models = ",".join(allowed_models) if allowed_models else None
@@ -44,13 +44,13 @@ def provision_key(name: str, email: str, token_limit: int=None, allowed_models: 
 def revoke_key(api_key):
 	"""Revoke by the full key (not the doc name): hash it → find by key_hash →
 	flip status → revoked. Gateways drop it within the cache TTL."""
-	from grove.grove.doctype.api_key.api_key import hash_secret
+	from grove.grove.doctype.grove_api_key.grove_api_key import hash_secret
 
-	key = frappe.db.get_value("API Key", {"key_hash": hash_secret(api_key.strip())})
+	key = frappe.db.get_value("Grove API Key", {"key_hash": hash_secret(api_key.strip())})
 	if not key:
 		frappe.throw("no such API key", frappe.DoesNotExistError)
 
-	frappe.get_doc("API Key", key).revoke()
+	frappe.get_doc("Grove API Key", key).revoke()
 	return "Revoked. Might take some time to reflect."
 
 

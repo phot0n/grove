@@ -15,7 +15,7 @@ def hash_secret(secret: str) -> str:
 	return hashlib.sha256(secret.encode()).hexdigest()
 
 
-class APIKey(Document):
+class GroveAPIKey(Document):
 	# begin: auto-generated types
 	# This code is auto-generated. Do not modify anything in this block.
 

@@ -84,7 +84,7 @@
  "modified": "2026-07-26 01:33:04.128564",
  "modified_by": "Administrator",
  "module": "Grove",
- "name": "API Key",
+ "name": "Grove API Key",
  "naming_rule": "Random",
  "owner": "Administrator",
  "permissions": [

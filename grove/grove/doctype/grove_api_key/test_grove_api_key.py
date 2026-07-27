@@ -13,9 +13,9 @@ IGNORE_TEST_RECORD_DEPENDENCIES = []  # eg. ["User"]
 
 
 
-class IntegrationTestAPIKey(IntegrationTestCase):
+class IntegrationTestGroveAPIKey(IntegrationTestCase):
 	"""
-	Integration tests for APIKey.
+	Integration tests for GroveAPIKey.
 	Use this class for testing interactions between multiple components.
 	"""
 

@@ -21,7 +21,7 @@
   "gateway_usage"
  ],
  "fields": [
-  {"fieldname": "api_key", "fieldtype": "Link", "label": "API Key", "options": "API Key", "reqd": 1, "in_list_view": 1},
+  {"fieldname": "api_key", "fieldtype": "Link", "label": "API Key", "options": "Grove API Key", "reqd": 1, "in_list_view": 1},
   {"fieldname": "user", "fieldtype": "Link", "label": "User", "options": "User", "in_list_view": 1},
   {"fieldname": "month", "fieldtype": "Data", "label": "Month (YYYY-MM)", "reqd": 1, "in_list_view": 1},
   {"fieldname": "column_break_tot", "fieldtype": "Column Break"},

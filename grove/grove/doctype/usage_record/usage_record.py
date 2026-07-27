@@ -14,7 +14,7 @@ class UsageRecord(Document):
 
 	def _enforce_budget(self):
 		"""When this month's recorded BILLABLE usage reaches the key's monthly token
-		budget (API Key.max_tokens), flag the key rate_limited (+ dirty) so the next
+		budget (Grove API Key.max_tokens), flag the key rate_limited (+ dirty) so the next
 		key sync tells every gateway to reject it with 429. Set-only here — clearing is
 		the daily grove.usage_pull.reactivate_rate_limited job (which also breaks the
 		month-rollover deadlock, since a blocked key sees no new usage to re-fire this).
@@ -25,13 +25,13 @@ class UsageRecord(Document):
 		Keep this expression identical to reactivate_rate_limited's."""
 		if self.month != datetime.now(timezone.utc).strftime("%Y-%m"):
 			return  # only the current month gates
-		limit = frappe.db.get_value("API Key", self.api_key, "max_tokens") or 0
+		limit = frappe.db.get_value("Grove API Key", self.api_key, "max_tokens") or 0
 		billable = (self.total_tokens or 0) - (self.cached_tokens or 0)
 		if not limit or billable < limit:
 			return
-		if not frappe.db.get_value("API Key", self.api_key, "rate_limited"):
+		if not frappe.db.get_value("Grove API Key", self.api_key, "rate_limited"):
 			frappe.db.set_value(
-				"API Key",
+				"Grove API Key",
 				self.api_key,
 				{"rate_limited": 1, "dirty": 1},
 			)

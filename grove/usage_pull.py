@@ -63,7 +63,7 @@ def reactivate_rate_limited():
 	cleared key dirty → the next sync pushes status=active. Returns the count
 	reactivated."""
 	month = datetime.now(timezone.utc).strftime("%Y-%m")
-	limited = frappe.get_all("API Key", filters={"rate_limited": 1}, fields=["name", "max_tokens"])
+	limited = frappe.get_all("Grove API Key", filters={"rate_limited": 1}, fields=["name", "max_tokens"])
 	cleared = 0
 	for k in limited:
 		limit = k.max_tokens or 0
@@ -77,7 +77,7 @@ def reactivate_rate_limited():
 		used = ((rec.total_tokens or 0) - (rec.cached_tokens or 0)) if rec else 0
 		if not limit or used < limit:
 			frappe.db.set_value(
-				"API Key", k.name, {"rate_limited": 0, "dirty": 1}, update_modified=False
+				"Grove API Key", k.name, {"rate_limited": 0, "dirty": 1}, update_modified=False
 			)
 			cleared += 1
 	if cleared:
@@ -134,7 +134,7 @@ def _pull_proxy(proxy_name):
 		per_model = _per_model(h)
 		# Record only for keys registered here; unregistered (e.g. manual test
 		# keys) are dropped — the gateway already deleted the counter on read.
-		if any(amounts.values()) and (user := frappe.db.get_value("API Key", prefix, "user")):
+		if any(amounts.values()) and (user := frappe.db.get_value("Grove API Key", prefix, "user")):
 			_add_delta(proxy_name, prefix, user, month, amounts, per_model)
 
 	frappe.db.commit()

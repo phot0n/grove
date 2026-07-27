@@ -49,7 +49,7 @@ def _effective_keys(proxy):
 	The only rate limit is the monthly token budget, surfaced via status
 	(rate_limited); no per-request rpm/tpm/concurrency knobs anymore."""
 	rows = frappe.get_all(
-		"API Key",
+		"Grove API Key",
 		fields=["name", "key_hash", "user", "status", "rate_limited", "allowed_models"],
 	)
 	keys = []
@@ -150,7 +150,7 @@ def full_sync(proxies=None, trigger="Manual"):
 		if not active:
 			return None
 
-		keys_snap = _snapshot_dirty("API Key")
+		keys_snap = _snapshot_dirty("Grove API Key")
 
 		ok = 0
 		for proxy in active:
@@ -163,7 +163,7 @@ def full_sync(proxies=None, trigger="Manual"):
 		# keys, so the dirty keys it covered can clear. (Subset runs clear
 		# nothing global; routes are not dirty-gated.)
 		if doc.status == "Success" and set(active) >= set(all_active):
-			_clear_unchanged("API Key", keys_snap)
+			_clear_unchanged("Grove API Key", keys_snap)
 
 		frappe.db.commit()
 		return doc.name
@@ -181,7 +181,7 @@ def sync_dirty(trigger="Scheduled"):
 	if not doc.acquire_lock(wait=0):  # scheduled → skip if a run is in flight
 		return None
 	try:
-		dirty_keys = frappe.get_all("API Key", filters={"dirty": 1}, fields=["name", "modified"])
+		dirty_keys = frappe.get_all("Grove API Key", filters={"dirty": 1}, fields=["name", "modified"])
 		# Routes come from Model Deployments AND standalone serving Pods (Running).
 		has_deps = bool(frappe.db.count("Model Deployment")) or bool(
 			frappe.db.count("Pod", {"status": "Running"})
@@ -213,7 +213,7 @@ def sync_dirty(trigger="Scheduled"):
 
 		# Keys clear only once every key-target proxy accepted them.
 		if dirty_keys and all(ok_by_proxy.get(p) for p in key_targets):
-			_clear_unchanged("API Key", dirty_keys)
+			_clear_unchanged("Grove API Key", dirty_keys)
 
 		frappe.db.commit()
 		return doc.name
