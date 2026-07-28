@@ -22,6 +22,9 @@ import requests
 
 import frappe
 
+from grove.access import effective_models
+from grove.grove.doctype.grove_user.grove_user import is_rate_limited
+
 TIMEOUT = 10
 _ALL = object()  # sentinel: push the complete set (vs. a subset list, vs. None = skip)
 
@@ -45,30 +48,40 @@ def _post(admin_url, token, path, payload):
 
 
 def _effective_keys(proxy):
-	"""All API Keys projected for the gateway: identity + status + allowed_models.
-	The only rate limit is the monthly token budget, surfaced via status
+	"""All API Keys projected for the gateway: identity + status + the flat set of models
+	the key may call. The only rate limit is the monthly token budget, surfaced via status
 	(rate_limited); no per-request rpm/tpm/concurrency knobs anymore."""
 	rows = frappe.get_all(
 		"Grove API Key",
-		fields=["name", "key_hash", "user", "status", "rate_limited", "allowed_models"],
+		fields=["name", "key_hash", "user", "status"],
 	)
+	# Access is a property of the user, not the key — resolve each user once even when
+	# they hold several keys.
+	per_user = {}
 	keys = []
 	for k in rows:
 		if not k.key_hash:
 			continue
 		# The gateway keeps no rate counters — the only limit is the monthly token
-		# budget, which the control plane flags as rate_limited, surfaced here as a
-		# distinct status (→ 429). Revoked still wins; the budget only gates active
-		# keys.
+		# budget, which the control plane flags on the USER, surfaced here as a distinct
+		# status (→ 429). Revoked still wins; the budget only gates active keys. Reading
+		# it off the user is what stops a blocked user minting a fresh, unblocked key.
+		if k.user not in per_user:
+			per_user[k.user] = (
+				frappe.db.get_value("Grove User", k.user, "user") or "",
+				sorted(effective_models(k.user)),
+				is_rate_limited(k.user),
+			)
+		email, models, limited = per_user[k.user]
 		status = k.status or "active"
-		if status == "active" and k.rate_limited:
+		if status == "active" and limited:
 			status = "rate_limited"
 		keys.append({
 			"key_hash": k.key_hash,
 			"prefix": k.name,  # doc name (random hash) = usage attribution id
-			"user": k.user or "",
+			"user": email,  # email, not the Grove User name — this one is for humans reading Redis
 			"status": status,
-			"allowed_models": (k.allowed_models or "").replace("\n", ",").replace(" ", ""),
+			"models": ",".join(models),
 		})
 	return keys
 

@@ -254,14 +254,13 @@ func (s *server) handleModels(w http.ResponseWriter, r *http.Request) {
 		writeErrJSON(w, 503, "route store error")
 		return
 	}
-	restricted := len(rec.AllowedModels) > 0 // empty = all (matches evaluate)
 	created := time.Now().Unix()
 	data := []modelObj{}
 	for _, m := range deployed {
-		if restricted && !rec.AllowedModels[m] {
+		if !rec.Models[m] { // same flat set the inference path uses (matches evaluate)
 			continue
 		}
-		data = append(data, modelObj{ID: m, Object: "model", Created: created, OwnedBy: "grove"})
+		data = append(data, modelObj{ID: m, Object: "model", Created: created, OwnedBy: "frappe"})
 	}
 	writeJSON(w, map[string]any{"object": "list", "data": data})
 }
@@ -314,11 +313,11 @@ func (s *server) loadKey(ctx context.Context, meterID string) (KeyRecord, bool, 
 		User:      h["user"],
 		KeyPrefix: h["prefix"],
 	}
-	if am := strings.TrimSpace(h["allowed_models"]); am != "" {
-		rec.AllowedModels = map[string]bool{}
+	if am := strings.TrimSpace(h["models"]); am != "" {
+		rec.Models = map[string]bool{}
 		for _, m := range strings.Split(am, ",") {
 			if m = strings.TrimSpace(m); m != "" {
-				rec.AllowedModels[m] = true
+				rec.Models[m] = true
 			}
 		}
 	}

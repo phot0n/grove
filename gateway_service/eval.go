@@ -4,10 +4,10 @@ package main
 // request. It's the value cached in Redis under key:<sha256(secret)> (v1: seeded
 // directly; later: cache-aside from Grove's DB, §6 job 1).
 type KeyRecord struct {
-	Status        string          // "active" | "revoked" | "rate_limited"
-	User          string          // Frappe User (denormalized)
-	KeyPrefix     string          // display id, for logs/usage attribution
-	AllowedModels map[string]bool // empty = all published models allowed
+	Status    string          // "active" | "revoked" | "rate_limited"
+	User      string          // Frappe User (denormalized)
+	KeyPrefix string          // display id, for logs/usage attribution
+	Models    map[string]bool // exactly what this key may call; empty = nothing
 }
 
 // evaluate is the pure admission decision. Returns an HTTP status (200 = admit)
@@ -22,7 +22,10 @@ func evaluate(rec KeyRecord, model string) (int, string) {
 	if rec.Status != "active" {
 		return 401, "key revoked or inactive"
 	}
-	if len(rec.AllowedModels) > 0 && !rec.AllowedModels[model] {
+	// The control plane resolves group grants, per-user allow/deny and the model's
+	// Public flag into this flat set (grove/access.py), so there is no precedence to
+	// apply here. Empty means no access, never "everything" — access fails closed.
+	if !rec.Models[model] {
 		return 403, "access not allowed for model " + model
 	}
 	return 200, ""

@@ -1,0 +1,58 @@
+{
+ "actions": [],
+ "allow_rename": 1,
+ "autoname": "prompt",
+ "creation": "2026-07-29 00:00:00",
+ "doctype": "DocType",
+ "engine": "InnoDB",
+ "field_order": [
+  "description",
+  "section_models",
+  "models"
+ ],
+ "fields": [
+  {
+   "description": "What this group is for, e.g. \"internal staff\" or \"acme early access\".",
+   "fieldname": "description",
+   "fieldtype": "Small Text",
+   "in_list_view": 1,
+   "label": "Description"
+  },
+  {
+   "description": "Models the members may call. This is the main way access is granted \u2014 add the model here and everyone in the group can reach it. Membership is set on each Grove User, not here.",
+   "fieldname": "section_models",
+   "fieldtype": "Section Break",
+   "label": "Model Access"
+  },
+  {
+   "fieldname": "models",
+   "fieldtype": "Table",
+   "label": "Models",
+   "options": "Grove Model Row"
+  }
+ ],
+ "links": [],
+ "modified": "2026-07-29 00:00:00",
+ "modified_by": "Administrator",
+ "module": "Grove",
+ "name": "Grove User Group",
+ "naming_rule": "Set by user",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "System Manager",
+   "share": 1,
+   "write": 1
+  }
+ ],
+ "row_format": "Dynamic",
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": []
+}

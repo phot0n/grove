@@ -58,9 +58,9 @@ class Model(Document):
 			frappe.throw("Display Name must contain at least one letter or digit.")
 
 	def validate(self):
-		# `published` is the user-facing catalog gate (allowed_models blank = all
-		# published). A model is only publishable while it actually has a live
-		# (Active) Model Deployment — never let a manual toggle claim otherwise.
+		# `published` means "reachable" — it tracks whether a live route exists, and is
+		# never a manual claim. It is not an access gate: access is granted per user, via
+		# Grove User Group or Grove User.
 		if self.published and not has_active_deployment(self.name):
 			self.published = 0
 

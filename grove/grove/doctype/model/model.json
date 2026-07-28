@@ -44,6 +44,7 @@
   },
   {
    "default": "1",
+   "description": "Auto: this model has a live route (an Active Model Deployment or a Running Pod). Not an access gate — access is granted per user, via Grove User Group or Grove User.",
    "fieldname": "published",
    "fieldtype": "Check",
    "in_list_view": 1,
