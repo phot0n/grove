@@ -39,6 +39,9 @@ vllm_apt_packages:
 # renders it, so the two placements can't drift.
 vllm_port: 8080
 vllm_serve_args: []
+# Lifts vLLM's guard against a --max-model-len over 256k. Set by Grove when the deployment
+# actually asks for one; a typo'd value would otherwise OOM the KV cache.
+vllm_allow_long_max_model_len: false
 
 # ── Blackwell flashinfer workaround ─────────────────────────────────────────
 # flashinfer JIT-compiles kernels and needs a unified CUDA toolkit (CUDA_HOME) that the

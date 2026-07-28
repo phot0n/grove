@@ -11,12 +11,13 @@ import frappe
 MODEL_FIELDS = (
 	"hf_repo", "is_embedding", "quantization", "modality", "enable_prefix_caching",
 	"enable_auto_tool_choice", "tool_call_parser", "thinking", "reasoning_parser",
-	"attention_heads", "hidden_layers", "weights_gb",
+	"attention_heads", "weights_gb",
 )
 
 DEFAULT_PORT = 8080
 DEFAULT_MAX_MODEL_LEN = 8192
 DEFAULT_GPU_MEMORY_UTILIZATION = 0.9
+DEFAULT_SCHEDULING_POLICY = "fcfs"
 
 
 class ServeCommand:
@@ -34,6 +35,7 @@ class ServeCommand:
 		dtype=None,
 		gpu_memory_utilization=None,
 		max_model_len=None,
+		scheduling_policy=None,
 		aliases=None,
 		extra_serve_args=None,
 		host="0.0.0.0",
@@ -47,6 +49,7 @@ class ServeCommand:
 		self.dtype = dtype or "auto"
 		self.gpu_memory_utilization = gpu_memory_utilization or DEFAULT_GPU_MEMORY_UTILIZATION
 		self.max_model_len = int(max_model_len or DEFAULT_MAX_MODEL_LEN)
+		self.scheduling_policy = scheduling_policy or DEFAULT_SCHEDULING_POLICY
 		self.aliases = (aliases or "").replace(",", " ").split()
 		self.extra_serve_args = (extra_serve_args or "").split()
 		self.host = host
@@ -64,6 +67,7 @@ class ServeCommand:
 			dtype=pod.dtype,
 			gpu_memory_utilization=pod.gpu_memory_utilization,
 			max_model_len=pod.max_model_len,
+			scheduling_policy=pod.scheduling_policy,
 			aliases=pod.aliases,
 			extra_serve_args=pod.extra_serve_args,
 		)
@@ -82,6 +86,7 @@ class ServeCommand:
 			dtype=deployment.dtype,
 			gpu_memory_utilization=deployment.gpu_memory_utilization,
 			max_model_len=deployment.max_model_len,
+			scheduling_policy=deployment.scheduling_policy,
 			aliases=deployment.aliases,
 			extra_serve_args=deployment.extra_serve_args,
 		)
@@ -98,10 +103,12 @@ class ServeCommand:
 		vLLM does not fail minutes in, on the box. Shape fields left blank on the Model skip
 		their check rather than block the deploy."""
 		errors = []
-		pipeline = self.pipeline_parallel_size
-		if self.gpu_count % pipeline:
+		# Layers need not divide by the pipeline size — vLLM's get_pp_indices spreads the
+		# remainder across stages. Only the TP head split is a hard requirement.
+		if self.gpu_count % self.pipeline_parallel_size:
 			errors.append(
-				f"{self.gpu_count} GPUs do not divide evenly into {pipeline} pipeline stages."
+				f"{self.gpu_count} GPUs do not divide evenly into "
+				f"{self.pipeline_parallel_size} pipeline stages."
 			)
 		heads = self.model.get("attention_heads")
 		if heads and heads % self.tensor_parallel_size:
@@ -109,12 +116,6 @@ class ServeCommand:
 				f"{self.model_name} has {heads} attention heads, which cannot be sharded across "
 				f"tensor-parallel size {self.tensor_parallel_size} — vLLM needs an even split. "
 				f"Use a GPU count whose tensor-parallel size divides {heads}."
-			)
-		layers = self.model.get("hidden_layers")
-		if layers and layers % pipeline:
-			errors.append(
-				f"{self.model_name} has {layers} layers, which cannot be split across "
-				f"{pipeline} pipeline stages."
 			)
 		if self.usable_vram_gb and self.weights_gb > self.usable_vram_gb:
 			errors.append(
@@ -158,6 +159,9 @@ class ServeCommand:
 			"--tensor-parallel-size", str(self.tensor_parallel_size),
 			"--gpu-memory-utilization", str(self.gpu_memory_utilization),
 			"--max-model-len", str(self.max_model_len),
+			# TODO: "priority" only bites once the gateway stamps a per-request `priority` on
+			# the body (off the API Key's tier) — until then every request queues at the default.
+			"--scheduling-policy", self.scheduling_policy,
 			# Surfaces usage.prompt_tokens_details.cached_tokens so cached-token accounting
 			# works (billable = total - cached). Reporting-only.
 			"--enable-prompt-tokens-details",

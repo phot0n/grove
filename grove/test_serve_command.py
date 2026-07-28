@@ -53,13 +53,13 @@ class TestParallelism(unittest.TestCase):
 		errors = serve(gpu_count=6, pipeline_parallel_size=4).placement_errors
 		self.assertIn("do not divide evenly", errors[0])
 
-	def test_layers_must_divide_by_pipeline_stages(self):
-		model = dict(CHAT_MODEL, hidden_layers=61)
-		self.assertTrue(serve(model, gpu_count=4, pipeline_parallel_size=2).placement_errors)
-		self.assertEqual(serve(model, gpu_count=4).placement_errors, [])  # PP=1 → no split
+	def test_layers_need_not_divide_by_pipeline_stages(self):
+		# vLLM's get_pp_indices spreads the remainder across stages (43 over 3 → 15/15/13).
+		model = dict(CHAT_MODEL, hidden_layers=43, attention_heads=64)
+		self.assertEqual(serve(model, gpu_count=3, pipeline_parallel_size=3).placement_errors, [])
 
 	def test_blank_shape_skips_checks(self):
-		self.assertEqual(serve(gpu_count=6).placement_errors, [])  # no heads/layers on Model
+		self.assertEqual(serve(gpu_count=6).placement_errors, [])  # no heads on Model
 
 
 class TestVramFit(unittest.TestCase):
@@ -111,6 +111,11 @@ class TestServeCommand(unittest.TestCase):
 		self.assertEqual(args[args.index("--gpu-memory-utilization") + 1], "0.9")
 		self.assertEqual(args[args.index("--tensor-parallel-size") + 1], "1")
 		self.assertNotIn("--dtype", args)  # dtype auto → vLLM decides
+		self.assertEqual(args[args.index("--scheduling-policy") + 1], "fcfs")
+
+	def test_scheduling_policy(self):
+		args = serve(scheduling_policy="priority").args
+		self.assertEqual(args[args.index("--scheduling-policy") + 1], "priority")
 
 	def test_embedding_model_drops_chat_flags(self):
 		model = dict(CHAT_MODEL, is_embedding=True)

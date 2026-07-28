@@ -10,14 +10,15 @@
   "published",
   "section_launch",
   "quantization",
-  "column_break_launch",
   "modality",
+  "column_break_launch",
   "is_embedding",
   "enable_prefix_caching",
   "gated",
   "section_shape",
   "attention_heads",
   "hidden_layers",
+  "column_break_iewq",
   "weights_gb",
   "section_tools",
   "enable_auto_tool_choice",
@@ -108,7 +109,7 @@
    "label": "Attention Heads"
   },
   {
-   "description": "num_hidden_layers. Split across the pipeline-parallel group, so this must divide evenly by pipeline-parallel size.",
+   "description": "num_hidden_layers. Informational \u2014 vLLM splits these across the pipeline-parallel group and spreads any remainder, so the count need not divide evenly.",
    "fieldname": "hidden_layers",
    "fieldtype": "Int",
    "label": "Hidden Layers"
@@ -154,6 +155,10 @@
    "fieldname": "reasoning_parser",
    "fieldtype": "Data",
    "label": "Reasoning Parser"
+  },
+  {
+   "fieldname": "column_break_iewq",
+   "fieldtype": "Column Break"
   }
  ],
  "links": [
@@ -168,7 +173,7 @@
    "link_fieldname": "model"
   }
  ],
- "modified": "2026-07-26 01:28:23.867757",
+ "modified": "2026-07-29 04:09:53.060610",
  "modified_by": "Administrator",
  "module": "Grove",
  "name": "Model",

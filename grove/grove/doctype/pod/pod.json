@@ -21,7 +21,6 @@
   "section_compute",
   "gpu_type_id",
   "gpu_count",
-  "pipeline_parallel_size",
   "column_break_compute",
   "volume_in_gb",
   "container_disk_gb",
@@ -38,11 +37,14 @@
   "section_serve",
   "serve_port",
   "api_key",
+  "scheduling_policy",
   "column_break_serve",
   "dtype",
   "gpu_memory_utilization",
   "attention_backend",
   "max_model_len",
+  "allow_long_max_model_len",
+  "pipeline_parallel_size",
   "section_extra",
   "aliases",
   "extra_serve_args",
@@ -272,6 +274,22 @@
    "label": "Max Model Len"
   },
   {
+   "default": "0",
+   "depends_on": "max_model_len",
+   "description": "→ VLLM_ALLOW_LONG_MAX_MODEL_LEN=1. vLLM refuses to start when Max Model Len exceeds the context the repo's config.json declares. Tick to override that guard (e.g. RoPE-extended serving). Wrong values give garbage output instead of an error, so only tick when the longer context is intended.",
+   "fieldname": "allow_long_max_model_len",
+   "fieldtype": "Check",
+   "label": "Allow Long Max Model Len"
+  },
+  {
+   "default": "fcfs",
+   "description": "\u2192 --scheduling-policy. fcfs = first come, first served. priority = serve by the request's priority field first (lower value first), ties broken by arrival.",
+   "fieldname": "scheduling_policy",
+   "fieldtype": "Select",
+   "label": "Scheduling Policy",
+   "options": "fcfs\npriority"
+  },
+  {
    "fieldname": "section_extra",
    "fieldtype": "Section Break",
    "label": "Extra"
@@ -316,7 +334,7 @@
   }
  ],
  "links": [],
- "modified": "2026-07-26 03:12:06.851346",
+ "modified": "2026-07-27 14:07:13.122528",
  "modified_by": "Administrator",
  "module": "Grove",
  "name": "Pod",

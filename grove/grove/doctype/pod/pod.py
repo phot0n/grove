@@ -26,6 +26,7 @@ class Pod(Document):
 		from grove.grove.doctype.pod_port.pod_port import PodPort
 
 		aliases: DF.SmallText | None
+		allow_long_max_model_len: DF.Check
 		api_key: DF.Password | None
 		attention_backend: DF.Literal["auto", "FLASH_ATTN", "XFORMERS", "FLASHINFER"]
 		cloud_provider: DF.Link
@@ -45,6 +46,7 @@ class Pod(Document):
 		pod_id: DF.Data | None
 		ports: DF.Table[PodPort]
 		public_ip: DF.Data | None
+		scheduling_policy: DF.Literal["fcfs", "priority"]
 		serve_command: DF.Code | None
 		serve_port: DF.Int
 		ssh_port: DF.Int
