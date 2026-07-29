@@ -8,7 +8,7 @@ import frappe
 from frappe.model.document import Document
 
 from grove.ansible import Ansible
-from grove.utils import ansible_project_dir
+from grove.utils import ansible_project_dir, is_env_key, is_env_value
 from grove.serve_command import ServeCommand
 
 
@@ -27,14 +27,17 @@ class ModelDeployment(Document):
 	if TYPE_CHECKING:
 		from frappe.types import DF
 		from grove.grove.doctype.model_deployment_gpu.model_deployment_gpu import ModelDeploymentGPU
+		from grove.grove.doctype.pod_env.pod_env import PodEnv
 
 		aliases: DF.SmallText | None
 		allow_long_max_model_len: DF.Check
 		attention_backend: DF.Literal["auto", "FLASH_ATTN", "XFORMERS", "FLASHINFER"]
 		dtype: DF.Literal["auto", "float16", "bfloat16"]
+		engine_image: DF.Link | None
 		engine_port: DF.Int
 		engine_url: DF.Data | None
 		engine_version: DF.Data | None
+		env: DF.Table[PodEnv]
 		extra_serve_args: DF.SmallText | None
 		gpu_memory_utilization: DF.Float
 		gpus: DF.Table[ModelDeploymentGPU]
@@ -57,6 +60,23 @@ class ModelDeployment(Document):
 		self._assign_engine_port()
 		self._derive_engine_url()
 		self._validate_gpus()
+		self._validate_engine()
+
+	def _validate_engine(self):
+		"""The placement switch and the env rows that feed it. An image tag already pins the
+		vLLM version, so a version alongside it would silently do nothing; env rows are
+		rendered into a systemd unit, which is a trust boundary — a newline in a value would
+		otherwise append a directive of the operator's choosing."""
+		if self.engine_image and self.engine_version:
+			frappe.throw(
+				"Engine Image and Engine Version cannot both be set — the image tag owns "
+				"the vLLM version. Clear Engine Version to serve from the image."
+			)
+		for row in self.env or []:
+			if not is_env_key(row.key):
+				frappe.throw(f"'{row.key}' is not a valid environment variable name.")
+			if not is_env_value(row.value):
+				frappe.throw(f"Value for '{row.key}' cannot contain a newline or a double quote.")
 
 	# ── GPU pinning ───────────────────────────────────────────────────────────
 	# GPUs live as child rows on the box's Machine (Machine GPU). A deployment names the
@@ -256,14 +276,26 @@ def _instance_slug(md_name):
 	return re.sub(r"[^a-z0-9._-]", "-", md_name.lower())
 
 
-# Where vLLM keeps venvs/weights/keys/caches on the box.
-VLLM_HOME = "/opt/vllm"
+def _engine_env(md, hf_token):
+	"""Env vars for the engine process, whichever placement runs it: what Grove derives from
+	the deployment first, the operator's own rows layered on top (same precedence the Pod path
+	uses). VLLM_API_KEY is NOT here — the role resolves it on the box, so the unit template
+	adds it."""
+	env = {}
+	if hf_token:
+		env["HF_TOKEN"] = hf_token
+	if md.attention_backend and md.attention_backend != "auto":
+		env["VLLM_ATTENTION_BACKEND"] = md.attention_backend
+	if md.allow_long_max_model_len:
+		env["VLLM_ALLOW_LONG_MAX_MODEL_LEN"] = "1"
+	env.update({row.key: row.value or "" for row in md.env or []})
+	return env
 
 
-def _vllm_extravars(md, m, key):
+def _vllm_extravars(md, m, inf, key):
 	"""Assemble the vLLM Ansible extra-vars from the Model launch profile (m) ⊕ this
-	deployment (md) ⊕ the internal key. Shared by deploy_model (full serve) and
-	reconfigure_deployment (unit-only) so the two paths can never drift. The `vllm serve`
+	deployment (md) ⊕ its box (inf) ⊕ the internal key. Shared by deploy_model (full serve)
+	and reconfigure_deployment (unit-only) so the two paths can never drift. The `vllm serve`
 	flags come from ServeCommand — the same builder the Pod (container) placement uses; the
 	unit template only renders them."""
 	serve = ServeCommand.for_deployment(md)
@@ -273,7 +305,8 @@ def _vllm_extravars(md, m, key):
 	# sees them. No rows → single-GPU, unpinned (whatever the box exposes).
 	gpu_indexes = sorted(int(r.gpu_index) for r in (md.gpus or []))
 
-	vllm_home = VLLM_HOME
+	hf_token = frappe.conf.get("hf_token", "") if m.gated else ""
+	vllm_home = inf.data_path
 
 	extravars = {
 		"vllm_model": m.hf_repo,
@@ -286,8 +319,8 @@ def _vllm_extravars(md, m, key):
 		"vllm_port": serve.port,
 		"vllm_api_key": key,
 		"vllm_cuda_visible_devices": ",".join(str(i) for i in gpu_indexes),
-		"vllm_attention_backend": md.attention_backend or "auto",
-		"vllm_allow_long_max_model_len": bool(md.allow_long_max_model_len),
+		"vllm_env": _engine_env(md, hf_token),
+		"vllm_hf_token": hf_token,
 		"vllm_use_flashinfer_sampler": "0",
 		# Keep the venv/weights/caches on the mounted data volume (root is tiny / ephemeral).
 		"vllm_home": vllm_home,
@@ -295,8 +328,14 @@ def _vllm_extravars(md, m, key):
 		"vllm_cache_dir": f"{vllm_home}/cache",
 		"vllm_predownload_model": True,
 	}
-	if m.gated:
-		extravars["vllm_hf_token"] = frappe.conf.get("hf_token", "")
+	# An Engine Image switches the placement: the role pulls it and the unit runs `docker run`
+	# instead of building a venv. Blank → the venv path, unchanged.
+	if md.engine_image:
+		image = frappe.get_cached_doc("Engine Image", md.engine_image)
+		extravars["vllm_image"] = image.full_image
+		if credentials := image.registry_credentials:
+			extravars["vllm_registry_host"] = image.registry_host
+			extravars["vllm_registry_username"], extravars["vllm_registry_token"] = credentials
 	return extravars
 
 
@@ -328,7 +367,7 @@ def deploy_model(model_deployment):
 		md.save(ignore_permissions=True)
 		frappe.db.commit()
 
-	extravars = _vllm_extravars(md, m, key)
+	extravars = _vllm_extravars(md, m, inf, key)
 
 	frappe.db.set_value("Model Deployment", md.name, "status", "Provisioning")
 	frappe.db.commit()
@@ -384,7 +423,7 @@ def reconfigure_deployment(model_deployment):
 			"before reconfiguring."
 		)
 
-	extravars = _vllm_extravars(md, m, key)
+	extravars = _vllm_extravars(md, m, inf, key)
 
 	frappe.db.set_value("Model Deployment", md.name, "status", "Provisioning")
 	frappe.db.commit()
@@ -424,7 +463,7 @@ def teardown_deployment(model_deployment):
 		machine_name=inf.machine,
 		extravars={
 			"vllm_instance": _instance_slug(md.name),
-			"vllm_home": VLLM_HOME,
+			"vllm_home": inf.data_path,
 		},
 		reference_doctype="Model Deployment",
 		reference_docname=md.name,

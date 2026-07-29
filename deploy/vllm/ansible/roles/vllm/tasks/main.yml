@@ -1,10 +1,14 @@
 ---
+# Two placements share this role. vllm_image set → pull the engine image and let the unit
+# run `docker run`; blank → build a per-deployment venv and let the unit run its `vllm serve`.
+# Everything after the install split (dirs, keys, unit, health gate) is common to both.
 - name: Install build/runtime apt packages
   ansible.builtin.apt:
     name: "{{ vllm_apt_packages }}"
     state: present
     update_cache: true
     cache_valid_time: 3600
+  when: vllm_image | length == 0
   tags: heavy
 
 - name: Verify an NVIDIA driver is present and working
@@ -46,6 +50,7 @@
   ansible.builtin.command: "{{ vllm_python }} -m venv {{ vllm_venv }}"
   args:
     creates: "{{ vllm_venv }}/bin/python"
+  when: vllm_image | length == 0
   tags: heavy
 
 - name: Upgrade pip inside the venv
@@ -53,6 +58,7 @@
     name: pip
     state: latest
     virtualenv: "{{ vllm_venv }}"
+  when: vllm_image | length == 0
   tags: heavy
 
 - name: Install vLLM (pulls torch cu13 + flashinfer for Blackwell — can take several minutes)
@@ -68,6 +74,23 @@
   # poll status, so a mid-install disconnect can't kill it.
   async: 5400
   poll: 15
+  when: vllm_image | length == 0
+  tags: heavy
+
+- name: Log in to the image registry
+  ansible.builtin.command: "docker login {{ vllm_registry_host }} --username {{ vllm_registry_username }} --password-stdin"
+  args:
+    stdin: "{{ vllm_registry_token }}"
+  no_log: true
+  changed_when: false
+  when: vllm_image | length > 0 and vllm_registry_token | length > 0
+
+- name: Pull the engine image (multi-GB — can take several minutes)
+  ansible.builtin.command: "docker pull {{ vllm_image }}"
+  # Same long-silent-transfer problem as the pip install above.
+  async: 5400
+  poll: 15
+  when: vllm_image | length > 0
   tags: heavy
 
 - name: Create cache directories
@@ -117,18 +140,38 @@
     HF_TOKEN: "{{ vllm_hf_token }}"
   args:
     creates: "{{ vllm_hf_home }}/hub/models--{{ vllm_model | replace('/', '--') }}"
-  when: vllm_predownload_model | bool
+  when: vllm_predownload_model | bool and vllm_image | length == 0
   # Weights are many GB → same long-silent-download problem as the pip step; run detached
   # + poll so a dropped SSH session can't abort the download.
   async: 7200
   poll: 15
   tags: heavy
 
+# The venv path's `hf` binary lives in the venv, which the container placement never builds —
+# so the image's own hf runs the download, into the same box-shared cache the venv path fills.
+# `-e HF_TOKEN` forwards the value from the task environment below rather than spelling it
+# out in the argv, which Ansible records verbatim on the Ansible Task doc.
+- name: Pre-download model weights into the shared cache (container)
+  ansible.builtin.command: >-
+    docker run --rm --entrypoint hf
+    -e HF_TOKEN
+    -v {{ vllm_hf_home }}:/root/.cache/huggingface
+    {{ vllm_image }} download {{ vllm_model }}
+  environment:
+    HF_TOKEN: "{{ vllm_hf_token }}"
+  args:
+    creates: "{{ vllm_hf_home }}/hub/models--{{ vllm_model | replace('/', '--') }}"
+  when: vllm_predownload_model | bool and vllm_image | length > 0
+  async: 7200
+  poll: 15
+  tags: heavy
+
 - name: Install vLLM systemd unit
   ansible.builtin.template:
-    src: vllm.service.j2
+    src: "{{ 'vllm-container.service.j2' if vllm_image | length > 0 else 'vllm.service.j2' }}"
     dest: "/etc/systemd/system/{{ vllm_unit }}.service"
-    mode: "0644"
+    # Contains VLLM_API_KEY and any operator env (HF/S3 tokens) in cleartext.
+    mode: "0600"
   notify: restart vllm
 
 - name: Enable and start vLLM
@@ -158,6 +201,6 @@
   ansible.builtin.debug:
     msg:
       - "vLLM is up: http://{{ ansible_host | default(inventory_hostname) }}:{{ vllm_port }}/v1"
-      - "Instance unit: {{ vllm_unit }}.service  (venv {{ vllm_venv }})"
+      - "Instance unit: {{ vllm_unit }}.service  ({{ ('image ' ~ vllm_image) if vllm_image | length > 0 else ('venv ' ~ vllm_venv) }})"
       - "Model served as: {{ vllm_served_name }}"
       - "API key file on host: {{ vllm_api_key_file }}"

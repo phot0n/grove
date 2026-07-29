@@ -1,0 +1,50 @@
+[Unit]
+Description=vLLM {{ vllm_served_name }} ({{ vllm_model }}) instance {{ vllm_instance }} on :{{ vllm_port }} [{{ vllm_image }}]
+After=network-online.target docker.service
+Wants=network-online.target
+Requires=docker.service
+
+[Service]
+Type=simple
+User={{ vllm_user }}
+WorkingDirectory={{ vllm_home }}
+{% for key, value in vllm_env.items() %}
+Environment="{{ key }}={{ value }}"
+{% endfor %}
+{% if vllm_effective_api_key | length > 0 %}
+Environment="VLLM_API_KEY={{ vllm_effective_api_key }}"
+{% endif %}
+{#
+  systemd owns the unit's state, Docker does not: --rm plus this ExecStartPre means no stale
+  container name survives a restart, and Restart=on-failure below is the only restart policy.
+  --ipc=host is mandatory for tensor-parallel > 1 (torch needs host shared memory).
+  The port is the same inside and out — the serve args already set --port, and engine_url is
+  derived from the host port. HF_HOME stays the image default, which the mount below fills.
+  `-e NAME` (no value) forwards it from the Environment= lines above, which live in this
+  0600 file — a value spelled out here would be in the docker argv, i.e. in every user's `ps`.
+#}
+ExecStartPre=-/usr/bin/docker rm -f {{ vllm_unit }}
+ExecStart=/usr/bin/docker run --rm --name {{ vllm_unit }} \
+{% if vllm_cuda_visible_devices | length > 0 %}
+  --gpus '"device={{ vllm_cuda_visible_devices }}"' \
+{% else %}
+  --gpus all \
+{% endif %}
+  --ipc=host \
+  -p {{ vllm_port }}:{{ vllm_port }} \
+  -v {{ vllm_hf_home }}:/root/.cache/huggingface \
+{% for key in vllm_env %}
+  -e {{ key }} \
+{% endfor %}
+{% if vllm_effective_api_key | length > 0 %}
+  -e VLLM_API_KEY \
+{% endif %}
+  {{ vllm_image }} {{ vllm_model }} {{ vllm_serve_args | join(' ') }}
+ExecStop=/usr/bin/docker stop {{ vllm_unit }}
+Restart=on-failure
+RestartSec=10
+LimitNOFILE=65536
+TimeoutStartSec=900
+
+[Install]
+WantedBy=multi-user.target

@@ -27,6 +27,19 @@ def gateway_service_source():
 	return os.path.join(app_grove_root(), "gateway_service")
 
 
+def is_env_key(name):
+	"""True for a POSIX-shaped env var name. Env rows are interpolated into a systemd unit
+	and a `docker run` argv, so anything else is rejected before it gets there."""
+	return bool(re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name or ""))
+
+
+def is_env_value(value):
+	"""True when the value survives a systemd unit intact. Values render as
+	Environment="KEY=<value>", so a newline would start a fresh directive (ExecStart= and
+	friends) and a double quote would end the assignment early."""
+	return not re.search(r'[\n\r"]', value or "")
+
+
 def slugify(text):
 	"""'Qwen3.5 Coder_Next' → 'qwen3.5-coder-next'. Lowercased; runs of whitespace,
 	underscores and dashes collapse to one dash."""

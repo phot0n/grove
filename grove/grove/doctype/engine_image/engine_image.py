@@ -24,6 +24,11 @@ class EngineImage(Document):
 		return f"{host}/{path}"
 
 	@property
+	def registry_host(self):
+		"""The registry to authenticate against, '' for Docker Hub."""
+		return (frappe.get_cached_doc("Engine Image Provider", self.image_provider).registry_host or "").strip()
+
+	@property
 	def registry_credentials(self):
 		"""(username, token) for the pull, or None when the registry is anonymous."""
 		provider = frappe.get_cached_doc("Engine Image Provider", self.image_provider)

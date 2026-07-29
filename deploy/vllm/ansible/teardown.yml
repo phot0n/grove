@@ -15,6 +15,11 @@
         enabled: false
       failed_when: false   # unit may already be gone
 
+    - name: Remove the instance container (container placement only)
+      ansible.builtin.command: "docker rm -f vllm-{{ vllm_instance }}"
+      changed_when: true
+      failed_when: false   # no Docker, or no such container → nothing to remove
+
     - name: Remove the unit file
       ansible.builtin.file:
         path: "/etc/systemd/system/vllm-{{ vllm_instance }}.service"
@@ -22,12 +27,12 @@
 
     - name: Remove the per-instance key file
       ansible.builtin.file:
-        path: "{{ vllm_home | default('/opt/vllm') }}/keys/{{ vllm_instance }}.key"
+        path: "{{ vllm_home }}/keys/{{ vllm_instance }}.key"
         state: absent
 
     - name: Remove the exclusive per-deployment venv (reclaims the multi-GB torch install)
       ansible.builtin.file:
-        path: "{{ vllm_home | default('/opt/vllm') }}/venvs/{{ vllm_instance }}_venv"
+        path: "{{ vllm_home }}/venvs/{{ vllm_instance }}_venv"
         state: absent
 
     - name: Reload systemd so the removed unit is forgotten

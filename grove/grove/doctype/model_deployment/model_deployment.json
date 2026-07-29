@@ -12,6 +12,7 @@
   "status",
   "column_break_engine",
   "engine_port",
+  "engine_image",
   "engine_version",
   "engine_url",
   "internal_api_key",
@@ -30,7 +31,9 @@
   "pipeline_parallel_size",
   "section_extra",
   "aliases",
-  "extra_serve_args"
+  "extra_serve_args",
+  "section_env",
+  "env"
  ],
  "fields": [
   {
@@ -66,6 +69,13 @@
    "fieldtype": "Int",
    "label": "Engine Port",
    "read_only": 1
+  },
+  {
+   "description": "Set → serve in a container from this image (docker run inside the same systemd unit). Blank → build a venv on the box. The image tag owns the vLLM version, so it cannot be combined with Engine Version.",
+   "fieldname": "engine_image",
+   "fieldtype": "Link",
+   "label": "Engine Image",
+   "options": "Engine Image"
   },
   {
    "description": "vLLM version to install for this deployment, e.g. 0.24.0. Empty = latest. \u2192 vllm_version (pip vllm==). Each deployment gets its OWN venv (_venv), so a box can run mixed versions side by side. Set-only-once: frozen after first save \u2014 to change version, make a new deployment.",
@@ -193,6 +203,18 @@
   {
    "fieldname": "column_break_ngfd",
    "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "section_env",
+   "fieldtype": "Section Break",
+   "label": "Environment"
+  },
+  {
+   "description": "Extra env vars for the engine process (both placements). Layered on top of the vars Grove derives, so a row here overrides them.",
+   "fieldname": "env",
+   "fieldtype": "Table",
+   "label": "Environment Variables",
+   "options": "Pod Env"
   }
  ],
  "links": [],
