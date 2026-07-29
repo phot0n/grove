@@ -73,6 +73,8 @@ def _pod_env(pod):
 			env["VLLM_API_KEY"] = key
 		if pod.attention_backend:
 			env["VLLM_ATTENTION_BACKEND"] = pod.attention_backend
+		if pod.allow_long_max_model_len:
+			env["VLLM_ALLOW_LONG_MAX_MODEL_LEN"] = "1"
 		if frappe.conf.get("hf_token") and frappe.db.get_value("Model", pod.model, "gated"):
 			env["HUGGING_FACE_HUB_TOKEN"] = frappe.conf.get("hf_token")
 	for row in pod.env or []:

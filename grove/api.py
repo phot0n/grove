@@ -5,6 +5,8 @@ API key, and return a ready-to-use inference endpoint. Cold path (Frappe)."""
 
 import frappe
 
+from grove.grove.doctype.grove_user.grove_user import for_email
+
 # TODO: we'll give central user some kind of "system" role
 
 @frappe.whitelist()
@@ -22,12 +24,16 @@ def provision_key(name: str, email: str, token_limit: int=None, allowed_models: 
 		user.user_type = "Website User"
 		user.insert()
 
+	# 2. Access and budget are per-user now, so both land on the Grove User rather than
+	# the key. The budget is SHARED by every key this user holds — minting a second key
+	# does not hand out a second allowance. Written unconditionally: the key links to this
+	# doc, and a blank one is the correct fail-closed default (no group, no allow).
+	grove_user = _set_policy(email, allowed_models, token_limit)
+
 	# 3. Mint the key (controller generates secret + hash, pushes to gateways).
-	key = frappe.new_doc("API Key")
-	key.user = email
+	key = frappe.new_doc("Grove API Key")
+	key.user = grove_user
 	key.status = "active"
-	key.allowed_models = ",".join(allowed_models) if allowed_models else None
-	key.max_tokens = token_limit or 0
 	key.insert()
 
 	host = frappe.db.get_single_value("Grove Settings", "gateway_host")
@@ -44,13 +50,13 @@ def provision_key(name: str, email: str, token_limit: int=None, allowed_models: 
 def revoke_key(api_key):
 	"""Revoke by the full key (not the doc name): hash it → find by key_hash →
 	flip status → revoked. Gateways drop it within the cache TTL."""
-	from grove.grove.doctype.api_key.api_key import hash_secret
+	from grove.grove.doctype.grove_api_key.grove_api_key import hash_secret
 
-	key = frappe.db.get_value("API Key", {"key_hash": hash_secret(api_key.strip())})
+	key = frappe.db.get_value("Grove API Key", {"key_hash": hash_secret(api_key.strip())})
 	if not key:
 		frappe.throw("no such API key", frappe.DoesNotExistError)
 
-	frappe.get_doc("API Key", key).revoke()
+	frappe.get_doc("Grove API Key", key).revoke()
 	return "Revoked. Might take some time to reflect."
 
 
@@ -64,23 +70,56 @@ def usage(users, month=None):
 	if isinstance(users, str):
 		users = [users]
 
+	fields = ("prompt_tokens", "completion_tokens", "cached_tokens", "total_tokens", "request_count")
+	# In and out by email; the records themselves are keyed by Grove User.
+	emails = dict(
+		frappe.get_all("Grove User", {"user": ("in", users)}, ["name", "user"], as_list=True)
+	)
 	records = frappe.get_all(
 		"Usage Record",
-		filters={"user": ["in", users], "month": month},
-		fields=["user", "prompt_tokens", "completion_tokens", "total_tokens", "request_count", "cached_tokens"],
+		filters={"user": ["in", list(emails)], "month": month},
+		fields=["user", *fields],
 	)
 
 	usage = {}
 	for r in records:
-		usage[r.user] = {"prompt_tokens": 0, "completion_tokens": 0, "cached_tokens": 0, "total_tokens": 0, "request_count": 0}
-		for f in usage[r.user]:
-			usage[r.user][f] += r.get(f) or 0
-
-		usage[r.user]["billable_tokens"] = usage[r.user]["total_tokens"] - usage[r.user]["cached_tokens"]
+		# A user holds several keys and so several records a month — accumulate, don't
+		# overwrite.
+		totals = usage.setdefault(emails[r.user], dict.fromkeys(fields, 0))
+		for f in fields:
+			totals[f] += r.get(f) or 0
+		totals["billable_tokens"] = totals["total_tokens"] - totals["cached_tokens"]
 	return {"users": users, "month": month, **usage}
 
 
 @frappe.whitelist()
 def available_models():
-	"""Return the list of published models."""
-	return frappe.get_all("Model", {"published": 1}, ["name", "display_name"])
+	"""Models the caller may actually call: their access set, minus anything without a
+	live route (an unreachable model would only 503)."""
+	from grove.access import effective_models
+
+	allowed = effective_models(for_email(frappe.session.user))
+	if not allowed:
+		return []
+	return frappe.get_all(
+		"Model",
+		{"published": 1, "name": ("in", list(allowed))},
+		["name", "display_name"],
+	)
+
+
+def _set_policy(email, models, token_limit):
+	"""Write the user's Grove User policy and return its name — the id every key, usage
+	record and access lookup carries. `models` is exactly what they may call; `token_limit`
+	is their shared monthly budget."""
+	name = for_email(email)
+	doc = frappe.get_doc("Grove User", name) if name else frappe.new_doc("Grove User")
+	doc.user = email
+	if models:
+		doc.allow = []
+		for model in models:
+			doc.append("allow", {"model": model})
+	if token_limit:
+		doc.max_tokens = token_limit
+	doc.save(ignore_permissions=True)
+	return doc.name

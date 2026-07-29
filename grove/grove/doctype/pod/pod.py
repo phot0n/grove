@@ -26,6 +26,7 @@ class Pod(Document):
 		from grove.grove.doctype.pod_port.pod_port import PodPort
 
 		aliases: DF.SmallText | None
+		allow_long_max_model_len: DF.Check
 		api_key: DF.Password | None
 		attention_backend: DF.Literal["auto", "FLASH_ATTN", "XFORMERS", "FLASHINFER"]
 		cloud_provider: DF.Link

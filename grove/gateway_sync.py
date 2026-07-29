@@ -22,6 +22,9 @@ import requests
 
 import frappe
 
+from grove.access import effective_models, effective_priority
+from grove.grove.doctype.grove_user.grove_user import is_rate_limited
+
 TIMEOUT = 10
 _ALL = object()  # sentinel: push the complete set (vs. a subset list, vs. None = skip)
 
@@ -45,30 +48,43 @@ def _post(admin_url, token, path, payload):
 
 
 def _effective_keys(proxy):
-	"""All API Keys projected for the gateway: identity + status + allowed_models.
-	The only rate limit is the monthly token budget, surfaced via status
-	(rate_limited); no per-request rpm/tpm/concurrency knobs anymore."""
+	"""All API Keys projected for the gateway: identity + status + the flat set of models
+	the key may call + the scheduling priority to stamp on its requests. The only rate limit
+	is the monthly token budget, surfaced via status (rate_limited); no per-request rpm/tpm/
+	concurrency knobs anymore."""
 	rows = frappe.get_all(
-		"API Key",
-		fields=["name", "key_hash", "user", "status", "rate_limited", "allowed_models"],
+		"Grove API Key",
+		fields=["name", "key_hash", "user", "status"],
 	)
+	# Access is a property of the user, not the key — resolve each user once even when
+	# they hold several keys.
+	per_user = {}
 	keys = []
 	for k in rows:
 		if not k.key_hash:
 			continue
 		# The gateway keeps no rate counters — the only limit is the monthly token
-		# budget, which the control plane flags as rate_limited, surfaced here as a
-		# distinct status (→ 429). Revoked still wins; the budget only gates active
-		# keys.
+		# budget, which the control plane flags on the USER, surfaced here as a distinct
+		# status (→ 429). Revoked still wins; the budget only gates active keys. Reading
+		# it off the user is what stops a blocked user minting a fresh, unblocked key.
+		if k.user not in per_user:
+			per_user[k.user] = (
+				frappe.db.get_value("Grove User", k.user, "user") or "",
+				sorted(effective_models(k.user)),
+				is_rate_limited(k.user),
+				effective_priority(k.user),
+			)
+		email, models, limited, priority = per_user[k.user]
 		status = k.status or "active"
-		if status == "active" and k.rate_limited:
+		if status == "active" and limited:
 			status = "rate_limited"
 		keys.append({
 			"key_hash": k.key_hash,
 			"prefix": k.name,  # doc name (random hash) = usage attribution id
-			"user": k.user or "",
+			"user": email,  # email, not the Grove User name — this one is for humans reading Redis
 			"status": status,
-			"allowed_models": (k.allowed_models or "").replace("\n", ",").replace(" ", ""),
+			"models": ",".join(models),
+			"priority": priority,  # already in vLLM's convention — the gateway just stamps it
 		})
 	return keys
 
@@ -150,7 +166,7 @@ def full_sync(proxies=None, trigger="Manual"):
 		if not active:
 			return None
 
-		keys_snap = _snapshot_dirty("API Key")
+		keys_snap = _snapshot_dirty("Grove API Key")
 
 		ok = 0
 		for proxy in active:
@@ -163,7 +179,7 @@ def full_sync(proxies=None, trigger="Manual"):
 		# keys, so the dirty keys it covered can clear. (Subset runs clear
 		# nothing global; routes are not dirty-gated.)
 		if doc.status == "Success" and set(active) >= set(all_active):
-			_clear_unchanged("API Key", keys_snap)
+			_clear_unchanged("Grove API Key", keys_snap)
 
 		frappe.db.commit()
 		return doc.name
@@ -181,7 +197,7 @@ def sync_dirty(trigger="Scheduled"):
 	if not doc.acquire_lock(wait=0):  # scheduled → skip if a run is in flight
 		return None
 	try:
-		dirty_keys = frappe.get_all("API Key", filters={"dirty": 1}, fields=["name", "modified"])
+		dirty_keys = frappe.get_all("Grove API Key", filters={"dirty": 1}, fields=["name", "modified"])
 		# Routes come from Model Deployments AND standalone serving Pods (Running).
 		has_deps = bool(frappe.db.count("Model Deployment")) or bool(
 			frappe.db.count("Pod", {"status": "Running"})
@@ -213,7 +229,7 @@ def sync_dirty(trigger="Scheduled"):
 
 		# Keys clear only once every key-target proxy accepted them.
 		if dirty_keys and all(ok_by_proxy.get(p) for p in key_targets):
-			_clear_unchanged("API Key", dirty_keys)
+			_clear_unchanged("Grove API Key", dirty_keys)
 
 		frappe.db.commit()
 		return doc.name

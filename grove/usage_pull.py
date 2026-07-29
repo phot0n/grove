@@ -19,13 +19,14 @@ child row, same as the keys/routes sync, and serialized by that doc's own lock s
 two overlapping pulls can't drain the same counters twice."""
 
 import time
-from datetime import datetime, timezone
 
 import requests
 
 import frappe
 
 from grove.gateway_sync import _active_proxies, _finalize, _new_run
+from grove.grove.doctype.grove_user.grove_user import monthly_budget, set_rate_limited
+from grove.grove.doctype.usage_record.usage_record import billable_tokens, current_month
 
 TIMEOUT = 15
 _FIELDS = ("prompt_tokens", "completion_tokens", "total_tokens", "cached_tokens", "request_count")
@@ -54,32 +55,21 @@ def pull_all():
 
 
 def reactivate_rate_limited():
-	"""Daily job: clear rate_limited (+ dirty) on keys whose CURRENT-month usage is
-	back under their budget — i.e. the month rolled over (new/no Usage Record) or
-	the budget was raised. A key still over budget for the still-active current
-	month stays blocked (the monthly cap is HARD — no daily burst). Runs
-	independently of traffic so a blocked key still gets un-limited at month
-	rollover (it otherwise sees no usage to re-fire the on_update). Marks each
-	cleared key dirty → the next sync pushes status=active. Returns the count
-	reactivated."""
-	month = datetime.now(timezone.utc).strftime("%Y-%m")
-	limited = frappe.get_all("API Key", filters={"rate_limited": 1}, fields=["name", "max_tokens"])
+	"""Daily job: clear rate_limited for users whose CURRENT-month usage is
+	back under their budget — i.e. the month rolled over (no Usage Records yet) or the
+	budget was raised. A user still over budget for the still-active current month stays
+	blocked (the monthly cap is HARD — no daily burst). Runs independently of traffic so
+	a blocked user still gets un-limited at month rollover (they otherwise see no usage to
+	re-fire the on_update). The budget is per-user and shared across their keys, so this
+	clears all of a user's keys at once. Returns the count of users reactivated."""
+	month = current_month()
+	users = frappe.get_all("Grove User", filters={"rate_limited": 1}, pluck="name")
 	cleared = 0
-	for k in limited:
-		limit = k.max_tokens or 0
-		rec = frappe.db.get_value(
-			"Usage Record",
-			{"api_key": k.name, "month": month},
-			["total_tokens", "cached_tokens"],
-			as_dict=True,
-		)
-		# Billable = total - cached, identical to UsageRecord._enforce_budget.
-		used = ((rec.total_tokens or 0) - (rec.cached_tokens or 0)) if rec else 0
-		if not limit or used < limit:
-			frappe.db.set_value(
-				"API Key", k.name, {"rate_limited": 0, "dirty": 1}, update_modified=False
-			)
-			cleared += 1
+	for user in users:
+		limit = monthly_budget(user)
+		if limit and billable_tokens(user, month) >= limit:
+			continue
+		cleared += set_rate_limited(user, 0)
 	if cleared:
 		frappe.db.commit()
 	return cleared
@@ -128,13 +118,13 @@ def _pull_proxy(proxy_name):
 	if not usages:
 		return 0
 
-	month = datetime.now(timezone.utc).strftime("%Y-%m")
+	month = current_month()
 	for prefix, h in usages.items():
 		amounts = {f: int(h.get(f, 0) or 0) for f in _FIELDS}
 		per_model = _per_model(h)
 		# Record only for keys registered here; unregistered (e.g. manual test
 		# keys) are dropped — the gateway already deleted the counter on read.
-		if any(amounts.values()) and (user := frappe.db.get_value("API Key", prefix, "user")):
+		if any(amounts.values()) and (user := frappe.db.get_value("Grove API Key", prefix, "user")):
 			_add_delta(proxy_name, prefix, user, month, amounts, per_model)
 
 	frappe.db.commit()

@@ -1,0 +1,116 @@
+{
+ "actions": [],
+ "autoname": "hash",
+ "creation": "2026-07-29 00:00:00",
+ "doctype": "DocType",
+ "engine": "InnoDB",
+ "field_order": [
+  "max_tokens",
+  "user",
+  "user_group",
+  "column_break_head",
+  "rate_limited",
+  "section_allow",
+  "allow",
+  "section_deny",
+  "deny"
+ ],
+ "fields": [
+  {
+   "fieldname": "user",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "User",
+   "options": "User",
+   "reqd": 1,
+   "unique": 1
+  },
+  {
+   "description": "Group this user belongs to. Everything the group grants, this user reaches — on top of their own Allow below.",
+   "fieldname": "user_group",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "Group",
+   "options": "Grove User Group"
+  },
+  {
+   "fieldname": "column_break_head",
+   "fieldtype": "Column Break"
+  },
+  {
+   "description": "total_tokens this user may consume per calendar month (UTC); blank/0 = unlimited. SHARED across every API Key they hold \u2014 the keys are just credentials, the budget is the person's. Enforced by the control plane against the month's Usage Records; when reached, all their keys are flagged rate_limited and pushed to the gateways (reactive, resets each month).",
+   "fieldname": "max_tokens",
+   "fieldtype": "Int",
+   "label": "Max Tokens / Month"
+  },
+  {
+   "default": "0",
+   "description": "System-set: this user hit their monthly token budget, so every key they hold is rejected with 429 (their keys project status=rate_limited). Cleared by the daily grove.usage_pull.reactivate_rate_limited once current-month usage is back under budget (month rollover / raised budget); stays blocked for the rest of the month otherwise.",
+   "fieldname": "rate_limited",
+   "fieldtype": "Check",
+   "label": "Rate Limited",
+   "read_only": 1
+  },
+  {
+   "description": "Models for this user alone, on top of whatever their group grants. A user with no grants anywhere reaches no models.",
+   "fieldname": "section_allow",
+   "fieldtype": "Section Break",
+   "label": "Allow"
+  },
+  {
+   "fieldname": "allow",
+   "fieldtype": "Table",
+   "label": "Allow",
+   "options": "Grove Model Row"
+  },
+  {
+   "description": "Models this user may never call. Deny wins over everything \u2014 a group grant and a Public release both lose to it.",
+   "fieldname": "section_deny",
+   "fieldtype": "Section Break",
+   "label": "Deny"
+  },
+  {
+   "fieldname": "deny",
+   "fieldtype": "Table",
+   "label": "Deny",
+   "options": "Grove Model Row"
+  }
+ ],
+ "links": [
+  {
+   "group": "Access",
+   "link_doctype": "Grove API Key",
+   "link_fieldname": "user"
+  },
+  {
+   "group": "Usage",
+   "link_doctype": "Usage Record",
+   "link_fieldname": "user"
+  }
+ ],
+ "modified": "2026-07-29 03:46:09.548744",
+ "modified_by": "Administrator",
+ "module": "Grove",
+ "name": "Grove User",
+ "naming_rule": "Random",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "System Manager",
+   "share": 1,
+   "write": 1
+  }
+ ],
+ "row_format": "Dynamic",
+ "show_title_field_in_link": 1,
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": [],
+ "title_field": "user"
+}

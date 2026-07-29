@@ -19,6 +19,35 @@ _PORT_FREE_STATUSES = ("Inactive", "Terminated")
 
 
 class ModelDeployment(Document):
+	# begin: auto-generated types
+	# This code is auto-generated. Do not modify anything in this block.
+
+	from typing import TYPE_CHECKING
+
+	if TYPE_CHECKING:
+		from frappe.types import DF
+		from grove.grove.doctype.model_deployment_gpu.model_deployment_gpu import ModelDeploymentGPU
+
+		aliases: DF.SmallText | None
+		allow_long_max_model_len: DF.Check
+		attention_backend: DF.Literal["auto", "FLASH_ATTN", "XFORMERS", "FLASHINFER"]
+		dtype: DF.Literal["auto", "float16", "bfloat16"]
+		engine_port: DF.Int
+		engine_url: DF.Data | None
+		engine_version: DF.Data | None
+		extra_serve_args: DF.SmallText | None
+		gpu_memory_utilization: DF.Float
+		gpus: DF.Table[ModelDeploymentGPU]
+		inference_server: DF.Link
+		internal_api_key: DF.Password | None
+		max_model_len: DF.Int
+		model: DF.Link
+		pipeline_parallel_size: DF.Int
+		region: DF.Link | None
+		status: DF.Literal["Draft", "Provisioning", "Active", "Inactive", "Terminated", "Broken"]
+		tensor_parallel_size: DF.Int
+	# end: auto-generated types
+
 	# Routes are not dirty-gated: grove.gateway_sync.sync_dirty pushes the full
 	# route table for every deployment each run (idempotent), so no on_update
 	# hook is needed for routing.
@@ -257,6 +286,7 @@ def _vllm_extravars(md, m, key):
 		"vllm_api_key": key,
 		"vllm_cuda_visible_devices": ",".join(str(i) for i in gpu_indexes),
 		"vllm_attention_backend": md.attention_backend or "auto",
+		"vllm_allow_long_max_model_len": bool(md.allow_long_max_model_len),
 		"vllm_use_flashinfer_sampler": "0",
 		# Keep the venv/weights/caches on the mounted data volume (root is tiny / ephemeral).
 		"vllm_home": vllm_home,

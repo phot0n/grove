@@ -10,14 +10,16 @@
   "published",
   "section_launch",
   "quantization",
-  "column_break_launch",
   "modality",
+  "column_break_launch",
   "is_embedding",
   "enable_prefix_caching",
   "gated",
+  "scheduling_policy",
   "section_shape",
   "attention_heads",
   "hidden_layers",
+  "column_break_iewq",
   "weights_gb",
   "section_tools",
   "enable_auto_tool_choice",
@@ -43,6 +45,7 @@
   },
   {
    "default": "1",
+   "description": "Auto: this model has a live route (an Active Model Deployment or a Running Pod). Not an access gate \u2014 access is granted per user, via Grove User Group or Grove User.",
    "fieldname": "published",
    "fieldtype": "Check",
    "in_list_view": 1,
@@ -96,6 +99,15 @@
    "label": "Gated"
   },
   {
+   "default": "priority",
+   "description": "\u2192 --scheduling-policy, for every placement of this model. priority = serve by the request's priority field first (lower value first), ties broken by arrival; with no per-request priority set yet, that is the same order as fcfs. Frozen while Published \u2014 it is baked into the running engines.",
+   "fieldname": "scheduling_policy",
+   "fieldtype": "Select",
+   "label": "Scheduling Policy",
+   "options": "priority\nfcfs",
+   "read_only_depends_on": "eval:doc.published"
+  },
+  {
    "description": "From the repo's config.json. Used to reject a GPU split the model can't run before it reaches the box. Blank = that check is skipped.",
    "fieldname": "section_shape",
    "fieldtype": "Section Break",
@@ -108,7 +120,7 @@
    "label": "Attention Heads"
   },
   {
-   "description": "num_hidden_layers. Split across the pipeline-parallel group, so this must divide evenly by pipeline-parallel size.",
+   "description": "num_hidden_layers. Informational \u2014 vLLM splits these across the pipeline-parallel group and spreads any remainder, so the count need not divide evenly.",
    "fieldname": "hidden_layers",
    "fieldtype": "Int",
    "label": "Hidden Layers"
@@ -154,6 +166,10 @@
    "fieldname": "reasoning_parser",
    "fieldtype": "Data",
    "label": "Reasoning Parser"
+  },
+  {
+   "fieldname": "column_break_iewq",
+   "fieldtype": "Column Break"
   }
  ],
  "links": [
@@ -168,7 +184,7 @@
    "link_fieldname": "model"
   }
  ],
- "modified": "2026-07-26 01:28:23.867757",
+ "modified": "2026-07-29 04:09:53.060610",
  "modified_by": "Administrator",
  "module": "Grove",
  "name": "Model",

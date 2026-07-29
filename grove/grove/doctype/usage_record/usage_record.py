@@ -6,6 +6,8 @@ from datetime import datetime, timezone
 import frappe
 from frappe.model.document import Document
 
+from grove.grove.doctype.grove_user.grove_user import monthly_budget, set_rate_limited
+
 
 class UsageRecord(Document):
 	def on_update(self):
@@ -13,25 +15,36 @@ class UsageRecord(Document):
 		self._enforce_budget()
 
 	def _enforce_budget(self):
-		"""When this month's recorded BILLABLE usage reaches the key's monthly token
-		budget (API Key.max_tokens), flag the key rate_limited (+ dirty) so the next
-		key sync tells every gateway to reject it with 429. Set-only here — clearing is
-		the daily grove.usage_pull.reactivate_rate_limited job (which also breaks the
-		month-rollover deadlock, since a blocked key sees no new usage to re-fire this).
-		Reactive: usage is pulled after the fact, so a small overage is expected.
-
-		Billable = total_tokens - cached_tokens: prefix-cache hits skip prefill compute
-		(near-zero marginal cost on our own GPUs), so they don't count against budget.
-		Keep this expression identical to reactivate_rate_limited's."""
-		if self.month != datetime.now(timezone.utc).strftime("%Y-%m"):
+		"""When the USER's recorded billable usage this month reaches their budget
+		(Grove User.max_tokens), flag every key they hold rate_limited (+ dirty) so the
+		next key sync tells the gateways to reject them with 429. The budget belongs to
+		the person and is shared across their keys, so one key exhausting it stops the
+		lot. Set-only here — clearing is the daily grove.usage_pull.reactivate_rate_limited
+		job (which also breaks the month-rollover deadlock, since a blocked user sees no
+		new usage to re-fire this). Reactive: usage is pulled after the fact, so a small
+		overage is expected."""
+		if self.month != current_month():
 			return  # only the current month gates
-		limit = frappe.db.get_value("API Key", self.api_key, "max_tokens") or 0
-		billable = (self.total_tokens or 0) - (self.cached_tokens or 0)
-		if not limit or billable < limit:
+		limit = monthly_budget(self.user)
+		if not limit or billable_tokens(self.user, self.month) < limit:
 			return
-		if not frappe.db.get_value("API Key", self.api_key, "rate_limited"):
-			frappe.db.set_value(
-				"API Key",
-				self.api_key,
-				{"rate_limited": 1, "dirty": 1},
-			)
+		set_rate_limited(self.user, 1)
+
+
+def current_month():
+	"""The billing month off OUR clock, UTC — matches grove.api.usage."""
+	return datetime.now(timezone.utc).strftime("%Y-%m")
+
+
+def billable_tokens(grove_user, month):
+	"""What `grove_user` spent in `month`, summed across every key they hold.
+
+	Billable = total_tokens - cached_tokens: prefix-cache hits skip prefill compute
+	(near-zero marginal cost on our own GPUs), so they don't count against budget. One
+	definition, shared by the set and the clear side of the budget gate."""
+	rows = frappe.get_all(
+		"Usage Record",
+		filters={"user": grove_user, "month": month},
+		fields=["total_tokens", "cached_tokens"],
+	)
+	return sum((r.total_tokens or 0) - (r.cached_tokens or 0) for r in rows)

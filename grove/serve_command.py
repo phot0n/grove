@@ -11,12 +11,13 @@ import frappe
 MODEL_FIELDS = (
 	"hf_repo", "is_embedding", "quantization", "modality", "enable_prefix_caching",
 	"enable_auto_tool_choice", "tool_call_parser", "thinking", "reasoning_parser",
-	"attention_heads", "hidden_layers", "weights_gb",
+	"attention_heads", "weights_gb", "scheduling_policy",
 )
 
 DEFAULT_PORT = 8080
 DEFAULT_MAX_MODEL_LEN = 8192
 DEFAULT_GPU_MEMORY_UTILIZATION = 0.9
+DEFAULT_SCHEDULING_POLICY = "priority"
 
 
 class ServeCommand:
@@ -98,10 +99,12 @@ class ServeCommand:
 		vLLM does not fail minutes in, on the box. Shape fields left blank on the Model skip
 		their check rather than block the deploy."""
 		errors = []
-		pipeline = self.pipeline_parallel_size
-		if self.gpu_count % pipeline:
+		# Layers need not divide by the pipeline size — vLLM's get_pp_indices spreads the
+		# remainder across stages. Only the TP head split is a hard requirement.
+		if self.gpu_count % self.pipeline_parallel_size:
 			errors.append(
-				f"{self.gpu_count} GPUs do not divide evenly into {pipeline} pipeline stages."
+				f"{self.gpu_count} GPUs do not divide evenly into "
+				f"{self.pipeline_parallel_size} pipeline stages."
 			)
 		heads = self.model.get("attention_heads")
 		if heads and heads % self.tensor_parallel_size:
@@ -109,12 +112,6 @@ class ServeCommand:
 				f"{self.model_name} has {heads} attention heads, which cannot be sharded across "
 				f"tensor-parallel size {self.tensor_parallel_size} — vLLM needs an even split. "
 				f"Use a GPU count whose tensor-parallel size divides {heads}."
-			)
-		layers = self.model.get("hidden_layers")
-		if layers and layers % pipeline:
-			errors.append(
-				f"{self.model_name} has {layers} layers, which cannot be split across "
-				f"{pipeline} pipeline stages."
 			)
 		if self.usable_vram_gb and self.weights_gb > self.usable_vram_gb:
 			errors.append(
@@ -144,6 +141,12 @@ class ServeCommand:
 		return self.model.get("hf_repo")
 
 	@property
+	def scheduling_policy(self):
+		"""→ --scheduling-policy. Owned by the Model, so every placement of it queues the
+		same way."""
+		return self.model.get("scheduling_policy") or DEFAULT_SCHEDULING_POLICY
+
+	@property
 	def is_embedding(self):
 		"""Pooling model: serves /v1/embeddings, so the chat-only flags are meaningless."""
 		return bool(self.model.get("is_embedding"))
@@ -158,6 +161,10 @@ class ServeCommand:
 			"--tensor-parallel-size", str(self.tensor_parallel_size),
 			"--gpu-memory-utilization", str(self.gpu_memory_utilization),
 			"--max-model-len", str(self.max_model_len),
+			# TODO: "priority" only bites once the gateway stamps a per-request `priority` on
+			# the body (off the caller's tier) — until then everything arrives at the default
+			# priority, which queues exactly like fcfs.
+			"--scheduling-policy", self.scheduling_policy,
 			# Surfaces usage.prompt_tokens_details.cached_tokens so cached-token accounting
 			# works (billable = total - cached). Reporting-only.
 			"--enable-prompt-tokens-details",

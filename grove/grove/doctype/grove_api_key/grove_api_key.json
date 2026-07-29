@@ -9,19 +9,16 @@
   "status",
   "dirty",
   "key_hash",
-  "api_secret",
-  "column_break_limits",
-  "allowed_models",
-  "max_tokens",
-  "rate_limited"
+  "api_secret"
  ],
  "fields": [
   {
+   "description": "Owner of this key. Points at the Grove User (named by email), which is where the access lists and the shared monthly budget this key rides on actually live.",
    "fieldname": "user",
    "fieldtype": "Link",
    "in_list_view": 1,
    "label": "User",
-   "options": "User",
+   "options": "Grove User",
    "reqd": 1
   },
   {
@@ -54,37 +51,13 @@
    "fieldtype": "Password",
    "label": "API Secret",
    "read_only": 1
-  },
-  {
-   "fieldname": "column_break_limits",
-   "fieldtype": "Column Break"
-  },
-  {
-   "description": "Comma-separated model_id list; blank = all published",
-   "fieldname": "allowed_models",
-   "fieldtype": "Small Text",
-   "label": "Allowed Models"
-  },
-  {
-   "description": "total_tokens this key may consume per calendar month (UTC); blank/0 = unlimited. Enforced by the control plane against the monthly Usage Record total \u2014 when reached, rate_limited is set and pushed to the gateways (reactive, resets each month).",
-   "fieldname": "max_tokens",
-   "fieldtype": "Int",
-   "label": "Max Tokens / Month"
-  },
-  {
-   "default": "0",
-   "description": "System-set: this key hit its monthly token budget. Surfaced to gateways as status=rate_limited (\u2192 429). Cleared by the daily grove.usage_pull.reactivate_rate_limited once current-month usage is back under budget (month rollover / raised budget); stays blocked for the rest of the month otherwise.",
-   "fieldname": "rate_limited",
-   "fieldtype": "Check",
-   "label": "Rate Limited (budget)",
-   "read_only": 1
   }
  ],
  "links": [],
  "modified": "2026-07-26 01:33:04.128564",
  "modified_by": "Administrator",
  "module": "Grove",
- "name": "API Key",
+ "name": "Grove API Key",
  "naming_rule": "Random",
  "owner": "Administrator",
  "permissions": [

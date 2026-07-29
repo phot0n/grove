@@ -18,7 +18,8 @@ type adminKey struct {
 	Prefix        string `json:"prefix"`
 	User          string `json:"user"`
 	Status        string `json:"status"`         // active | revoked | rate_limited
-	AllowedModels string `json:"allowed_models"` // comma list; "" = all
+	Models        string `json:"models"`         // comma list of model ids; "" = no access
+	Priority      int    `json:"priority"`       // vLLM `priority`, sign already flipped by Grove
 }
 
 // PUT /admin/keys — upsert one or more keys. Revocation is an upsert with
@@ -40,7 +41,8 @@ func (s *server) handleAdminKeys(w http.ResponseWriter, r *http.Request) {
 			"status":         k.Status,
 			"user":           k.User,
 			"prefix":         k.Prefix,
-			"allowed_models": k.AllowedModels,
+			"models":         k.Models,
+			"priority":       k.Priority,
 		})
 	}
 	writeJSON(w, map[string]any{"ok": true, "count": len(body.Keys)})

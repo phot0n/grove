@@ -44,6 +44,7 @@ class Model(Document):
 		published: DF.Check
 		quantization: DF.Literal["", "awq", "awq_marlin", "gptq", "gptq_marlin", "fp8"]
 		reasoning_parser: DF.Data | None
+		scheduling_policy: DF.Literal["priority", "fcfs"]
 		thinking: DF.Check
 		tool_call_parser: DF.Data | None
 		weights_gb: DF.Float
@@ -58,9 +59,16 @@ class Model(Document):
 			frappe.throw("Display Name must contain at least one letter or digit.")
 
 	def validate(self):
-		# `published` is the user-facing catalog gate (allowed_models blank = all
-		# published). A model is only publishable while it actually has a live
-		# (Active) Model Deployment — never let a manual toggle claim otherwise.
+		# The read-only-when-published rule, enforced past the client.
+		if is_scheduling_policy_frozen(self.get_doc_before_save(), self):
+			frappe.throw(
+				"Scheduling Policy is frozen while the model is published — it is baked into "
+				"the running engines. Tear its placements down to change it."
+			)
+
+		# `published` means "reachable" — it tracks whether a live route exists, and is
+		# never a manual claim. It is not an access gate: access is granted per user, via
+		# Grove User Group or Grove User.
 		if self.published and not has_active_deployment(self.name):
 			self.published = 0
 
@@ -124,6 +132,14 @@ class Model(Document):
 		if not response.ok:
 			frappe.throw(f"Hugging Face returned {response.status_code} for {self.hf_repo}.")
 		return response.json()
+
+
+def is_scheduling_policy_frozen(before, after):
+	"""True when a save would move the Scheduling Policy of a model that is already
+	serving. The live engines were started with the stored policy, so a new one would name
+	a --scheduling-policy nothing is running. `before` is None on insert — nothing live yet
+	— and the stored `published` is what counts, since after.published is recomputed."""
+	return bool(before and before.published and before.scheduling_policy != after.scheduling_policy)
 
 
 def has_active_deployment(model, exclude=None):

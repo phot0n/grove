@@ -24,6 +24,9 @@ Environment=HF_TOKEN={{ vllm_hf_token }}
 Environment=VLLM_ATTENTION_BACKEND={{ vllm_attention_backend }}
 {% endif %}
 Environment=VLLM_USE_FLASHINFER_SAMPLER={{ vllm_use_flashinfer_sampler }}
+{% if vllm_allow_long_max_model_len %}
+Environment=VLLM_ALLOW_LONG_MAX_MODEL_LEN=1
+{% endif %}
 {% if vllm_effective_api_key | length > 0 %}
 Environment=VLLM_API_KEY={{ vllm_effective_api_key }}
 {% endif %}

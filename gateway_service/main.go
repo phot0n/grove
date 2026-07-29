@@ -88,6 +88,9 @@ type decideResp struct {
 	Prefix      string `json:"prefix,omitempty"`
 	Session     string `json:"session,omitempty"`
 	RequestID   string `json:"request_id,omitempty"` // gr-<gateway>-<server>-<keyprefix>-<rand>
+	// Never omitempty: Lua stamps this on every admitted body, and a missing 0 would let a
+	// client's own `priority` stand and elevate itself.
+	Priority int `json:"priority"`
 }
 
 func (s *server) handleDecide(w http.ResponseWriter, r *http.Request) {
@@ -149,6 +152,7 @@ func (s *server) handleDecide(w http.ResponseWriter, r *http.Request) {
 		Prefix:      rec.KeyPrefix,
 		Session:     session,
 		RequestID:   s.buildRequestID(route, rec.KeyPrefix),
+		Priority:    rec.Priority,
 	})
 }
 
@@ -254,14 +258,13 @@ func (s *server) handleModels(w http.ResponseWriter, r *http.Request) {
 		writeErrJSON(w, 503, "route store error")
 		return
 	}
-	restricted := len(rec.AllowedModels) > 0 // empty = all (matches evaluate)
 	created := time.Now().Unix()
 	data := []modelObj{}
 	for _, m := range deployed {
-		if restricted && !rec.AllowedModels[m] {
+		if !rec.Models[m] { // same flat set the inference path uses (matches evaluate)
 			continue
 		}
-		data = append(data, modelObj{ID: m, Object: "model", Created: created, OwnedBy: "grove"})
+		data = append(data, modelObj{ID: m, Object: "model", Created: created, OwnedBy: "frappe"})
 	}
 	writeJSON(w, map[string]any{"object": "list", "data": data})
 }
@@ -309,16 +312,18 @@ func (s *server) loadKey(ctx context.Context, meterID string) (KeyRecord, bool, 
 	if len(h) == 0 {
 		return KeyRecord{}, false, nil
 	}
+	priority, _ := strconv.Atoi(strings.TrimSpace(h["priority"])) // absent/garbage → baseline 0
 	rec := KeyRecord{
 		Status:    h["status"],
 		User:      h["user"],
 		KeyPrefix: h["prefix"],
+		Priority:  priority,
 	}
-	if am := strings.TrimSpace(h["allowed_models"]); am != "" {
-		rec.AllowedModels = map[string]bool{}
+	if am := strings.TrimSpace(h["models"]); am != "" {
+		rec.Models = map[string]bool{}
 		for _, m := range strings.Split(am, ",") {
 			if m = strings.TrimSpace(m); m != "" {
-				rec.AllowedModels[m] = true
+				rec.Models[m] = true
 			}
 		}
 	}

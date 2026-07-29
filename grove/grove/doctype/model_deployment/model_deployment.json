@@ -9,20 +9,22 @@
   "model",
   "inference_server",
   "region",
+  "status",
   "column_break_engine",
   "engine_port",
   "engine_version",
   "engine_url",
   "internal_api_key",
-  "status",
   "section_tuning",
   "dtype",
   "gpu_memory_utilization",
   "column_break_tuning",
   "attention_backend",
   "max_model_len",
+  "allow_long_max_model_len",
   "section_gpus",
   "gpus",
+  "column_break_ngfd",
   "tensor_parallel_size",
   "pipeline_parallel_size",
   "section_extra",
@@ -30,38 +32,181 @@
   "extra_serve_args"
  ],
  "fields": [
-  {"fieldname": "model", "fieldtype": "Link", "label": "Model", "options": "Model", "reqd": 1, "in_list_view": 1},
-  {"fieldname": "inference_server", "fieldtype": "Link", "label": "Inference Server", "options": "Inference Server", "reqd": 1},
-  {"fieldname": "region", "fieldtype": "Link", "label": "Region", "options": "Region", "fetch_from": "inference_server.region", "read_only": 1},
-  {"fieldname": "column_break_engine", "fieldtype": "Column Break"},
-  {"fieldname": "engine_port", "fieldtype": "Int", "label": "Engine Port", "read_only": 1, "description": "Auto-allocated (read-only): lowest free port from 8080 up, scoped to this Inference Server (→ --port / vllm_port). Multi-tenant box → one port per deployment; freed on teardown and reused."},
-  {"fieldname": "engine_version", "fieldtype": "Data", "label": "Engine Version", "set_only_once": 1, "description": "vLLM version to install for this deployment, e.g. 0.24.0. Empty = latest. → vllm_version (pip vllm==<ver>). Each deployment gets its OWN venv (<slug>_venv), so a box can run mixed versions side by side. Set-only-once: frozen after first save — to change version, make a new deployment."},
-  {"fieldname": "engine_url", "fieldtype": "Data", "label": "Engine URL", "read_only": 1, "description": "Auto-derived (read-only): http://<machine IP>:<engine_port> — this deployment's own vLLM instance. The gateway forwards straight here (no LiteLLM); vLLM serves /v1/messages natively."},
-  {"fieldname": "internal_api_key", "fieldtype": "Password", "label": "Internal API Key"},
-  {"fieldname": "status", "fieldtype": "Select", "label": "Status", "options": "Draft\nProvisioning\nActive\nInactive\nTerminated\nBroken", "default": "Draft", "in_list_view": 1},
-  {"fieldname": "section_tuning", "fieldtype": "Section Break", "label": "Hardware Tuning", "description": "Per-box serving knobs — depend on THIS deployment's GPU, not the portable Model profile."},
-  {"fieldname": "dtype", "fieldtype": "Select", "label": "Dtype", "options": "auto\nfloat16\nbfloat16", "default": "auto"},
-  {"fieldname": "gpu_memory_utilization", "fieldtype": "Float", "label": "GPU Memory Utilization", "default": "0.9", "description": "→ --gpu-memory-utilization (0-1). Depends on the GPU's VRAM headroom."},
-  {"fieldname": "column_break_tuning", "fieldtype": "Column Break"},
-  {"fieldname": "attention_backend", "fieldtype": "Select", "label": "Attention Backend", "options": "auto\nFLASH_ATTN\nXFORMERS\nFLASHINFER", "default": "auto"},
-  {"fieldname": "max_model_len", "fieldtype": "Int", "label": "Max Model Len", "description": "→ --max-model-len. Cap for the KV cache; ≤ the model's native context. Blank = 8192. Depends on this box's VRAM headroom."},
-  {"fieldname": "section_gpus", "fieldtype": "Section Break", "label": "GPUs", "description": "Which GPUs on this box the engine runs on. Add one row per GPU (CUDA index from the Machine's GPU table). N rows → --tensor-parallel-size N + CUDA_VISIBLE_DEVICES pinned to those indices. Marked Allocated on Deploy, freed on Tear Down."},
-  {"fieldname": "gpus", "fieldtype": "Table", "label": "GPUs", "options": "Model Deployment GPU"},
-  {"fieldname": "tensor_parallel_size", "fieldtype": "Int", "label": "Tensor Parallel Size", "read_only": 1, "description": "Derived = GPU rows / pipeline parallel size. 1 = single-GPU. → --tensor-parallel-size."},
-  {"fieldname": "pipeline_parallel_size", "fieldtype": "Int", "label": "Pipeline Parallel Size", "default": "1", "description": "Stages to split the model's layers across (--pipeline-parallel-size). 1 = pure tensor parallel. Must divide the number of GPU rows evenly."},
-  {"fieldname": "section_extra", "fieldtype": "Section Break", "label": "Extra"},
-  {"fieldname": "aliases", "fieldtype": "Small Text", "label": "Aliases", "description": "Extra --served-model-name values (comma/space separated); old client model-names keep working."},
-  {"fieldname": "extra_serve_args", "fieldtype": "Small Text", "label": "Extra Serve Args", "description": "Freeform extra `vllm serve` flags appended verbatim, e.g. --kv-cache-dtype fp8 --max-num-seqs 64."}
+  {
+   "fieldname": "model",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "Model",
+   "options": "Model",
+   "reqd": 1
+  },
+  {
+   "fieldname": "inference_server",
+   "fieldtype": "Link",
+   "label": "Inference Server",
+   "options": "Inference Server",
+   "reqd": 1
+  },
+  {
+   "fetch_from": "inference_server.region",
+   "fieldname": "region",
+   "fieldtype": "Link",
+   "label": "Region",
+   "options": "Region",
+   "read_only": 1
+  },
+  {
+   "fieldname": "column_break_engine",
+   "fieldtype": "Column Break"
+  },
+  {
+   "description": "Auto-allocated (read-only): lowest free port from 8080 up, scoped to this Inference Server (\u2192 --port / vllm_port). Multi-tenant box \u2192 one port per deployment; freed on teardown and reused.",
+   "fieldname": "engine_port",
+   "fieldtype": "Int",
+   "label": "Engine Port",
+   "read_only": 1
+  },
+  {
+   "description": "vLLM version to install for this deployment, e.g. 0.24.0. Empty = latest. \u2192 vllm_version (pip vllm==). Each deployment gets its OWN venv (_venv), so a box can run mixed versions side by side. Set-only-once: frozen after first save \u2014 to change version, make a new deployment.",
+   "fieldname": "engine_version",
+   "fieldtype": "Data",
+   "label": "Engine Version",
+   "set_only_once": 1
+  },
+  {
+   "description": "Auto-derived (read-only): http://: \u2014 this deployment's own vLLM instance. The gateway forwards straight here (no LiteLLM); vLLM serves /v1/messages natively.",
+   "fieldname": "engine_url",
+   "fieldtype": "Data",
+   "label": "Engine URL",
+   "read_only": 1
+  },
+  {
+   "fieldname": "internal_api_key",
+   "fieldtype": "Password",
+   "label": "Internal API Key"
+  },
+  {
+   "default": "Draft",
+   "fieldname": "status",
+   "fieldtype": "Select",
+   "in_list_view": 1,
+   "label": "Status",
+   "options": "Draft\nProvisioning\nActive\nInactive\nTerminated\nBroken"
+  },
+  {
+   "description": "Per-box serving knobs \u2014 depend on THIS deployment's GPU, not the portable Model profile.",
+   "fieldname": "section_tuning",
+   "fieldtype": "Section Break",
+   "label": "Hardware Tuning"
+  },
+  {
+   "default": "auto",
+   "fieldname": "dtype",
+   "fieldtype": "Select",
+   "label": "Dtype",
+   "options": "auto\nfloat16\nbfloat16"
+  },
+  {
+   "default": "0.9",
+   "description": "\u2192 --gpu-memory-utilization (0-1). Depends on the GPU's VRAM headroom.",
+   "fieldname": "gpu_memory_utilization",
+   "fieldtype": "Float",
+   "label": "GPU Memory Utilization"
+  },
+  {
+   "fieldname": "column_break_tuning",
+   "fieldtype": "Column Break"
+  },
+  {
+   "default": "auto",
+   "fieldname": "attention_backend",
+   "fieldtype": "Select",
+   "label": "Attention Backend",
+   "options": "auto\nFLASH_ATTN\nXFORMERS\nFLASHINFER"
+  },
+  {
+   "description": "\u2192 --max-model-len. Cap for the KV cache; \u2264 the model's native context unless the override below is ticked. Blank = 8192. Depends on this box's VRAM headroom.",
+   "fieldname": "max_model_len",
+   "fieldtype": "Int",
+   "label": "Max Model Len"
+  },
+  {
+   "default": "0",
+   "depends_on": "max_model_len",
+   "description": "\u2192 VLLM_ALLOW_LONG_MAX_MODEL_LEN=1. vLLM refuses to start when Max Model Len exceeds the context the repo's config.json declares. Tick to override that guard (e.g. RoPE-extended serving). Wrong values give garbage output instead of an error, so only tick when the longer context is intended.",
+   "fieldname": "allow_long_max_model_len",
+   "fieldtype": "Check",
+   "label": "Allow Long Max Model Len"
+  },
+  {
+   "description": "Which GPUs on this box the engine runs on. Add one row per GPU (CUDA index from the Machine's GPU table). N rows \u2192 --tensor-parallel-size N + CUDA_VISIBLE_DEVICES pinned to those indices. Marked Allocated on Deploy, freed on Tear Down.",
+   "fieldname": "section_gpus",
+   "fieldtype": "Section Break",
+   "label": "GPUs"
+  },
+  {
+   "fieldname": "gpus",
+   "fieldtype": "Table",
+   "label": "GPUs",
+   "options": "Model Deployment GPU"
+  },
+  {
+   "description": "Derived = GPU rows / pipeline parallel size. 1 = single-GPU. \u2192 --tensor-parallel-size.",
+   "fieldname": "tensor_parallel_size",
+   "fieldtype": "Int",
+   "label": "Tensor Parallel Size",
+   "read_only": 1
+  },
+  {
+   "default": "1",
+   "description": "Stages to split the model's layers across (--pipeline-parallel-size). 1 = pure tensor parallel. Must divide the number of GPU rows evenly.",
+   "fieldname": "pipeline_parallel_size",
+   "fieldtype": "Int",
+   "label": "Pipeline Parallel Size"
+  },
+  {
+   "fieldname": "section_extra",
+   "fieldtype": "Section Break",
+   "label": "Extra"
+  },
+  {
+   "description": "Extra --served-model-name values (comma/space separated); old client model-names keep working.",
+   "fieldname": "aliases",
+   "fieldtype": "Small Text",
+   "label": "Aliases"
+  },
+  {
+   "description": "Freeform extra `vllm serve` flags appended verbatim, e.g. --kv-cache-dtype fp8 --max-num-seqs 64.",
+   "fieldname": "extra_serve_args",
+   "fieldtype": "Small Text",
+   "label": "Extra Serve Args"
+  },
+  {
+   "fieldname": "column_break_ngfd",
+   "fieldtype": "Column Break"
+  }
  ],
  "links": [],
- "modified": "2026-07-01 00:04:00",
+ "modified": "2026-07-27 14:04:41.125593",
  "modified_by": "Administrator",
  "module": "Grove",
  "name": "Model Deployment",
+ "naming_rule": "Expression (old style)",
  "owner": "Administrator",
  "permissions": [
-  {"create": 1, "delete": 1, "email": 1, "print": 1, "read": 1, "report": 1, "role": "System Manager", "share": 1, "write": 1}
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "System Manager",
+   "share": 1,
+   "write": 1
+  }
  ],
+ "row_format": "Dynamic",
  "sort_field": "modified",
  "sort_order": "DESC",
  "states": []

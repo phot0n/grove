@@ -15,7 +15,7 @@ def hash_secret(secret: str) -> str:
 	return hashlib.sha256(secret.encode()).hexdigest()
 
 
-class APIKey(Document):
+class GroveAPIKey(Document):
 	# begin: auto-generated types
 	# This code is auto-generated. Do not modify anything in this block.
 
@@ -24,12 +24,9 @@ class APIKey(Document):
 	if TYPE_CHECKING:
 		from frappe.types import DF
 
-		allowed_models: DF.SmallText | None
 		api_secret: DF.Password | None
 		dirty: DF.Check
 		key_hash: DF.Data | None
-		max_tokens: DF.Int
-		rate_limited: DF.Check
 		status: DF.Literal["active", "revoked"]
 		user: DF.Link
 	# end: auto-generated types
@@ -41,10 +38,9 @@ class APIKey(Document):
 		full_key = KEY_PREFIX + secrets.token_hex(24)
 		self.key_hash = hash_secret(full_key)
 		self.api_secret = full_key
-		print(self.api_secret)
 
 	def on_update(self):
-		# Covers revocation (status flip) and limit edits.
+		# Covers revocation (status flip) and any other key edit.
 		if not self.dirty:
 			self._mark_dirty()
 
@@ -60,3 +56,17 @@ class APIKey(Document):
 	def _mark_dirty(self):
 		frappe.db.set_value(self.doctype, self.name, "dirty", 1, update_modified=False)
 		self.dirty = 1
+
+
+def mark_keys_dirty(grove_users=None):
+	"""Queue keys for the next sync_dirty push. A key carries its user's flattened model
+	set, so anything that changes access has to re-push the affected keys. Takes Grove User
+	doc names (what `user` links to). `grove_users=None` means every key — what a Model
+	release does, since it moves for everyone."""
+	filters = {"dirty": 0}
+	if grove_users is not None:
+		grove_users = list(grove_users)
+		if not grove_users:
+			return
+		filters["user"] = ("in", grove_users)
+	frappe.db.set_value("Grove API Key", filters, "dirty", 1, update_modified=False)
