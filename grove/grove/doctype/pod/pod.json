@@ -37,7 +37,6 @@
   "section_serve",
   "serve_port",
   "api_key",
-  "scheduling_policy",
   "column_break_serve",
   "dtype",
   "gpu_memory_utilization",
@@ -276,18 +275,10 @@
   {
    "default": "0",
    "depends_on": "max_model_len",
-   "description": "→ VLLM_ALLOW_LONG_MAX_MODEL_LEN=1. vLLM refuses to start when Max Model Len exceeds the context the repo's config.json declares. Tick to override that guard (e.g. RoPE-extended serving). Wrong values give garbage output instead of an error, so only tick when the longer context is intended.",
+   "description": "\u2192 VLLM_ALLOW_LONG_MAX_MODEL_LEN=1. vLLM refuses to start when Max Model Len exceeds the context the repo's config.json declares. Tick to override that guard (e.g. RoPE-extended serving). Wrong values give garbage output instead of an error, so only tick when the longer context is intended.",
    "fieldname": "allow_long_max_model_len",
    "fieldtype": "Check",
    "label": "Allow Long Max Model Len"
-  },
-  {
-   "default": "fcfs",
-   "description": "\u2192 --scheduling-policy. fcfs = first come, first served. priority = serve by the request's priority field first (lower value first), ties broken by arrival.",
-   "fieldname": "scheduling_policy",
-   "fieldtype": "Select",
-   "label": "Scheduling Policy",
-   "options": "fcfs\npriority"
   },
   {
    "fieldname": "section_extra",

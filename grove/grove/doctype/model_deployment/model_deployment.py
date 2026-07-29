@@ -44,7 +44,6 @@ class ModelDeployment(Document):
 		model: DF.Link
 		pipeline_parallel_size: DF.Int
 		region: DF.Link | None
-		scheduling_policy: DF.Literal["fcfs", "priority"]
 		status: DF.Literal["Draft", "Provisioning", "Active", "Inactive", "Terminated", "Broken"]
 		tensor_parallel_size: DF.Int
 	# end: auto-generated types

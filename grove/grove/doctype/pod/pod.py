@@ -46,7 +46,6 @@ class Pod(Document):
 		pod_id: DF.Data | None
 		ports: DF.Table[PodPort]
 		public_ip: DF.Data | None
-		scheduling_policy: DF.Literal["fcfs", "priority"]
 		serve_command: DF.Code | None
 		serve_port: DF.Int
 		ssh_port: DF.Int
