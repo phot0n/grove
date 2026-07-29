@@ -143,3 +143,23 @@
           path: nvidia-container-runtime
           args: []
   notify: restart docker
+
+# Engine containers carry --restart unless-stopped, so dockerd starts them at boot — and
+# neither dockerd nor Docker's restart policy knows this volume exists. Without this ordering
+# a late mount means dockerd comes up on an empty data-root and a container bind-mounts an
+# empty weights cache, silently re-downloading multi-GB onto the mount point. fstab is nofail,
+# so that failure is otherwise quiet; RequiresMountsFor makes it loud instead.
+- name: Ensure the Docker unit drop-in directory exists
+  ansible.builtin.file:
+    path: /etc/systemd/system/docker.service.d
+    state: directory
+    mode: "0755"
+
+- name: Order Docker after the data volume mount
+  ansible.builtin.copy:
+    dest: /etc/systemd/system/docker.service.d/data-volume.conf
+    content: |
+      [Unit]
+      RequiresMountsFor={{ gpu_data_mount }}
+    mode: "0644"
+  notify: restart docker

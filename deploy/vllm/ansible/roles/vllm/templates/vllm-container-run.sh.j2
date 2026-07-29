@@ -1,0 +1,32 @@
+#!/bin/sh
+{#
+  Rendered by the vllm role — do not edit on the box. Edit the Model Deployment and hit
+  Update Engine Config; this file is re-rendered and re-run.
+
+  Docker owns the container's lifecycle: --restart unless-stopped survives a crash, a
+  reboot and a dockerd restart, so nothing supervises it. Re-running this script is how
+  config changes land — stop (SIGTERM, then SIGKILL after the grace period), remove, run
+  with the current argv. That makes the script itself the config: Ansible's template task
+  reports changed exactly when the argv moved, which is what triggers the replace.
+
+  --ipc=host is mandatory for tensor-parallel > 1 (torch needs host shared memory).
+  The port is the same inside and out — the serve args already set --port, and engine_url
+  is derived from the host port. HF_HOME stays the image default, which the mount fills.
+#}
+set -eu
+
+docker stop {{ vllm_unit }} >/dev/null 2>&1 || true
+docker rm -f {{ vllm_unit }} >/dev/null 2>&1 || true
+
+exec docker run --detach --restart unless-stopped --name {{ vllm_unit }} \
+{% if vllm_cuda_visible_devices | length > 0 %}
+  --gpus '"device={{ vllm_cuda_visible_devices }}"' \
+{% else %}
+  --gpus all \
+{% endif %}
+  --ipc=host \
+  -p {{ vllm_port }}:{{ vllm_port }} \
+  -v {{ vllm_hf_home }}:/root/.cache/huggingface \
+  --env-file {{ vllm_container_env_file }} \
+  --log-opt max-size=100m --log-opt max-file=5 \
+  {{ vllm_image }} {{ vllm_model }} {{ vllm_serve_args | join(' ') }}

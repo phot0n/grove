@@ -1,7 +1,8 @@
 ---
-# Two placements share this role. vllm_image set → pull the engine image and let the unit
-# run `docker run`; blank → build a per-deployment venv and let the unit run its `vllm serve`.
-# Everything after the install split (dirs, keys, unit, health gate) is common to both.
+# Two placements share this role. vllm_image set → pull the engine image and let Docker own
+# the container; blank → build a per-deployment venv and let a systemd unit own the process.
+# The split is only over install + who supervises: dirs, keys, port and the health gate are
+# common, so the gateway cannot tell the two apart.
 - name: Install build/runtime apt packages
   ansible.builtin.apt:
     name: "{{ vllm_apt_packages }}"
@@ -45,6 +46,7 @@
     - "{{ vllm_home }}/pip-cache"
     - "{{ vllm_home }}/venvs"
     - "{{ vllm_home }}/keys"
+    - "{{ vllm_container_dir }}"
 
 - name: Create Python virtualenv
   ansible.builtin.command: "{{ vllm_python }} -m venv {{ vllm_venv }}"
@@ -85,13 +87,23 @@
   changed_when: false
   when: vllm_image | length > 0 and vllm_registry_token | length > 0
 
-- name: Pull the engine image (multi-GB — can take several minutes)
+# Deliberately NOT tagged heavy, so Update Engine Config pulls too: a cached image costs one
+# digest check, and skipping it would leave `docker run` to pull a fresh tag inline, stretching
+# a restart into a multi-GB download the health gate then waits out. The recreate notify is the
+# other half — the run script names the image REF, so a moved tag (:latest repushed) renders
+# byte-identical and would otherwise keep serving the old image forever. The box, not a stored
+# field, owns which image is here.
+- name: Pull the engine image (multi-GB on a first pull)
   ansible.builtin.command: "docker pull {{ vllm_image }}"
+  register: vllm_pull
+  # docker prints "Status: Image is up to date for X" when nothing moved. Matching the
+  # negative errs toward a restart, which is what the button already promises anyway.
+  changed_when: "'Image is up to date' not in (vllm_pull.stdout | default(''))"
   # Same long-silent-transfer problem as the pip install above.
   async: 5400
   poll: 15
   when: vllm_image | length > 0
-  tags: heavy
+  notify: recreate vllm container
 
 - name: Create cache directories
   ansible.builtin.file:
@@ -166,12 +178,14 @@
   poll: 15
   tags: heavy
 
+# ── Venv placement: a systemd unit owns the process ─────────────────────────
 - name: Install vLLM systemd unit
   ansible.builtin.template:
-    src: "{{ 'vllm-container.service.j2' if vllm_image | length > 0 else 'vllm.service.j2' }}"
+    src: vllm.service.j2
     dest: "/etc/systemd/system/{{ vllm_unit }}.service"
     # Contains VLLM_API_KEY and any operator env (HF/S3 tokens) in cleartext.
     mode: "0600"
+  when: vllm_image | length == 0
   notify: restart vllm
 
 - name: Enable and start vLLM
@@ -180,9 +194,46 @@
     enabled: true
     state: started
     daemon_reload: true
+  when: vllm_image | length == 0
 
-- name: Flush handlers so any unit change is applied before the health check
+# ── Container placement: Docker owns the container ──────────────────────────
+# No unit wraps `docker run`. --restart unless-stopped already survives a crash, a reboot and
+# a dockerd restart, so a unit would only be a second owner of the same restart state. These
+# two files are the config: either one changing is what triggers a replace, exactly as a
+# changed unit file triggers a restart above.
+- name: Write the container environment file
+  ansible.builtin.template:
+    src: vllm-container.env.j2
+    dest: "{{ vllm_container_env_file }}"
+    # Contains VLLM_API_KEY and any operator env (HF/S3 tokens) in cleartext.
+    mode: "0600"
+  when: vllm_image | length > 0
+  notify: recreate vllm container
+
+- name: Write the container run script
+  ansible.builtin.template:
+    src: vllm-container-run.sh.j2
+    dest: "{{ vllm_container_script }}"
+    mode: "0700"
+  when: vllm_image | length > 0
+  notify: recreate vllm container
+
+# Before the running check below, not after it: otherwise a config change would have the
+# check start the container off the new script and the handler immediately replace it again.
+- name: Flush handlers so a changed config is applied before the health check
   ansible.builtin.meta: flush_handlers
+
+- name: Check whether the engine container is running
+  ansible.builtin.command: "docker ps --quiet --filter name=^{{ vllm_unit }}$ --filter status=running"
+  register: vllm_container_ps
+  changed_when: false
+  when: vllm_image | length > 0
+
+# Covers the first deploy and an operator's manual `docker stop`; a config change already
+# recreated it in the handler above, so this is a no-op then.
+- name: Start the engine container
+  ansible.builtin.command: "{{ vllm_container_script }}"
+  when: vllm_image | length > 0 and (vllm_container_ps.stdout | default('')) | length == 0
 
 - name: Wait for the vLLM API to become healthy
   ansible.builtin.uri:
@@ -201,6 +252,9 @@
   ansible.builtin.debug:
     msg:
       - "vLLM is up: http://{{ ansible_host | default(inventory_hostname) }}:{{ vllm_port }}/v1"
-      - "Instance unit: {{ vllm_unit }}.service  ({{ ('image ' ~ vllm_image) if vllm_image | length > 0 else ('venv ' ~ vllm_venv) }})"
+      - >-
+        {{ ('Container: ' ~ vllm_unit ~ ' (image ' ~ vllm_image ~ ') — docker ps / docker logs ' ~ vllm_unit)
+           if vllm_image | length > 0
+           else ('Instance unit: ' ~ vllm_unit ~ '.service (venv ' ~ vllm_venv ~ ') — journalctl -u ' ~ vllm_unit) }}
       - "Model served as: {{ vllm_served_name }}"
       - "API key file on host: {{ vllm_api_key_file }}"

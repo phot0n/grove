@@ -71,7 +71,7 @@
    "read_only": 1
   },
   {
-   "description": "Set → serve in a container from this image (docker run inside the same systemd unit). Blank → build a venv on the box. The image tag owns the vLLM version, so it cannot be combined with Engine Version.",
+   "description": "Set → serve in a container from this image, with Docker owning its lifecycle (docker ps / docker logs vllm-<slug>). Blank → build a venv on the box behind a systemd unit. The image tag owns the vLLM version, so it cannot be combined with Engine Version.",
    "fieldname": "engine_image",
    "fieldtype": "Link",
    "label": "Engine Image",

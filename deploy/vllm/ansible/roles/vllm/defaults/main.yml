@@ -21,12 +21,19 @@ vllm_api_key_file: "{{ vllm_home }}/keys/{{ vllm_instance }}.key"
 
 # ── Container placement ─────────────────────────────────────────────────────
 # Set vllm_image (Model Deployment → Engine Image) to serve from a container instead of a
-# venv: the unit runs `docker run` and the apt/venv/pip tasks are skipped. The registry
-# credentials are only needed for a private registry.
+# venv: the apt/venv/pip tasks are skipped and no systemd unit is installed. Docker owns
+# the container (--restart unless-stopped in the run script). The registry credentials are
+# only needed for a private registry.
 vllm_image: ""
 vllm_registry_host: ""
 vllm_registry_username: ""
 vllm_registry_token: ""
+# The run script is the container's config: re-rendering it is what triggers a replace, so
+# it plays the role the unit file plays for the venv placement. The env file beside it holds
+# the secrets, out of the argv.
+vllm_container_dir: "{{ vllm_home }}/containers"
+vllm_container_script: "{{ vllm_container_dir }}/{{ vllm_unit }}.sh"
+vllm_container_env_file: "{{ vllm_container_dir }}/{{ vllm_unit }}.env"
 
 # APT packages needed for vLLM's runtime kernel compilation (torch-inductor + Triton).
 # gcc-13 is required (newer GCC breaks the compile); python3.12-dev provides Python.h.
@@ -52,14 +59,14 @@ vllm_port: 8080
 vllm_serve_args: []
 # Engine env vars, one dict for both placements: Grove's own (attention backend, HF token,
 # long-max-len guard) with the deployment's Environment Variables rows layered on top. The
-# unit template renders them as Environment= lines or `docker run -e`. VLLM_API_KEY is not
-# in here — it is resolved on the box below and added by the template.
+# venv unit renders them as Environment= lines, the container placement as an --env-file.
+# VLLM_API_KEY is not in here — it is resolved on the box below and added by the template.
 vllm_env: {}
 
 # ── Blackwell flashinfer workaround (venv placement only) ───────────────────
 # flashinfer JIT-compiles kernels and needs a unified CUDA toolkit (CUDA_HOME) that the
 # pip-only install does not provide. "0" sidesteps it with the native sampler; the engine
-# image ships the toolkit, so the container unit does not set this at all.
+# image ships the toolkit, so the container placement does not set this at all.
 vllm_use_flashinfer_sampler: "0"
 
 # ── Auth / secrets ──────────────────────────────────────────────────────────
