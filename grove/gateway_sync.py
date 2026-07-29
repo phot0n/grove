@@ -22,7 +22,7 @@ import requests
 
 import frappe
 
-from grove.access import effective_models
+from grove.access import effective_models, effective_priority
 from grove.grove.doctype.grove_user.grove_user import is_rate_limited
 
 TIMEOUT = 10
@@ -49,8 +49,9 @@ def _post(admin_url, token, path, payload):
 
 def _effective_keys(proxy):
 	"""All API Keys projected for the gateway: identity + status + the flat set of models
-	the key may call. The only rate limit is the monthly token budget, surfaced via status
-	(rate_limited); no per-request rpm/tpm/concurrency knobs anymore."""
+	the key may call + the scheduling priority to stamp on its requests. The only rate limit
+	is the monthly token budget, surfaced via status (rate_limited); no per-request rpm/tpm/
+	concurrency knobs anymore."""
 	rows = frappe.get_all(
 		"Grove API Key",
 		fields=["name", "key_hash", "user", "status"],
@@ -71,8 +72,9 @@ def _effective_keys(proxy):
 				frappe.db.get_value("Grove User", k.user, "user") or "",
 				sorted(effective_models(k.user)),
 				is_rate_limited(k.user),
+				effective_priority(k.user),
 			)
-		email, models, limited = per_user[k.user]
+		email, models, limited, priority = per_user[k.user]
 		status = k.status or "active"
 		if status == "active" and limited:
 			status = "rate_limited"
@@ -82,6 +84,7 @@ def _effective_keys(proxy):
 			"user": email,  # email, not the Grove User name — this one is for humans reading Redis
 			"status": status,
 			"models": ",".join(models),
+			"priority": priority,  # already in vLLM's convention — the gateway just stamps it
 		})
 	return keys
 

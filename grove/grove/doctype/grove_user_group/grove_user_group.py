@@ -21,11 +21,13 @@ class GroveUserGroup(Document):
 
 		description: DF.SmallText | None
 		models: DF.Table[GroveModelRow]
+		priority: DF.Int
 	# end: auto-generated types
 
 	def on_update(self):
-		# The model list moved → every member's keys carry a stale set. Joining or leaving
-		# is an edit on Grove User, whose own on_update dirties that one user.
+		# The model list or the priority moved → every member's keys carry a stale
+		# projection. Joining or leaving is an edit on Grove User, whose own on_update
+		# dirties that one user.
 		mark_keys_dirty(self.member_users)
 
 	def on_trash(self):
