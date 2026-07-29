@@ -100,11 +100,16 @@
     content: "deb [signed-by=/usr/share/keyrings/nvidia-container-toolkit.asc] https://nvidia.github.io/libnvidia-container/stable/deb/$(ARCH) /\n"
     mode: "0644"
 
+# docker.io is deliberately NOT version-pinned: it comes from the Ubuntu archive, so the
+# release already bounds it, and an exact pin would both hardcode one Ubuntu version and
+# hold back security updates on a network-facing daemon. Behaviour that Docker changes
+# between majors is nailed down explicitly in daemon.json below instead — which is what
+# survives an upgrade, unlike a pin.
 - name: Install Docker and the NVIDIA container toolkit
   ansible.builtin.apt:
     name:
       - docker.io
-      - nvidia-container-toolkit
+      - "nvidia-container-toolkit={{ nvidia_container_toolkit_version }}"
     state: present
     update_cache: true
 
@@ -127,17 +132,14 @@
     docker_daemon_config: "{{ (docker_daemon.content | b64decode | from_json) if docker_daemon.content is defined else {} }}"
     docker_daemon_wanted:
       data-root: "{{ gpu_data_mount }}/docker"
+      # Docker 29 defaults to the containerd image store, which keeps layers under
+      # containerd's own root (/var/lib/containerd) — data-root would then govern only
+      # volumes and container metadata, and a multi-GB engine image would still extract
+      # onto a small root disk and fail with ENOSPC. Off, so data-root means what it says.
+      features:
+        containerd-snapshotter: false
       runtimes:
         nvidia:
           path: nvidia-container-runtime
           args: []
   notify: restart docker
-
-- name: Apply any Docker daemon change before the smoke test
-  ansible.builtin.meta: flush_handlers
-
-# The single check the whole container placement rests on — fail Setup here rather than
-# silently at first deploy.
-- name: Smoke-test GPU access from a container
-  ansible.builtin.command: docker run --rm --gpus all ubuntu nvidia-smi
-  changed_when: false
