@@ -72,15 +72,14 @@ class ModelDeployment(Document):
 				"Engine Image and Engine Version cannot both be set — the image tag owns "
 				"the vLLM version. Clear Engine Version to serve from the image."
 			)
-		# Flipping placement while something is serving would have the new placement bind a
-		# port the old one still holds — a container and a unit for the same deployment use
-		# the same port. Fail here rather than 15 minutes into the health gate; teardown
-		# removes either placement, so tear down, flip, deploy.
-		flipping_placement = not self.is_new() and self.has_value_changed("engine_image")
-		if flipping_placement and self.status in ("Active", "Broken"):
+		# Placement is frozen once deployed. Flipping it while the old placement is still on
+		# the box would have the new one bind a port the old one holds — a container and a
+		# unit for the same deployment use the same port — and status never returns to Draft,
+		# so this reads as set-only-once-after-deploy. A new deployment is the way to switch.
+		if not self.is_new() and self.status != "Draft" and self.has_value_changed("engine_image"):
 			frappe.throw(
-				f"Tear down this deployment before changing Engine Image — it is {self.status} "
-				"and the placement now on the box still holds its port."
+				f"Engine Image cannot change after deployment (this one is {self.status}). "
+				"Create a new Model Deployment to serve from a different placement."
 			)
 		for row in self.env or []:
 			if not is_env_key(row.key):

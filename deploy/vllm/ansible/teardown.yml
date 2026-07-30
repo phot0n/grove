@@ -23,8 +23,7 @@
       failed_when: false   # no Docker, or no such container → nothing to remove
 
     # The run script would otherwise restart the container, and the env file beside it holds
-    # this instance's API key. Removing both is also what lets the deployment come back on
-    # the other placement.
+    # this instance's API key.
     - name: Remove the instance container run script + env file
       ansible.builtin.file:
         path: "{{ vllm_home }}/containers/vllm-{{ vllm_instance }}.{{ item }}"
