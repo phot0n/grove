@@ -1,35 +1,30 @@
 ---
-# Tear down ONE vLLM instance on a multi-tenant box: stop + disable + remove its
-# systemd unit, per-instance key file, and its (exclusive) per-deployment venv. Run
-# by model_deployment.teardown_deployment with extra-var vllm_instance. Deliberately
-# leaves the box-shared weights/compile caches intact — other instances still use them.
+# Tear down ONE vLLM instance on a multi-tenant box: its container, the run script and env
+# file that would otherwise restart it, and its key file. Run by
+# model_deployment.teardown_deployment with extra-var vllm_instance. Deliberately leaves the
+# box-shared weights/compile caches and the pulled image intact — sibling instances and
+# redeploys still use them.
 - name: Tear down a vLLM instance
   hosts: all
   become: true
   gather_facts: false
   tasks:
-    - name: Stop + disable the instance unit
-      ansible.builtin.systemd:
-        name: "vllm-{{ vllm_instance }}"
-        state: stopped
-        enabled: false
-      failed_when: false   # unit may already be gone
+    - name: Remove the instance container
+      ansible.builtin.command: "docker rm -f vllm-{{ vllm_instance }}"
+      changed_when: true
+      failed_when: false   # no Docker, or no such container → nothing to remove
 
-    - name: Remove the unit file
+    # The run script would otherwise restart the container, and the env file beside it holds
+    # this instance's API key.
+    - name: Remove the instance container run script + env file
       ansible.builtin.file:
-        path: "/etc/systemd/system/vllm-{{ vllm_instance }}.service"
+        path: "{{ vllm_home }}/containers/vllm-{{ vllm_instance }}.{{ item }}"
         state: absent
+      loop:
+        - sh
+        - env
 
     - name: Remove the per-instance key file
       ansible.builtin.file:
-        path: "{{ vllm_home | default('/opt/vllm') }}/keys/{{ vllm_instance }}.key"
+        path: "{{ vllm_home }}/keys/{{ vllm_instance }}.key"
         state: absent
-
-    - name: Remove the exclusive per-deployment venv (reclaims the multi-GB torch install)
-      ansible.builtin.file:
-        path: "{{ vllm_home | default('/opt/vllm') }}/venvs/{{ vllm_instance }}_venv"
-        state: absent
-
-    - name: Reload systemd so the removed unit is forgotten
-      ansible.builtin.systemd:
-        daemon_reload: true

@@ -24,7 +24,7 @@
   {"fieldname": "server", "fieldtype": "Dynamic Link", "label": "Server", "options": "server_type", "read_only": 1, "in_list_view": 1},
   {"fieldname": "reference_doctype", "fieldtype": "Link", "label": "Triggered By (DocType)", "options": "DocType", "read_only": 1, "description": "DocType that triggered this play (e.g. Model Deployment). Defaults to server_type if not set."},
   {"fieldname": "reference_docname", "fieldtype": "Dynamic Link", "label": "Triggered By (Doc)", "options": "reference_doctype", "read_only": 1, "description": "Doc name that triggered this play. Defaults to server if not set."},
-  {"fieldname": "status", "fieldtype": "Select", "label": "Status", "options": "Pending\nRunning\nSuccess\nFailure", "default": "Pending", "read_only": 1, "in_list_view": 1},
+  {"fieldname": "status", "fieldtype": "Select", "label": "Status", "options": "Pending\nRunning\nStopping\nStopped\nSuccess\nFailure", "default": "Pending", "read_only": 1, "in_list_view": 1},
   {"fieldname": "column_break_time", "fieldtype": "Column Break"},
   {"fieldname": "started", "fieldtype": "Datetime", "label": "Started", "read_only": 1},
   {"fieldname": "ended", "fieldtype": "Datetime", "label": "Ended", "read_only": 1},

@@ -20,8 +20,8 @@ RUNPOD_GRAPHQL_URL = "https://api.runpod.io/graphql"
 # the manual field), so this is the fallback for direct API callers only.
 # Ubuntu 24.04 — ships python3.12 (default, with python3-apt) + gcc-13 natively, which is
 # what the vLLM Ansible role expects.
-DEFAULT_IMAGE = "runpod/pytorch:1.0.2-cu1281-torch280-ubuntu2404"
-DEFAULT_CONTAINER_DISK_GB = 10
+DEFAULT_IMAGE = "vllm/vllm-openai:latest"
+DEFAULT_CONTAINER_DISK_GB = 2
 
 
 class RunPodError(Exception):
@@ -95,11 +95,7 @@ class RunPodClient:
 		else:
 			body["imageName"] = image_name or DEFAULT_IMAGE
 		if docker_start_cmd:
-			# RunPod REST v1 wants dockerStartCmd as an argv ARRAY, not a string. shlex
-			# keeps any quoted extra_serve_args intact.
-			body["dockerStartCmd"] = (
-				docker_start_cmd if isinstance(docker_start_cmd, list) else shlex.split(docker_start_cmd)
-			)
+			body["dockerStartCmd"] = self._argv(docker_start_cmd)
 		if container_registry_auth_id:
 			body["containerRegistryAuthId"] = container_registry_auth_id
 		if name:
@@ -108,6 +104,49 @@ class RunPodClient:
 		if not pod.get("id"):
 			raise RunPodError(f"Failed to spawn pod (no id): {pod}")
 		return self._parse_pod(pod)
+
+	@staticmethod
+	def _argv(docker_start_cmd):
+		"""RunPod wants dockerStartCmd as an argv ARRAY, not a string. shlex keeps any quoted
+		extra_serve_args intact. None passes through so a caller can omit the field."""
+		if docker_start_cmd is None or isinstance(docker_start_cmd, list):
+			return docker_start_cmd
+		return shlex.split(docker_start_cmd)
+
+	def update_pod(
+		self,
+		pod_id,
+		ports=None,
+		env=None,
+		image_name=None,
+		volume_mount_path=None,
+		container_disk_in_gb=None,
+		volume_in_gb=None,
+		name=None,
+		docker_start_cmd=None,
+		container_registry_auth_id=None,
+	):
+		"""Edit a live pod in place. RunPod resets the container to pick the change up, but
+		keeps the pod id and the volume — so a volume-backed HF_HOME keeps its weights, unlike
+		a terminate + create. Only the fields passed are sent (PATCH is a partial update, so
+		anything omitted is left alone). The GPU shape, cloud type and template are create-only
+		and cannot be changed here. Returns the parsed pod — the reset clears the endpoints, so
+		poll_pod_ready() before reading them."""
+		body = {
+			"ports": ports,
+			"env": env,
+			"imageName": image_name,
+			"volumeMountPath": volume_mount_path,
+			"containerDiskInGb": container_disk_in_gb,
+			"volumeInGb": volume_in_gb,
+			"name": name,
+			"dockerStartCmd": self._argv(docker_start_cmd),
+			"containerRegistryAuthId": container_registry_auth_id,
+		}
+		body = {k: v for k, v in body.items() if v is not None}
+		if not body:
+			raise RunPodError(f"update_pod {pod_id} called with nothing to change")
+		return self._parse_pod(self._request("PATCH", f"/pods/{pod_id}", body))
 
 	def get_registry_auth_id(self, name, username, password):
 		"""Register pull credentials with RunPod → the id passed as containerRegistryAuthId at
@@ -134,8 +173,10 @@ class RunPodClient:
 
 	@staticmethod
 	def _parse_pod(pod):
-		"""Extract reachable endpoints. `portMappings` = {internal: external} (RunPod
-		random-maps each exposed port); all ports share one `publicIp`."""
+		"""Extract reachable endpoints plus the GPU shape. `portMappings` = {internal:
+		external} (RunPod random-maps each exposed port); all ports share one `publicIp`.
+		The GPU fields are what the pod actually runs on — update_pod cannot change them, so
+		callers compare against them to decide between an in-place edit and a respawn."""
 		port_map = pod.get("portMappings") or {}
 		# Normalise keys to str so JSON round-trips cleanly (engine_url lookup uses str).
 		port_map = {str(k): int(v) for k, v in port_map.items()}
@@ -145,6 +186,8 @@ class RunPodClient:
 			"public_ip": pod.get("publicIp"),
 			"ssh_port": port_map.get("22"),
 			"port_map": port_map,
+			"gpu_count": (pod.get("gpu") or {}).get("count"),
+			"gpu_type_id": (pod.get("machine") or {}).get("gpuTypeId"),
 		}
 
 	def poll_pod_ready(self, pod_id, timeout_sec=300, poll_interval_sec=5):

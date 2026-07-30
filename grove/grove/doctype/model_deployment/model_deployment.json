@@ -12,7 +12,7 @@
   "status",
   "column_break_engine",
   "engine_port",
-  "engine_version",
+  "engine_image",
   "engine_url",
   "internal_api_key",
   "section_tuning",
@@ -29,7 +29,13 @@
   "pipeline_parallel_size",
   "section_extra",
   "aliases",
-  "extra_serve_args"
+  "extra_serve_args",
+  "section_env",
+  "env",
+  "tab_logs",
+  "log_lines",
+  "fetch_engine_logs",
+  "engine_logs"
  ],
  "fields": [
   {
@@ -67,11 +73,12 @@
    "read_only": 1
   },
   {
-   "description": "vLLM version to install for this deployment, e.g. 0.24.0. Empty = latest. \u2192 vllm_version (pip vllm==). Each deployment gets its OWN venv (_venv), so a box can run mixed versions side by side. Set-only-once: frozen after first save \u2014 to change version, make a new deployment.",
-   "fieldname": "engine_version",
-   "fieldtype": "Data",
-   "label": "Engine Version",
-   "set_only_once": 1
+   "description": "The image this deployment serves from — Docker owns its lifecycle (docker ps / docker logs vllm-<slug>). The tag owns the vLLM version and its whole toolchain; the box only supplies the driver. Frozen once deployed — to move to another image, make a new deployment.",
+   "fieldname": "engine_image",
+   "fieldtype": "Link",
+   "label": "Engine Image",
+   "options": "Engine Image",
+   "reqd": 1
   },
   {
    "description": "Auto-derived (read-only): http://: \u2014 this deployment's own vLLM instance. The gateway forwards straight here (no LiteLLM); vLLM serves /v1/messages natively.",
@@ -184,6 +191,41 @@
   {
    "fieldname": "column_break_ngfd",
    "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "section_env",
+   "fieldtype": "Section Break",
+   "label": "Environment"
+  },
+  {
+   "description": "Extra env vars for the engine process (both placements). Layered on top of the vars Grove derives, so a row here overrides them.",
+   "fieldname": "env",
+   "fieldtype": "Table",
+   "label": "Environment Variables",
+   "options": "Pod Env"
+  },
+  {
+   "fieldname": "tab_logs",
+   "fieldtype": "Tab Break",
+   "label": "Logs"
+  },
+  {
+   "default": "200",
+   "description": "How many lines from the end of the log to fetch. Capped at 5000.",
+   "fieldname": "log_lines",
+   "fieldtype": "Int",
+   "label": "Lines"
+  },
+  {
+   "description": "Runs docker logs against this deployment's container on its box. Nothing is stored on this document.",
+   "fieldname": "fetch_engine_logs",
+   "fieldtype": "Button",
+   "label": "Fetch Engine Logs"
+  },
+  {
+   "fieldname": "engine_logs",
+   "fieldtype": "HTML",
+   "label": "Engine Logs"
   }
  ],
  "links": [],

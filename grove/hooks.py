@@ -82,6 +82,14 @@ app_license = "mit"
 # 	"filters": "grove.utils.jinja_filters"
 # }
 
+# Fixtures
+# --------
+# The Grove Control role ships with the app: the control client's User links to it, so it has
+# to exist on every site. It carries NO doctype permissions — every Grove doctype grants
+# System Manager only — so it reaches the whitelisted methods in grove.api and nothing else.
+# Re-imported on migrate (frappe.utils.fixtures.sync_fixtures), so Grove owns desk_access.
+fixtures = [{"dt": "Role", "filters": [["name", "in", ["Grove Control"]]]}]
+
 # Installation
 # ------------
 

@@ -35,9 +35,9 @@ def _set_global_cli_args(remote_user, tags=None, skip_tags=None):
 		forks=1,
 		remote_user=remote_user,
 		private_key_file=None,
-		# Keepalive so long silent tasks (pip install vllm pulls multi-GB torch for
-		# minutes with no channel output) don't get dropped by a NAT/idle timeout —
-		# which killed the pip child. 30s pings, tolerate ~1h before giving up.
+		# Keepalive so long silent tasks (an engine image pull moves tens of GB with no
+		# channel output) don't get dropped by a NAT/idle timeout — which used to kill
+		# the child on the box. 30s pings, tolerate ~1h before giving up.
 		ssh_common_args=(
 			"-o StrictHostKeyChecking=accept-new -o ConnectTimeout=20 "
 			"-o ServerAliveInterval=30 -o ServerAliveCountMax=120 -o TCPKeepAlive=yes"
@@ -76,6 +76,9 @@ class AnsibleCallback(CallbackBase):
 		super().__init__()
 		self.runner = runner
 		self.current_task = None  # current Ansible Task doc name
+		self.stopped = False
+		self.site = frappe.local.site
+		self.thread_db = None  # the results thread's own connection, if it needed one
 		self.log = []
 
 	# --- play lifecycle ---
@@ -83,7 +86,41 @@ class AnsibleCallback(CallbackBase):
 		self.runner.update_play({"status": "Running", "started": frappe.utils.now()})
 
 	def v2_playbook_on_task_start(self, task, is_conditional):
+		self._stop_if_asked()
 		self.current_task = self.runner.add_task(task.get_name())
+
+	# Fires on every attempt of a task with `until`/`retries` — the health gate is one task
+	# that can hold the play for 15 minutes, so this is where a stop lands for most of a
+	# serve run. Between tasks alone would not be enough.
+	def v2_runner_retry(self, result):
+		self._stop_if_asked()
+
+	def _stop_if_asked(self):
+		"""The Stop button writes Stopping from the web process; this is the worker seeing
+		it. Commit first — without ending the current transaction the read is a snapshot
+		from before the button. Ansible swallows callback exceptions, so raising here would
+		be silently ignored; terminate() is the supported way out and the linear strategy
+		checks it both between tasks and while waiting on the running one."""
+		if self.stopped:
+			return
+		self._bind_frappe()
+		frappe.db.commit()
+		if frappe.db.get_value("Ansible Play", self.runner.play_name, "status") == "Stopping":
+			self.stopped = True
+			self.runner.terminate()
+
+	def _bind_frappe(self):
+		"""Ansible hands retry callbacks to its results thread, and frappe.local is a
+		contextvar — a new thread starts with none of it, so frappe.db there raises
+		"object is not bound". Give that thread a connection of its own rather than
+		reaching across to the main thread's; the runner closes it when the play ends."""
+		try:
+			frappe.db.get_value  # noqa: B018 — unbound frappe.local raises on attribute access
+			return
+		except RuntimeError:
+			frappe.init(site=self.site)
+			frappe.connect()
+			self.thread_db = frappe.db
 
 	def v2_playbook_on_stats(self, stats):
 		hosts = sorted(stats.processed.keys())
@@ -91,8 +128,10 @@ class AnsibleCallback(CallbackBase):
 			stats.summarize(h).get("failures", 0) or stats.summarize(h).get("unreachable", 0)
 			for h in hosts
 		)
+		# A stopped play ran its tasks to whatever point it reached, so the stats can read
+		# clean; the operator's intent is what the status has to show.
 		self.runner.update_play({
-			"status": "Failure" if failed else "Success",
+			"status": "Stopped" if self.stopped else ("Failure" if failed else "Success"),
 			"ended": frappe.utils.now(),
 			"output": "\n".join(self.log)[:1000000],
 		})
@@ -147,6 +186,7 @@ class Ansible:
 
 		self.play_name = self._create_play()
 		self.callback = AnsibleCallback(self)
+		self.executor = None
 
 	def _create_play(self):
 		doc = frappe.get_doc({
@@ -191,18 +231,27 @@ class Ansible:
 		doc.save(ignore_permissions=True)
 		frappe.db.commit()
 
+	def terminate(self):
+		"""Stop the run where it is. Ansible's own SIGINT path does exactly this: the
+		strategy checks the flag between tasks AND while waiting on the running one, then
+		unwinds through PlaybookExecutor's cleanup, which reaps the worker."""
+		if self.executor:
+			self.executor._tqm.terminate()
+
 	def run(self):
-		executor = PlaybookExecutor(
+		self.executor = PlaybookExecutor(
 			playbooks=[self.playbook_path],
 			inventory=self.inventory,
 			variable_manager=self.variable_manager,
 			loader=self.loader,
 			passwords={},
 		)
-		executor._tqm._stdout_callback = self.callback
+		self.executor._tqm._stdout_callback = self.callback
 		try:
-			executor.run()
+			self.executor.run()
 		finally:
+			if self.callback.thread_db:
+				self.callback.thread_db.close()
 			frappe.db.commit()
 		return frappe.get_doc("Ansible Play", self.play_name)
 
@@ -211,7 +260,7 @@ def run_play(playbook, server_type, server_name, machine_name, project_dir, extr
 	"""Build a single-host inventory from the Machine and run
 	<project_dir>/<playbook>. Returns (ansible_play_name, rc); rc 0 = success.
 	tags restricts the run to matching tasks; skip_tags excludes them (e.g.
-	skip_tags=["heavy"] for a fast reconfigure that skips install/pip/predownload).
+	skip_tags=["heavy"] for a fast reconfigure that skips the weights predownload).
 	reference_doctype/docname link the Ansible Play to the triggering doc (defaults to server_type/server_name)."""
 	m = frappe.get_doc("Machine", machine_name)
 	if not m.public_ip:

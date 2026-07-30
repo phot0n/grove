@@ -8,6 +8,11 @@
   gather_facts: true
   vars:
     grove_dir: "{{ playbook_dir }}/.."
+    # Pinned to what the live gateway is verified on. Both come from upstream repos, not
+    # the distro, so "latest" moves under us on a rebuild — and both sit in the request
+    # path. The codename suffix is appended at install time so the pin stays portable.
+    openresty_version: "1.31.1.1"
+    lua_resty_http_version: "0.17.1"
 
   roles:
     - build_gateway_agent
@@ -27,7 +32,7 @@
         wget -qO - https://openresty.org/package/pubkey.gpg | gpg --dearmor -o /usr/share/keyrings/openresty.gpg
         echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/openresty.gpg] http://openresty.org/package/ubuntu $(lsb_release -sc) main" > /etc/apt/sources.list.d/openresty.list
         apt-get update
-        apt-get -y install openresty
+        apt-get -y install "openresty={{ openresty_version }}-1~$(lsb_release -sc)1"
       when: openresty_check.rc != 0
 
     - name: install redis-server
@@ -38,7 +43,7 @@
 
     - name: install lua-resty-http (opm)
       ansible.builtin.command:
-        cmd: /usr/local/openresty/bin/opm get ledgetech/lua-resty-http
+        cmd: /usr/local/openresty/bin/opm get ledgetech/lua-resty-http={{ lua_resty_http_version }}
         creates: /usr/local/openresty/site/lualib/resty/http.lua
 
     - name: redis zero-loss persistence

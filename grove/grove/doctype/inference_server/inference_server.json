@@ -11,6 +11,7 @@
   "region",
   "status",
   "is_provisioned",
+  "data_path",
   "section_gpus",
   "gpus_html"
  ],
@@ -53,6 +54,14 @@
    "fieldtype": "Check",
    "label": "Provisioned",
    "read_only": 1
+  },
+  {
+   "default": "/opt/vllm",
+   "description": "Mount point of this box's data volume. Weights, caches, keys, container run scripts and Docker images live under it.",
+   "fieldname": "data_path",
+   "fieldtype": "Data",
+   "label": "Data Path",
+   "reqd": 1
   },
   {
    "fieldname": "section_gpus",

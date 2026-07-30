@@ -154,14 +154,19 @@ class Pod(Document):
 
 	@frappe.whitelist()
 	def restart(self):
-		"""Apply edited config. The provider bakes the start command at create, so this
-		respawns (terminate + spawn) with the current serve_command, then re-syncs endpoints
-		(ports move). Long job."""
+		"""Apply edited config in place: the provider pod is updated with the current
+		serve_command and resets, keeping its id and volume (so weights are not re-downloaded),
+		then endpoints are re-synced. Refused for an edit the provider can't apply to a live pod
+		— an edited GPU shape needs Terminate + Spawn. Long job."""
+		from grove.cloud_provider.provisioner import PodProvisioner
+
+		# Throws here, so the operator sees why rather than getting a dead background job.
+		PodProvisioner(self).validate_restart()
 		frappe.enqueue(
 			"grove.cloud_provider.provisioner.restart_pod",
 			queue="long", timeout=1800, pod_name=self.name,
 		)
-		frappe.msgprint(f"Restarting pod {self.name} (respawn to apply config) — ports will change, then sync.")
+		frappe.msgprint(f"Restarting pod {self.name} to apply config, then sync.")
 
 	@frappe.whitelist()
 	def terminate(self):

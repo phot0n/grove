@@ -2,6 +2,8 @@
 # For license information, please see license.txt
 
 import json
+import shlex
+import subprocess
 
 import frappe
 from frappe.model.document import Document
@@ -29,6 +31,31 @@ class Machine(Document):
 			queue="long", timeout=600, machine_name=self.name,
 		)
 		frappe.msgprint(f"Scanning {self.name}'s GPUs — watch its Ansible Plays, then reload.")
+
+	def run_command(self, command, timeout=60):
+		"""Run one argv on this box over SSH and return what it printed (stdout + stderr).
+		For reads that are not worth a playbook — a log tail, a status — where an Ansible
+		Play doc per call would be noise. Anything that changes the box belongs in a role.
+
+		The argv is quoted word by word, so a unit name or a slug cannot become a second
+		command on the far side. Not root → sudo -n, which fails loudly rather than hanging
+		on a password prompt."""
+		if not self.public_ip:
+			frappe.throw(f"Machine {self.name} has no public IP — nothing to connect to.")
+		user = self.ssh_user or "root"
+		if user != "root":
+			command = ["sudo", "-n", *command]
+		remote = " ".join(shlex.quote(word) for word in command)
+		ssh = [
+			"ssh", "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=accept-new",
+			"-o", "ConnectTimeout=10", "-p", str(self.ssh_port or 22),
+			f"{user}@{self.public_ip}", remote,
+		]
+		try:
+			result = subprocess.run(ssh, capture_output=True, text=True, timeout=timeout)
+		except subprocess.TimeoutExpired:
+			frappe.throw(f"{self.name} did not answer within {timeout}s.")
+		return (result.stdout + result.stderr).strip()
 
 
 def scan_machine_gpus(machine_name):

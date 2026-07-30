@@ -2,9 +2,13 @@
 # For license information, please see license.txt
 """Standalone cloud Pod lifecycle via provider APIs (e.g. RunPod). A Pod is self-contained:
 it holds the spawn spec (GPUs / ports / image / template / startup cmd / volume / env) and,
-for a serving pod, the vLLM config (translated to the container start command). The Pod
-form's Spawn / Sync / Restart / Terminate buttons drive the functions here. Pods are NOT
-backed by a Machine — Machine + Inference Server + Model Deployment are the on-prem path."""
+for a serving pod, the vLLM config (translated to the container start command). Pods are NOT
+backed by a Machine — Machine + Inference Server + Model Deployment are the on-prem path.
+
+PodProvisioner owns one Pod's provider side: `PodProvisioner(pod).restart()`. The Pod form's
+Spawn / Sync / Restart / Stop / Start / Terminate buttons reach it through the module-level
+functions at the bottom, which exist because frappe.enqueue resolves a dotted path to a
+module function, not to a method."""
 
 import time
 
@@ -25,106 +29,366 @@ ENGINE_POLL_INTERVAL = 15
 VOLUME_MOUNT = "/data"
 
 
-def _client(provider):
-	api_key = provider.get_password("api_key", raise_exception=False)
-	if not api_key:
-		frappe.throw(f"Cloud Provider {provider.name} has no API key set.")
-	return RunPodClient(api_key)
+class PodProvisioner:
+	"""The provider side of one Pod. Construction touches nothing — the API client is built on
+	first use — so the decision helpers can be exercised without a site."""
 
+	def __init__(self, pod):
+		self.pod = pod
+		self._client = None
 
-def _pod_client(pod):
-	if not pod.cloud_provider:
-		frappe.throw(f"Pod {pod.name} has no Cloud Provider.")
-	provider = frappe.get_doc("Cloud Provider", pod.cloud_provider)
-	if provider.provider_type != "runpod":
-		frappe.throw(f"Unsupported provider: {provider.provider_type}")
-	return _client(provider)
+	# ── Provider access ───────────────────────────────────────────────────────
 
+	@property
+	def client(self):
+		"""The Pod's provider API client, built once per provisioner."""
+		if self._client is None:
+			self._client = self.build_client()
+		return self._client
 
-def _gateway_sync_serving(pod_name):
-	"""On a serving Pod lifecycle transition: recompute the Model's `published` flag (a Running
-	Pod is a live deployment) and push the route table so the endpoint reaches the gateway.
-	Serving pods have no Model Deployment to drive either, so their lifecycle triggers both here.
-	No-op for a non-serving pod (no model). Best-effort — logged, never fatal."""
-	model = frappe.db.get_value("Pod", pod_name, "model")
-	if not model:
-		return
-	from grove.grove.doctype.model.model import sync_published
+	def build_client(self):
+		"""Resolve the Pod's Cloud Provider into an API client. Only RunPod for now — an
+		unsupported provider fails here rather than part-way through a lifecycle call."""
+		if not self.pod.cloud_provider:
+			frappe.throw(f"Pod {self.pod.name} has no Cloud Provider.")
+		provider = frappe.get_doc("Cloud Provider", self.pod.cloud_provider)
+		if provider.provider_type != "runpod":
+			frappe.throw(f"Unsupported provider: {provider.provider_type}")
+		api_key = provider.get_password("api_key", raise_exception=False)
+		if not api_key:
+			frappe.throw(f"Cloud Provider {provider.name} has no API key set.")
+		return RunPodClient(api_key)
 
-	sync_published(model)  # Running pod → published=1; Stopped/Terminated → 0 (unless another live route)
-	try:
-		from grove import gateway_sync
+	@property
+	def public_keys(self):
+		"""SSH public keys injected into the container, so Ansible/ops can reach it. Missing
+		keys stop a spawn up front — a pod nobody can log into is not worth billing for."""
+		keys = injected_public_keys()
+		if not keys:
+			frappe.throw("No active SSH Key found — add one so Ansible/ops can reach the pod.")
+		return keys
 
-		gateway_sync.full_sync(trigger="Provision")
-	except Exception:
-		frappe.log_error(title="gateway full_sync after pod change failed")
+	# ── Request assembly ──────────────────────────────────────────────────────
 
+	@property
+	def env(self):
+		"""Env injected into the container: HF_HOME on the volume (weights survive restart) +
+		VLLM_API_KEY for a serving pod + the HF token for gated models, then the Pod's own Env
+		rows layered on top (user wins on conflict). PUBLIC_KEY is added by config_kwargs.
+		The attention backend is NOT here — it rides the serve command as --attention-backend,
+		because vLLM 0.24 dropped VLLM_ATTENTION_BACKEND."""
+		pod = self.pod
+		mount = pod.volume_mount_path or VOLUME_MOUNT
+		env = {"HF_HOME": f"{mount}/hf"}
+		if pod.model:
+			key = pod.get_password("api_key", raise_exception=False)
+			if key:
+				env["VLLM_API_KEY"] = key
+			if pod.allow_long_max_model_len:
+				env["VLLM_ALLOW_LONG_MAX_MODEL_LEN"] = "1"
+			if frappe.conf.get("hf_token") and frappe.db.get_value("Model", pod.model, "gated"):
+				env["HUGGING_FACE_HUB_TOKEN"] = frappe.conf.get("hf_token")
+		for row in pod.env or []:
+			if row.key:
+				env[row.key] = row.value or ""
+		return env
 
-def _pod_env(pod):
-	"""Env injected into the container: HF_HOME on the volume (weights survive restart) +
-	VLLM_API_KEY / VLLM_ATTENTION_BACKEND for a serving pod + the HF token for gated models,
-	then the Pod's own Env rows layered on top (user wins on conflict). PUBLIC_KEY is added
-	by the caller (SSH keys)."""
-	mount = pod.volume_mount_path or VOLUME_MOUNT
-	env = {"HF_HOME": f"{mount}/hf"}
-	if pod.model:
-		key = pod.get_password("api_key", raise_exception=False)
-		if key:
-			env["VLLM_API_KEY"] = key
-		if pod.attention_backend:
-			env["VLLM_ATTENTION_BACKEND"] = pod.attention_backend
-		if pod.allow_long_max_model_len:
-			env["VLLM_ALLOW_LONG_MAX_MODEL_LEN"] = "1"
-		if frappe.conf.get("hf_token") and frappe.db.get_value("Model", pod.model, "gated"):
-			env["HUGGING_FACE_HUB_TOKEN"] = frappe.conf.get("hf_token")
-	for row in pod.env or []:
-		if row.key:
-			env[row.key] = row.value or ""
-	return env
-
-
-def _registry_auth_id(pod, client):
-	"""RunPod won't take inline pull credentials — they're registered under a name and
-	referenced by id. Re-registered per spawn so rotated credentials always apply. None when
-	the image is public (or set manually, which is public-pull only)."""
-	if not pod.engine_image:
-		return None
-	image = frappe.get_cached_doc("Engine Image", pod.engine_image)
-	credentials = image.registry_credentials
-	if not credentials:
-		return None
-	return client.get_registry_auth_id(f"grove-{frappe.scrub(image.image_provider)}", *credentials)
-
-
-def _spawn_kwargs(pod, pubkeys, name, client):
-	"""Assemble the RunPod spawn call from a Pod doc. dockerStartCmd = the derived
-	serve_command (Model set) else the manual startup_command."""
-	if not pod.gpu_type_id:
-		frappe.throw(
-			f"Pod {pod.name} has no GPU Type ID — set it (provider GPU id, e.g. 'NVIDIA L40S')."
+	@property
+	def registry_auth_id(self):
+		"""RunPod won't take inline pull credentials — they're registered under a name and
+		referenced by id. Re-registered per call so rotated credentials always apply. None when
+		the image is public (or set manually, which is public-pull only)."""
+		if not self.pod.engine_image:
+			return None
+		image = frappe.get_cached_doc("Engine Image", self.pod.engine_image)
+		credentials = image.registry_credentials
+		if not credentials:
+			return None
+		return self.client.get_registry_auth_id(
+			f"grove-{frappe.scrub(image.image_provider)}", *credentials
 		)
-	command = pod.serve_command if pod.model else (pod.startup_command or None)
-	env = {"PUBLIC_KEY": pubkeys}
-	env.update(_pod_env(pod))
-	return dict(
-		gpu_type_id=pod.gpu_type_id,
-		gpu_count=pod.gpu_count or 1,  # homogeneous pod
-		volume_in_gb=pod.volume_in_gb or 50,
-		container_disk_in_gb=pod.container_disk_gb or 20,
-		ports=[f"{int(p.internal_port)}/{p.protocol or 'tcp'}" for p in pod.ports],
-		env=env,
-		image_name=pod.resolved_image,
-		template_id=pod.template_id or None,
-		docker_start_cmd=command or None,
-		container_registry_auth_id=_registry_auth_id(pod, client),
-		volume_mount_path=pod.volume_mount_path or VOLUME_MOUNT,
-		name=name,  # cloud_type defaults SECURE in spawn_pod (Community closed to new hosts)
-	)
+
+	@property
+	def config_kwargs(self):
+		"""The pod settings RunPod accepts on BOTH create and update — so a restart applies
+		exactly what a spawn would. dockerStartCmd = the derived serve_command (Model set) else
+		the manual startup_command."""
+		pod = self.pod
+		command = pod.serve_command if pod.model else (pod.startup_command or None)
+		return dict(
+			volume_in_gb=pod.volume_in_gb or 50,
+			container_disk_in_gb=pod.container_disk_gb or 20,
+			ports=[f"{int(p.internal_port)}/{p.protocol or 'tcp'}" for p in pod.ports],
+			env={"PUBLIC_KEY": self.public_keys, **self.env},
+			image_name=pod.resolved_image,
+			docker_start_cmd=command or None,
+			container_registry_auth_id=self.registry_auth_id,
+			volume_mount_path=pod.volume_mount_path or VOLUME_MOUNT,
+			name=pod.name,
+		)
+
+	@property
+	def spawn_kwargs(self):
+		"""config_kwargs plus the create-only fields: the GPU shape and the template, neither of
+		which RunPod's update accepts."""
+		if not self.pod.gpu_type_id:
+			frappe.throw(
+				f"Pod {self.pod.name} has no GPU Type ID — set it (provider GPU id, e.g. "
+				"'NVIDIA L40S')."
+			)
+		return dict(
+			self.config_kwargs,
+			gpu_type_id=self.pod.gpu_type_id,
+			gpu_count=self.pod.gpu_count or 1,  # homogeneous pod
+			template_id=self.pod.template_id or None,
+			# cloud_type defaults SECURE in spawn_pod (Community closed to new hosts)
+		)
+
+	# ── Reading provider state back ───────────────────────────────────────────
+
+	def apply_provider_state(self, pod_api, running):
+		"""Write a pod's provider state onto the Pod doc: each Ports row's external port (from
+		the provider's remap), the public IP + SSH port, and status. For a serving pod, 'up'
+		means vLLM answers /health (not just SSH) — so status is Running only when it serves,
+		else Loading; engine_url (the gateway route target) is set only when Running, so the
+		gateway never routes to a still-loading engine (→ 503s).
+
+		Reloads first: the status writes around it go through db.set_value, which leaves the
+		loaded doc stale."""
+		self.pod = frappe.get_doc("Pod", self.pod.name)
+		pod = self.pod
+		port_map = pod_api.get("port_map") or {}
+		for row in pod.ports:
+			row.external_port = port_map.get(str(int(row.internal_port))) or 0
+		if pod_api.get("public_ip"):
+			pod.public_ip = pod_api["public_ip"]
+		if pod_api.get("ssh_port"):
+			pod.ssh_port = pod_api["ssh_port"]
+			pod.ssh_user = "root"
+		if pod.model:
+			ext = port_map.get(str(int(pod.serve_port or 8080)))
+			url = f"http://{pod.public_ip}:{ext}" if (running and pod.public_ip and ext) else ""
+			if url and _is_engine_serving(url):
+				pod.status, pod.engine_url = "Running", url
+			else:
+				pod.status, pod.engine_url = ("Loading" if running else "Stopped"), ""
+		else:
+			pod.status = "Running" if running else "Stopped"
+		pod.save(ignore_permissions=True)
+		frappe.db.commit()
+
+	def await_engine(self, pod_api):
+		"""Poll the engine /health until vLLM serves (status → Running) or ENGINE_READY_TIMEOUT
+		passes (stays Loading; a later Sync flips it). Serving pods only. Ports don't move while
+		the pod stays up, so the caller's pod_api snapshot holds for the whole wait."""
+		deadline = time.time() + ENGINE_READY_TIMEOUT
+		while time.time() < deadline:
+			if frappe.db.get_value("Pod", self.pod.name, "status") == "Running":
+				return
+			time.sleep(ENGINE_POLL_INTERVAL)
+			self.apply_provider_state(pod_api, running=True)
+
+	def await_ready(self):
+		"""The tail every bring-up shares (spawn / start / restart): wait for the provider to
+		publish endpoints, write them onto the Pod, then — for a serving pod — wait for vLLM to
+		answer /health before the gateway route goes live. Returns the parsed provider pod."""
+		ready = self.client.poll_pod_ready(self.pod.pod_id)
+		self.apply_provider_state(ready, running=True)
+		if self.pod.model:
+			# vLLM keeps loading weights after SSH is up — wait for /health so the status flips
+			# Loading → Running and the gateway route registers only once it serves.
+			self.await_engine(ready)
+		self.sync_gateway()
+		return ready
+
+	def sync_gateway(self):
+		"""On a serving Pod lifecycle transition: recompute the Model's `published` flag (a
+		Running Pod is a live deployment) and push the route table so the endpoint reaches the
+		gateway. Serving pods have no Model Deployment to drive either, so their lifecycle
+		triggers both here. No-op for a non-serving pod. Best-effort — logged, never fatal."""
+		model = frappe.db.get_value("Pod", self.pod.name, "model")
+		if not model:
+			return
+		from grove.grove.doctype.model.model import sync_published
+
+		# Running pod → published=1; Stopped/Terminated → 0 (unless another live route).
+		sync_published(model)
+		try:
+			from grove import gateway_sync
+
+			gateway_sync.full_sync(trigger="Provision")
+		except Exception:
+			frappe.log_error(title="gateway full_sync after pod change failed")
+
+	def set_state(self, values):
+		"""Status-ish writes go through db.set_value: cheap, and they skip validate so a
+		lifecycle transition can't be blocked by an unrelated field."""
+		frappe.db.set_value("Pod", self.pod.name, values)
+		frappe.db.commit()
+
+	# ── Lifecycle ─────────────────────────────────────────────────────────────
+
+	def spawn(self):
+		"""Create the pod on its provider from the Pod doc, record the provider id, wait for it
+		to serve, and register a serving endpoint with the gateway."""
+		spawn_kwargs = self.spawn_kwargs  # assembled (and validated) before anything is billed
+		try:
+			self.set_state({"status": "Provisioning"})
+			pod_api = self.client.spawn_pod(**spawn_kwargs)
+			self.set_state({"pod_id": pod_api["pod_id"]})
+			ready = self.await_ready()
+			return {
+				"status": "success",
+				"pod_id": pod_api["pod_id"],
+				"public_ip": ready["public_ip"],
+			}
+		except RunPodError as e:
+			return self.fail(e, f"Pod spawn failed {self.pod.name}")
+
+	def sync(self, wait=False):
+		"""Pull the pod's current provider state onto the Pod (external ports / IP / SSH /
+		status / engine_url), then refresh the gateway (ports may have moved on restart)."""
+		self.require_pod_id("spawn it first")
+		try:
+			pod_api = (
+				self.client.poll_pod_ready(self.pod.pod_id) if wait
+				else self.client.get_pod(self.pod.pod_id)
+			)
+		except RunPodError as e:
+			if "404" not in str(e):
+				raise
+			# Gone on the provider → terminated outside Grove (e.g. the RunPod console).
+			self.set_state({"pod_id": "", "status": "Terminated", "engine_url": ""})
+			self.sync_gateway()
+			return {"status": "Terminated"}
+		running = pod_api.get("desired_status") == "RUNNING" and bool(pod_api.get("public_ip"))
+		self.apply_provider_state(pod_api, running)
+		self.sync_gateway()
+		return {"status": self.current_status}
+
+	def restart(self):
+		"""Apply edited config to the live pod IN PLACE: RunPod's update takes the container
+		start command, so the pod is PATCHed with the current serve_command, image, env and
+		disks, and resets to pick them up. The pod id and the volume survive, so the weights
+		under HF_HOME are not re-downloaded — the reason this is not a respawn.
+
+		Never destructive: an edit the update cannot deliver is refused (see restart_blocker)
+		rather than silently terminating a live pod. Re-checked here as well as at enqueue time,
+		since the pod's state can move while the job waits."""
+		if not self.pod.pod_id:
+			return self.spawn()
+		if reason := self.restart_blocker(self.client.get_pod(self.pod.pod_id)):
+			frappe.throw(reason)
+
+		config_kwargs = self.config_kwargs
+		try:
+			# Drop the route before the container goes down: the reset can take as long as a
+			# weight load, and the gateway would otherwise keep sending traffic at a dead engine.
+			self.set_state({"status": "Provisioning", "engine_url": ""})
+			self.sync_gateway()
+
+			self.client.update_pod(self.pod.pod_id, **config_kwargs)
+			# RunPod re-draws the port map on a reset, so endpoints are re-read, not assumed.
+			self.await_ready()
+			return {"status": self.current_status, "pod_id": self.pod.pod_id}
+		except RunPodError as e:
+			return self.fail(e, f"Pod restart failed {self.pod.name}")
+
+	def stop(self):
+		"""Stop the provider pod: frees the GPU but keeps the pod and its volume (so weights
+		survive), drops the gateway route, and marks it Stopped. start() resumes it."""
+		self.require_pod_id("nothing to stop")
+		self.client.stop_pod(self.pod.pod_id)
+		self.set_state({"status": "Stopped", "engine_url": ""})
+		self.sync_gateway()
+		return {"status": "Stopped"}
+
+	def start(self):
+		"""Resume a stopped pod, then re-read its endpoints — the provider re-maps ports on
+		start, so the old external ports are stale. For a serving pod, waits for vLLM to load."""
+		self.require_pod_id("spawn it first")
+		self.client.start_pod(self.pod.pod_id)
+		self.set_state({"status": "Provisioning"})
+		self.await_ready()
+		return {"status": self.current_status}
+
+	def terminate(self):
+		"""Terminate the provider pod (frees GPU/disk/billing), clear its id + engine_url, mark
+		it Terminated, and drop its endpoint from the gateway."""
+		if not self.pod.pod_id:
+			return {"status": "error", "message": "No provider pod to terminate"}
+		try:
+			self.client.terminate_pod(self.pod.pod_id)
+		except RunPodError as e:
+			return {"status": "error", "message": str(e)}
+		self.set_state({"pod_id": "", "status": "Terminated", "engine_url": ""})
+		self.sync_gateway()
+		return {"status": "success"}
+
+	# ── Guards ────────────────────────────────────────────────────────────────
+
+	def restart_blocker(self, live):
+		"""Why this Pod's config cannot be applied to its live provider pod, or None when it
+		can. `live` is the parsed provider pod (see RunPodClient._parse_pod).
+
+		Restart is deliberately non-destructive, so an edit RunPod's update cannot express is
+		refused with the way out instead of being turned into a terminate + spawn. Moving GPUs
+		is the case that matters: a respawn re-downloads the weights, which is too expensive to
+		do off a button labelled Restart, so it has to be an explicit Terminate then Spawn."""
+		move = (
+			"RunPod cannot move a pod's GPUs, so this needs an explicit Terminate, then "
+			"Spawn — which re-downloads the weights."
+		)
+		if live.get("desired_status") != "RUNNING":
+			return (
+				f"Pod {self.pod.name} is not running, and an update only resets a live "
+				"container. Start it first, then Restart to apply this config."
+			)
+		if live.get("gpu_count") and (self.pod.gpu_count or 1) != live["gpu_count"]:
+			return f"GPU count changed ({live['gpu_count']} → {self.pod.gpu_count or 1}). {move}"
+		if live.get("gpu_type_id") and self.pod.gpu_type_id != live["gpu_type_id"]:
+			return f"GPU type changed ({live['gpu_type_id']} → {self.pod.gpu_type_id}). {move}"
+		return None
+
+	def validate_restart(self):
+		"""Throw if Restart can't apply this Pod's config in place. Called before the job is
+		enqueued, so the operator gets the reason in the form instead of a failed background
+		job."""
+		if not self.pod.pod_id:
+			return
+		try:
+			live = self.client.get_pod(self.pod.pod_id)
+		except RunPodError as e:
+			frappe.throw(
+				f"Could not read pod {self.pod.pod_id} from the provider ({e}). Sync first — "
+				"that reconciles a pod changed or removed outside Grove."
+			)
+		if reason := self.restart_blocker(live):
+			frappe.throw(reason)
+
+	def require_pod_id(self, remedy):
+		"""Nothing to talk to the provider about without an id — say which action fixes it."""
+		if not self.pod.pod_id:
+			frappe.throw(f"Pod {self.pod.name} has no provider pod id — {remedy}.")
+
+	@property
+	def current_status(self):
+		"""The Pod's status as stored, not as loaded — the lifecycle calls write through
+		db.set_value and apply_provider_state."""
+		return frappe.db.get_value("Pod", self.pod.name, "status")
+
+	def fail(self, error, title):
+		"""A provider call died mid-lifecycle: park the Pod Stopped (a half-spawned pod is not
+		Running) and hand the message back to the caller instead of raising, since these run as
+		background jobs."""
+		self.set_state({"status": "Stopped"})
+		frappe.log_error(title=title)
+		return {"status": "error", "message": str(error)}
 
 
-def _engine_ready(engine_url, timeout=5):
-	"""True once vLLM is actually serving: GET /health → 200. This — not SSH-reachability —
-	is real readiness; weights can take many minutes to download + load after the pod is up.
+def _is_engine_serving(engine_url, timeout=5):
+	"""True once vLLM is actually serving: GET /health → 200. This — not SSH-reachability — is
+	real readiness; weights can take many minutes to download + load after the pod is up.
 	/health needs no api-key."""
 	try:
 		return requests.get(f"{engine_url}/health", timeout=timeout).status_code == 200
@@ -132,165 +396,37 @@ def _engine_ready(engine_url, timeout=5):
 		return False
 
 
-def _update_pod_doc(pod, pod_api, running):
-	"""Write a pod's provider state onto the Pod doc: each Ports row's external port (from the
-	provider's remap), the public IP + SSH port, and status. For a serving pod, 'up' means vLLM
-	answers /health (not just SSH) — so status is Running only when it serves, else Loading;
-	engine_url (the gateway route target) is set only when Running, so the gateway never routes
-	to a still-loading engine (→ 503s)."""
-	port_map = pod_api.get("port_map") or {}
-	for row in pod.ports:
-		row.external_port = port_map.get(str(int(row.internal_port))) or 0
-	if pod_api.get("public_ip"):
-		pod.public_ip = pod_api["public_ip"]
-	if pod_api.get("ssh_port"):
-		pod.ssh_port = pod_api["ssh_port"]
-		pod.ssh_user = "root"
-	if pod.model:
-		ext = port_map.get(str(int(pod.serve_port or 8080)))
-		url = f"http://{pod.public_ip}:{ext}" if (running and pod.public_ip and ext) else ""
-		if url and _engine_ready(url):
-			pod.status, pod.engine_url = "Running", url
-		else:
-			pod.status, pod.engine_url = ("Loading" if running else "Stopped"), ""
-	else:
-		pod.status = "Running" if running else "Stopped"
-	pod.save(ignore_permissions=True)
-	frappe.db.commit()
+def _provisioner(pod_name):
+	return PodProvisioner(frappe.get_doc("Pod", pod_name))
 
 
-def _await_engine(pod_name, pod_api):
-	"""Poll the engine /health until vLLM serves (status → Running) or ENGINE_READY_TIMEOUT
-	passes (stays Loading; a later Sync flips it). Serving pods only. Ports don't move after
-	spawn, so the spawn-time pod_api snapshot stays valid for the whole wait."""
-	deadline = time.time() + ENGINE_READY_TIMEOUT
-	while time.time() < deadline:
-		if frappe.db.get_value("Pod", pod_name, "status") == "Running":
-			return
-		time.sleep(ENGINE_POLL_INTERVAL)
-		_update_pod_doc(frappe.get_doc("Pod", pod_name), pod_api, running=True)
+# Queue entry points. frappe.enqueue takes a dotted path to a module function, so the Pod
+# form's buttons reach the provisioner through these.
 
 
 def spawn_pod_doc(pod_name):
-	"""Spawn a Pod on its provider. Builds the request from the Pod (GPUs / ports / image /
-	env + serve_command for a Model pod), records the pod id, polls ready, writes endpoints
-	back onto the Pod, and registers a serving endpoint with the gateway."""
-	pod = frappe.get_doc("Pod", pod_name)
-	client = _pod_client(pod)
-	pubkeys = injected_public_keys()
-	if not pubkeys:
-		frappe.throw("No active SSH Key found — add one so Ansible/ops can reach the pod.")
-	spawn_kwargs = _spawn_kwargs(pod, pubkeys, name=pod.name, client=client)
-
-	try:
-		frappe.db.set_value("Pod", pod.name, "status", "Provisioning")
-		frappe.db.commit()
-
-		pod_api = client.spawn_pod(**spawn_kwargs)
-		frappe.db.set_value("Pod", pod.name, "pod_id", pod_api["pod_id"])
-		frappe.db.commit()
-
-		ready = client.poll_pod_ready(pod_api["pod_id"])  # SSH-reachable
-		_update_pod_doc(frappe.get_doc("Pod", pod.name), ready, running=True)
-		if pod.model:
-			# vLLM keeps loading weights after SSH is up — wait for /health so the status
-			# flips Loading → Running and the gateway route registers only once it serves.
-			_await_engine(pod.name, ready)
-		_gateway_sync_serving(pod.name)
-		return {"status": "success", "pod_id": pod_api["pod_id"], "public_ip": ready["public_ip"]}
-
-	except RunPodError as e:
-		frappe.db.set_value("Pod", pod.name, "status", "Stopped")
-		frappe.db.commit()
-		frappe.log_error(title=f"Pod spawn failed {pod_name}")
-		return {"status": "error", "message": str(e)}
+	return _provisioner(pod_name).spawn()
 
 
 def sync_pod(pod_name, wait=False):
-	"""Pull the pod's current provider state and update the Pod (external ports / IP / SSH /
-	status / engine_url), then refresh the gateway (ports may have moved on restart)."""
-	pod = frappe.get_doc("Pod", pod_name)
-	if not pod.pod_id:
-		frappe.throw(f"Pod {pod.name} has no provider pod id — spawn it first.")
-	client = _pod_client(pod)
-	try:
-		pod_api = client.poll_pod_ready(pod.pod_id) if wait else client.get_pod(pod.pod_id)
-	except RunPodError as e:
-		if "404" not in str(e):
-			raise
-		# Not found on the provider → assume it was terminated outside Grove (e.g. RunPod console).
-		frappe.db.set_value(
-			"Pod", pod.name, {"pod_id": "", "status": "Terminated", "engine_url": ""}
-		)
-		frappe.db.commit()
-		_gateway_sync_serving(pod.name)
-		return {"status": "Terminated"}
-	running = pod_api.get("desired_status") == "RUNNING" and bool(pod_api.get("public_ip"))
-	_update_pod_doc(pod, pod_api, running)
-	_gateway_sync_serving(pod.name)
-	return {"status": frappe.db.get_value("Pod", pod.name, "status")}
+	return _provisioner(pod_name).sync(wait=wait)
 
 
 def restart_pod(pod_name):
-	"""Apply edited config. The provider bakes the start command at create, so this respawns:
-	terminate the old pod, spawn a new one with the current serve_command, then re-read the
-	(moved) endpoints. Weights re-download unless a network volume is attached (future)."""
-	pod = frappe.get_doc("Pod", pod_name)
-	if pod.pod_id:
-		client = _pod_client(pod)
-		try:
-			client.terminate_pod(pod.pod_id)
-		except RunPodError:
-			pass  # already gone → still respawn
-		frappe.db.set_value("Pod", pod.name, {"pod_id": "", "status": "Stopped"})
-		frappe.db.commit()
-	return spawn_pod_doc(pod_name)
+	return _provisioner(pod_name).restart()
+
+
+def validate_restart(pod_name):
+	return _provisioner(pod_name).validate_restart()
 
 
 def stop_pod(pod_name):
-	"""Stop the provider pod: frees the GPU but keeps the pod and its volume (so weights
-	survive), drops the gateway route, and marks it Stopped. start_pod() resumes it."""
-	pod = frappe.get_doc("Pod", pod_name)
-	if not pod.pod_id:
-		frappe.throw(f"Pod {pod.name} has no provider pod id — nothing to stop.")
-	_pod_client(pod).stop_pod(pod.pod_id)
-	frappe.db.set_value("Pod", pod.name, {"status": "Stopped", "engine_url": ""})
-	frappe.db.commit()
-	_gateway_sync_serving(pod.name)
-	return {"status": "Stopped"}
+	return _provisioner(pod_name).stop()
 
 
 def start_pod(pod_name):
-	"""Resume a stopped pod, then re-read its endpoints — the provider re-maps ports on
-	start, so the old external ports are stale. For a serving pod, waits for vLLM to load."""
-	pod = frappe.get_doc("Pod", pod_name)
-	if not pod.pod_id:
-		frappe.throw(f"Pod {pod.name} has no provider pod id — spawn it first.")
-	client = _pod_client(pod)
-	client.start_pod(pod.pod_id)
-	frappe.db.set_value("Pod", pod.name, "status", "Provisioning")
-	frappe.db.commit()
-	ready = client.poll_pod_ready(pod.pod_id)
-	_update_pod_doc(frappe.get_doc("Pod", pod.name), ready, running=True)
-	if pod.model:
-		_await_engine(pod.name, ready)
-	_gateway_sync_serving(pod.name)
-	return {"status": frappe.db.get_value("Pod", pod.name, "status")}
+	return _provisioner(pod_name).start()
 
 
 def terminate_pod_doc(pod_name):
-	"""Terminate the provider pod (frees GPU/disk/billing), clear its id + engine_url, mark it
-	Terminated, and drop its endpoint from the gateway."""
-	pod = frappe.get_doc("Pod", pod_name)
-	if not pod.pod_id:
-		return {"status": "error", "message": "No provider pod to terminate"}
-	client = _pod_client(pod)
-	try:
-		client.terminate_pod(pod.pod_id)
-	except RunPodError as e:
-		return {"status": "error", "message": str(e)}
-
-	frappe.db.set_value("Pod", pod.name, {"pod_id": "", "status": "Terminated", "engine_url": ""})
-	frappe.db.commit()
-	_gateway_sync_serving(pod.name)
-	return {"status": "success"}
+	return _provisioner(pod_name).terminate()

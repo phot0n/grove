@@ -58,7 +58,7 @@ class GroveAPIKey(Document):
 		self.dirty = 1
 
 
-def mark_keys_dirty(grove_users=None):
+def mark_keys_dirty(grove_users):
 	"""Queue keys for the next sync_dirty push. A key carries its user's flattened model
 	set, so anything that changes access has to re-push the affected keys. Takes Grove User
 	doc names (what `user` links to). `grove_users=None` means every key — what a Model

@@ -18,6 +18,7 @@ class InferenceServer(Document):
 	if TYPE_CHECKING:
 		from frappe.types import DF
 
+		data_path: DF.Data
 		is_provisioned: DF.Check
 		machine: DF.Link
 		machine_ip: DF.Data | None
@@ -77,7 +78,7 @@ class InferenceServer(Document):
 
 	def provision(self):
 		"""One-time host bootstrap for an Inference Server: NVIDIA driver + data
-		volume (the gpu_host role via provision.yml). Runs once per box — model
+		volume + Docker (the gpu_host role via provision.yml). Runs once per box — model
 		serves (deploy_model) assume an already-provisioned host and gate on
 		is_provisioned. Mirrors deploy_agent on the proxy side."""
 		frappe.db.set_value("Inference Server", self.name, "status", "Installing")
@@ -90,6 +91,7 @@ class InferenceServer(Document):
 			server_type="Inference Server",
 			server_name=self.name,
 			machine_name=self.machine,
+			extravars={"gpu_data_mount": self.data_path},
 		)
 
 		ok = rc == 0

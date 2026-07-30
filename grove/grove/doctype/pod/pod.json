@@ -260,7 +260,7 @@
   },
   {
    "default": "auto",
-   "description": "Injected as VLLM_ATTENTION_BACKEND env (not a serve flag). auto = let vLLM pick.",
+   "description": "\u2192 --attention-backend on the serve command. auto = let vLLM pick.",
    "fieldname": "attention_backend",
    "fieldtype": "Select",
    "label": "Attention Backend",
