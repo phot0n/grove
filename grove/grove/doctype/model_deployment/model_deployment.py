@@ -373,9 +373,16 @@ def deploy_model(model_deployment):
 	# Grove owns the internal key: generate once and serve with it, so the gateway
 	# (which stores it as the deployment's internal_api_key) always matches.
 	key = md.get_password("internal_api_key", raise_exception=False)
+	# Teardown frees the port with db.set_value, which skips validate — so a redeploy
+	# arrives here holding 0, and saving is what runs _assign_engine_port again and
+	# re-derives engine_url from it. Without this the container publishes port 0 and the
+	# doc still advertises the old one.
+	needs_save = not md.engine_port
 	if not key:
 		key = secrets.token_hex(24)
 		md.internal_api_key = key
+		needs_save = True
+	if needs_save:
 		md.save(ignore_permissions=True)
 		frappe.db.commit()
 
