@@ -2,10 +2,9 @@
 # See license.txt
 """The vllm role's engine templates. Pure — renders the files, no site and no box.
 
-Both placements render a file that something else parses strictly: the venv unit is read by
-systemd, the container run script by /bin/sh, its env file by docker. A stray blank line
-after a `\\` continuation or an unquoted value is a broken deploy, not a failed assertion,
-so the parsers themselves are the assertion here.
+Both are parsed strictly by something else: the run script by /bin/sh, its env file by
+docker. A stray blank line after a `\\` continuation or an unquoted value is a broken
+deploy, not a failed assertion, so the parsers themselves are the assertion here.
 """
 
 import subprocess
@@ -30,14 +29,11 @@ BASE = {
 	"vllm_model": "Qwen/Qwen3-35B",
 	"vllm_served_name": "qwen3-35b",
 	"vllm_image": "vllm/vllm-openai:latest",
-	"vllm_version": "",
 	"vllm_user": "root",
 	"vllm_home": "/opt/vllm",
-	"vllm_venv": "/opt/vllm/venvs/md-00007_venv",
 	"vllm_hf_home": "/opt/vllm/hf",
 	"vllm_cache_dir": "/opt/vllm/cache",
 	"vllm_container_env_file": "/opt/vllm/containers/vllm-md-00007.env",
-	"vllm_use_flashinfer_sampler": "0",
 	"vllm_serve_args": ["--port", "8081", "--tensor-parallel-size", "2"],
 	"vllm_cuda_visible_devices": "0,1",
 	"vllm_env": {"HF_TOKEN": "hf_secret", "ODD": "a b;c"},
@@ -86,17 +82,6 @@ class TestContainerEnvFile(unittest.TestCase):
 
 	def test_no_api_key_line_when_none_resolved(self):
 		self.assertEqual(render("vllm-container.env.j2", BARE), "")
-
-
-class TestVenvUnit(unittest.TestCase):
-	def test_env_values_are_quoted_as_one_assignment(self):
-		# Unquoted, systemd splits `ODD=a b;c` at the space into two assignments.
-		self.assertIn('Environment="ODD=a b;c"', render("vllm.service.j2", BASE))
-
-	def test_runs_the_venv_not_docker(self):
-		unit = render("vllm.service.j2", BASE)
-		self.assertIn("/opt/vllm/venvs/md-00007_venv/bin/vllm serve", unit)
-		self.assertNotIn("docker", unit)
 
 
 if __name__ == "__main__":

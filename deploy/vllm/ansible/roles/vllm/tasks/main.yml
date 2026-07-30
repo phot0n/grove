@@ -1,16 +1,13 @@
 ---
-# Two placements share this role. vllm_image set → pull the engine image and let Docker own
-# the container; blank → build a per-deployment venv and let a systemd unit own the process.
-# The split is only over install + who supervises: dirs, keys, port and the health gate are
-# common, so the gateway cannot tell the two apart.
-- name: Install build/runtime apt packages
-  ansible.builtin.apt:
-    name: "{{ vllm_apt_packages }}"
-    state: present
-    update_cache: true
-    cache_valid_time: 3600
-  when: vllm_image | length == 0
-  tags: heavy
+# Serve one model from an engine image, with Docker owning the container. The box supplies
+# the driver, the directories and the key; everything about the engine itself comes from the
+# image and the run script rendered below.
+- name: Check an engine image was passed
+  ansible.builtin.assert:
+    that: vllm_image | length > 0
+    fail_msg: >-
+      vllm_image is empty. This role serves from a container image — set Engine Image on the
+      Model Deployment.
 
 - name: Verify an NVIDIA driver is present and working
   ansible.builtin.command: nvidia-smi
@@ -28,56 +25,15 @@
     owner: "{{ vllm_user }}"
     mode: "0755"
 
-# torch + CUDA wheels are multi-GB; keep pip's build tmp and download cache on
-# the (large) vllm_home volume so a small root disk can't fill up.
-- name: Reclaim root space from any earlier pip attempt
-  ansible.builtin.file:
-    path: /root/.cache/pip
-    state: absent
-
-- name: Create pip build tmp + cache + per-version venv root + per-instance key dir
+- name: Create the per-instance key dir + the container config dir
   ansible.builtin.file:
     path: "{{ item }}"
     state: directory
     owner: "{{ vllm_user }}"
     mode: "0755"
   loop:
-    - "{{ vllm_home }}/tmp"
-    - "{{ vllm_home }}/pip-cache"
-    - "{{ vllm_home }}/venvs"
     - "{{ vllm_home }}/keys"
     - "{{ vllm_container_dir }}"
-
-- name: Create Python virtualenv
-  ansible.builtin.command: "{{ vllm_python }} -m venv {{ vllm_venv }}"
-  args:
-    creates: "{{ vllm_venv }}/bin/python"
-  when: vllm_image | length == 0
-  tags: heavy
-
-- name: Upgrade pip inside the venv
-  ansible.builtin.pip:
-    name: pip
-    state: latest
-    virtualenv: "{{ vllm_venv }}"
-  when: vllm_image | length == 0
-  tags: heavy
-
-- name: Install vLLM (pulls torch cu13 + flashinfer for Blackwell — can take several minutes)
-  ansible.builtin.pip:
-    name: "vllm{{ ('==' ~ vllm_version) if (vllm_version | length > 0) else '' }}"
-    virtualenv: "{{ vllm_venv }}"
-  environment:
-    TMPDIR: "{{ vllm_home }}/tmp"
-    PIP_CACHE_DIR: "{{ vllm_home }}/pip-cache"
-  # Run detached + poll: the pip pulls multi-GB wheels for many minutes with no channel
-  # output, and some hosts (e.g. RunPod's TCP proxy) cap connection duration and drop a
-  # long-held SSH session. async keeps pip alive on the box while Ansible reconnects to
-  # poll status, so a mid-install disconnect can't kill it.
-  async: 5400
-  poll: 15
-  when: vllm_image | length == 0
-  tags: heavy
 
 - name: Log in to the image registry
   ansible.builtin.command: "docker login {{ vllm_registry_host }} --username {{ vllm_registry_username }} --password-stdin"
@@ -85,7 +41,7 @@
     stdin: "{{ vllm_registry_token }}"
   no_log: true
   changed_when: false
-  when: vllm_image | length > 0 and vllm_registry_token | length > 0
+  when: vllm_registry_token | length > 0
 
 # Deliberately NOT tagged heavy, so Update Engine Config pulls too: a cached image costs one
 # digest check, and skipping it would leave `docker run` to pull a fresh tag inline, stretching
@@ -99,10 +55,10 @@
   # docker prints "Status: Image is up to date for X" when nothing moved. Matching the
   # negative errs toward a restart, which is what the button already promises anyway.
   changed_when: "'Image is up to date' not in (vllm_pull.stdout | default(''))"
-  # Same long-silent-transfer problem as the pip install above.
+  # Run detached + poll: a multi-GB pull runs for minutes with no channel output, and some
+  # hosts (e.g. RunPod's TCP proxy) cap connection duration and drop a long-held SSH session.
   async: 5400
   poll: 15
-  when: vllm_image | length > 0
   notify: recreate vllm container
 
 - name: Create cache directories
@@ -145,25 +101,10 @@
       {{ vllm_api_key if (vllm_api_key | length > 0)
          else (vllm_api_key_slurp.content | b64decode | trim) }}
 
-- name: Pre-download model weights (optional)
-  ansible.builtin.command: "{{ vllm_venv }}/bin/hf download {{ vllm_model }}"
-  environment:
-    HF_HOME: "{{ vllm_hf_home }}"
-    HF_TOKEN: "{{ vllm_hf_token }}"
-  args:
-    creates: "{{ vllm_hf_home }}/hub/models--{{ vllm_model | replace('/', '--') }}"
-  when: vllm_predownload_model | bool and vllm_image | length == 0
-  # Weights are many GB → same long-silent-download problem as the pip step; run detached
-  # + poll so a dropped SSH session can't abort the download.
-  async: 7200
-  poll: 15
-  tags: heavy
-
-# The venv path's `hf` binary lives in the venv, which the container placement never builds —
-# so the image's own hf runs the download, into the same box-shared cache the venv path fills.
+# The image's own hf does the download, into the box-shared cache every instance mounts.
 # `-e HF_TOKEN` forwards the value from the task environment below rather than spelling it
 # out in the argv, which Ansible records verbatim on the Ansible Task doc.
-- name: Pre-download model weights into the shared cache (container)
+- name: Pre-download model weights into the shared cache
   ansible.builtin.command: >-
     docker run --rm --entrypoint hf
     -e HF_TOKEN
@@ -173,41 +114,22 @@
     HF_TOKEN: "{{ vllm_hf_token }}"
   args:
     creates: "{{ vllm_hf_home }}/hub/models--{{ vllm_model | replace('/', '--') }}"
-  when: vllm_predownload_model | bool and vllm_image | length > 0
+  when: vllm_predownload_model | bool
+  # Weights are many GB → same long-silent-download problem as the pull; run detached + poll
+  # so a dropped SSH session can't abort it.
   async: 7200
   poll: 15
   tags: heavy
 
-# ── Venv placement: a systemd unit owns the process ─────────────────────────
-- name: Install vLLM systemd unit
-  ansible.builtin.template:
-    src: vllm.service.j2
-    dest: "/etc/systemd/system/{{ vllm_unit }}.service"
-    # Contains VLLM_API_KEY and any operator env (HF/S3 tokens) in cleartext.
-    mode: "0600"
-  when: vllm_image | length == 0
-  notify: restart vllm
-
-- name: Enable and start vLLM
-  ansible.builtin.systemd:
-    name: "{{ vllm_unit }}"
-    enabled: true
-    state: started
-    daemon_reload: true
-  when: vllm_image | length == 0
-
-# ── Container placement: Docker owns the container ──────────────────────────
 # No unit wraps `docker run`. --restart unless-stopped already survives a crash, a reboot and
 # a dockerd restart, so a unit would only be a second owner of the same restart state. These
-# two files are the config: either one changing is what triggers a replace, exactly as a
-# changed unit file triggers a restart above.
+# two files ARE the config: either one changing is what triggers a replace.
 - name: Write the container environment file
   ansible.builtin.template:
     src: vllm-container.env.j2
     dest: "{{ vllm_container_env_file }}"
     # Contains VLLM_API_KEY and any operator env (HF/S3 tokens) in cleartext.
     mode: "0600"
-  when: vllm_image | length > 0
   notify: recreate vllm container
 
 - name: Write the container run script
@@ -215,7 +137,6 @@
     src: vllm-container-run.sh.j2
     dest: "{{ vllm_container_script }}"
     mode: "0700"
-  when: vllm_image | length > 0
   notify: recreate vllm container
 
 # Before the running check below, not after it: otherwise a config change would have the
@@ -227,13 +148,12 @@
   ansible.builtin.command: "docker ps --quiet --filter name=^{{ vllm_unit }}$ --filter status=running"
   register: vllm_container_ps
   changed_when: false
-  when: vllm_image | length > 0
 
 # Covers the first deploy and an operator's manual `docker stop`; a config change already
 # recreated it in the handler above, so this is a no-op then.
 - name: Start the engine container
   ansible.builtin.command: "{{ vllm_container_script }}"
-  when: vllm_image | length > 0 and (vllm_container_ps.stdout | default('')) | length == 0
+  when: (vllm_container_ps.stdout | default('')) | length == 0
 
 - name: Wait for the vLLM API to become healthy
   ansible.builtin.uri:
@@ -252,9 +172,6 @@
   ansible.builtin.debug:
     msg:
       - "vLLM is up: http://{{ ansible_host | default(inventory_hostname) }}:{{ vllm_port }}/v1"
-      - >-
-        {{ ('Container: ' ~ vllm_unit ~ ' (image ' ~ vllm_image ~ ') — docker ps / docker logs ' ~ vllm_unit)
-           if vllm_image | length > 0
-           else ('Instance unit: ' ~ vllm_unit ~ '.service (venv ' ~ vllm_venv ~ ') — journalctl -u ' ~ vllm_unit) }}
+      - "Container: {{ vllm_unit }} (image {{ vllm_image }}) — docker ps / docker logs {{ vllm_unit }}"
       - "Model served as: {{ vllm_served_name }}"
       - "API key file on host: {{ vllm_api_key_file }}"

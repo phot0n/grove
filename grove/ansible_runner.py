@@ -35,9 +35,9 @@ def _set_global_cli_args(remote_user, tags=None, skip_tags=None):
 		forks=1,
 		remote_user=remote_user,
 		private_key_file=None,
-		# Keepalive so long silent tasks (pip install vllm pulls multi-GB torch for
-		# minutes with no channel output) don't get dropped by a NAT/idle timeout —
-		# which killed the pip child. 30s pings, tolerate ~1h before giving up.
+		# Keepalive so long silent tasks (an engine image pull moves tens of GB with no
+		# channel output) don't get dropped by a NAT/idle timeout — which used to kill
+		# the child on the box. 30s pings, tolerate ~1h before giving up.
 		ssh_common_args=(
 			"-o StrictHostKeyChecking=accept-new -o ConnectTimeout=20 "
 			"-o ServerAliveInterval=30 -o ServerAliveCountMax=120 -o TCPKeepAlive=yes"
@@ -260,7 +260,7 @@ def run_play(playbook, server_type, server_name, machine_name, project_dir, extr
 	"""Build a single-host inventory from the Machine and run
 	<project_dir>/<playbook>. Returns (ansible_play_name, rc); rc 0 = success.
 	tags restricts the run to matching tasks; skip_tags excludes them (e.g.
-	skip_tags=["heavy"] for a fast reconfigure that skips install/pip/predownload).
+	skip_tags=["heavy"] for a fast reconfigure that skips the weights predownload).
 	reference_doctype/docname link the Ansible Play to the triggering doc (defaults to server_type/server_name)."""
 	m = frappe.get_doc("Machine", machine_name)
 	if not m.public_ip:

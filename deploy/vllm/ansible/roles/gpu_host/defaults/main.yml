@@ -13,7 +13,7 @@ nvidia_container_toolkit_version: "1.19.1-1"
 gpu_host_monitor_packages:
   - nvtop
 
-# Data volume: the large secondary disk that holds the vLLM venv, weights and
+# Data volume: the large secondary disk that holds the engine images, weights and
 # caches (the root volume is typically tiny). Mounted where vllm_home points.
 gpu_data_device: /dev/nvme1n1
 gpu_data_mount: /opt/vllm

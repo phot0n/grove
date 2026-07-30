@@ -1,40 +1,48 @@
 # Ansible role: `vllm`
 
-Installs and runs [vLLM](https://docs.vllm.ai) as a systemd service on an Ubuntu host with
-an NVIDIA GPU. Tuned for **Blackwell (`sm_120`, RTX PRO 6000 / B-series)** serving FP8
-models. Codifies the runbook in [`../../../README.md`](../../README.md).
+Runs [vLLM](https://docs.vllm.ai) from an engine image on an Ubuntu host with an NVIDIA GPU,
+with Docker owning the container. Tuned for **Blackwell (`sm_120`, RTX PRO 6000 / B-series)**
+serving FP8 models. Codifies the runbook in [`../../../README.md`](../../README.md).
 
 ## Requirements
 
-- Ubuntu 24.04 (or a host where `python3.12` + `gcc-13` are installable).
 - A **working NVIDIA driver already installed** (`nvidia-smi` must succeed). The role does
   not install or touch the driver — it fails fast if the GPU isn't visible.
+- Docker + the NVIDIA container toolkit on the box. The `gpu_host` role (Inference Server →
+  Setup) installs both, and points Docker's `data-root` at the data volume.
 - Run with `become: true` (root). SSH access to the target.
 - `ansible-playbook` on your control machine.
 
 ## What it does
 
-1. Installs build deps (`gcc-13`, `g++-13`, `python3.12-dev`, …) — needed for vLLM's
-   runtime kernel compilation.
-2. Creates a venv at `{{ vllm_venv }}` and `pip install vllm` (cu13 wheels on a CUDA-13 box).
-3. Creates inductor/triton/torch cache dirs; optionally writes an HF token.
-4. Auto-generates and persists an API key (unless you supply `vllm_api_key`).
-5. Optionally pre-downloads the model weights.
-6. Templating `vllm.service`, enables + starts it, waits for `/v1/models` to return `200`.
+1. Pulls `{{ vllm_image }}` (logging in first only when registry credentials are passed).
+2. Creates inductor/triton/torch cache dirs; optionally writes an HF token.
+3. Auto-generates and persists an API key (unless you supply `vllm_api_key`).
+4. Optionally pre-downloads the model weights, using the image's own `hf` into the
+   box-shared cache every instance mounts.
+5. Renders the container's env file and run script, replaces the container when either
+   moved, and waits for `/v1/models` to return `200`.
 
-All steps are idempotent (`creates:` guards on venv, key, and model download).
+All steps are idempotent (`creates:` guards on the key and the weights; the run script's
+content is what decides whether the container is replaced).
+
+There is no systemd unit. `--restart unless-stopped` in the run script already survives a
+crash, a reboot and a dockerd restart, so a unit would only be a second owner of the same
+restart state.
 
 ## Usage
 
 ```bash
 cd deploy/vllm/ansible
 cp inventory.example.ini inventory.ini      # set ansible_host / user
-ansible-playbook playbook.yml
+ansible-playbook serve.yml -e vllm_image=vllm/vllm-openai:v0.24.0
 ```
 
-After the run the API key is printed-by-path and stored at `{{ vllm_home }}/api_key.txt`
-on the host. Manage the service with `systemctl {status,restart} vllm` and
-`journalctl -u vllm -f`.
+The API key is stored at `{{ vllm_home }}/keys/{{ vllm_instance }}.key`. Manage the engine
+with `docker ps`, `docker logs vllm-<instance>`, and re-run the role (or Grove's **Update
+Engine Config**) to change its config — the run script at
+`{{ vllm_home }}/containers/vllm-<instance>.sh` is that config, so editing the box by hand
+is overwritten on the next run.
 
 ## Key variables
 
@@ -42,34 +50,38 @@ See [`defaults/main.yml`](defaults/main.yml) for the full list. Most-used:
 
 | Variable | Default | Notes |
 |---|---|---|
-| `vllm_model` | `Qwen/Qwen3-32B-FP8` | Any HF repo vLLM supports |
-| `vllm_served_name` | `qwen3-32b-fp8` | Name clients pass as `model` (unit Description only) |
+| `vllm_image` | `""` | **Required** — the engine image, e.g. `vllm/vllm-openai:v0.24.0` |
+| `vllm_model` | — | Any HF repo vLLM supports |
+| `vllm_served_name` | — | Name clients pass as `model` |
 | `vllm_serve_args` | `[]` | The whole `vllm serve` flag list — see below |
+| `vllm_env` | `{}` | Engine env vars, rendered as the container's `--env-file` |
 | `vllm_api_key` | `""` | Blank → auto-generated + persisted |
 | `vllm_hf_token` | `""` | For gated models / faster downloads |
-| `vllm_version` | `""` | Blank → latest; or pin e.g. `0.22.1` |
 | `vllm_predownload_model` | `true` | Fetch weights during the play |
 
 The individual serve flags (`--max-model-len`, `--gpu-memory-utilization`, the tool/reasoning
 parsers, …) are **not** role variables. Grove builds the full list in
 `grove/serve_command.py` (`ServeCommand`) from the Model ⊕ the Model Deployment and passes it
-as `vllm_serve_args`; the container placement (Pod) uses the same builder, so the two can't
-drift. Running the role by hand means passing the flags yourself:
+as `vllm_serve_args`; the Pod path uses the same builder, so the two can't drift. Running the
+role by hand means passing the flags yourself:
 
 ```yaml
 vllm_serve_args: ["--served-model-name", "qwen3-32b-fp8", "--host", "0.0.0.0", "--port", "8080"]
 ```
 
-### Switching to flashinfer (best Blackwell FP8 perf)
+## Engine env vars
 
-The default avoids flashinfer because its JIT compile needs a unified CUDA toolkit the
-pip install doesn't provide. After installing a matching CUDA 13 toolkit (with a real
-`CUDA_HOME`), set:
+`vllm_env` is a plain dict rendered one `KEY=value` per line. It is where a per-box engine
+workaround goes — e.g. Blackwell needed `VLLM_USE_DEEP_GEMM=0`, because the image builds
+DeepGEMM and it has no recipe for that GPU's FP8 layout:
 
 ```yaml
-vllm_attention_backend: FLASHINFER
-vllm_use_flashinfer_sampler: "1"
+vllm_env:
+  VLLM_USE_DEEP_GEMM: "0"
 ```
+
+From Grove these are the deployment's **Environment Variables** rows, layered on top of what
+Grove derives (attention backend, HF token, long-max-len guard).
 
 ## Serving a different / non-Qwen model
 

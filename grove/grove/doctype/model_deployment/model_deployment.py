@@ -36,7 +36,6 @@ class ModelDeployment(Document):
 		engine_image: DF.Link | None
 		engine_port: DF.Int
 		engine_url: DF.Data | None
-		engine_version: DF.Data | None
 		env: DF.Table[PodEnv]
 		extra_serve_args: DF.SmallText | None
 		gpu_memory_utilization: DF.Float
@@ -63,23 +62,16 @@ class ModelDeployment(Document):
 		self._validate_engine()
 
 	def _validate_engine(self):
-		"""The placement switch and the env rows that feed it. An image tag already pins the
-		vLLM version, so a version alongside it would silently do nothing; env rows are
-		rendered into a systemd unit and a docker --env-file, which is a trust boundary — a
-		newline in a value would otherwise append a directive of the operator's choosing."""
-		if self.engine_image and self.engine_version:
-			frappe.throw(
-				"Engine Image and Engine Version cannot both be set — the image tag owns "
-				"the vLLM version. Clear Engine Version to serve from the image."
-			)
-		# Placement is frozen once deployed. Flipping it while the old placement is still on
-		# the box would have the new one bind a port the old one holds — a container and a
-		# unit for the same deployment use the same port — and status never returns to Draft,
-		# so this reads as set-only-once-after-deploy. A new deployment is the way to switch.
+		"""The image that serves this deployment and the env rows that go into it. Those rows
+		are rendered into a docker --env-file, which is a trust boundary — a newline in a
+		value would otherwise append a variable of the operator's choosing."""
+		# The image is frozen once deployed: swapping it while the old container still holds
+		# the port would have the new one fail to bind, and status never returns to Draft, so
+		# this reads as set-only-once-after-deploy. A new deployment is the way to switch.
 		if not self.is_new() and self.status != "Draft" and self.has_value_changed("engine_image"):
 			frappe.throw(
 				f"Engine Image cannot change after deployment (this one is {self.status}). "
-				"Create a new Model Deployment to serve from a different placement."
+				"Create a new Model Deployment to serve from a different image."
 			)
 		for row in self.env or []:
 			if not is_env_key(row.key):
@@ -254,9 +246,9 @@ class ModelDeployment(Document):
 	@frappe.whitelist()
 	def apply_engine_config(self):
 		"""Button: re-render this deployment's engine config and restart it to apply edited
-		per-box tuning (dtype / gpu_memory_utilization / attention_backend / engine_port)
-		without a full re-install. Fast path — skips the heavy install/pip/predownload
-		tasks. Restarts the engine, so it drops in-flight requests."""
+		per-box tuning (dtype / gpu_memory_utilization / attention_backend / engine_port /
+		env rows). Fast path — skips the heavy weights predownload. Replaces the container,
+		so it drops in-flight requests."""
 		frappe.enqueue(
 			"grove.grove.doctype.model_deployment.model_deployment.reconfigure_deployment",
 			queue="long",
@@ -267,9 +259,9 @@ class ModelDeployment(Document):
 
 	@frappe.whitelist()
 	def teardown(self):
-		"""Button: stop + remove THIS deployment's engine — its systemd unit or its
-		container — plus its key file from the box (multi-tenant teardown). Shared
-		weights and the pulled image are left for other instances. → Inactive on success."""
+		"""Button: stop + remove THIS deployment's container, its run script and its key file
+		from the box (multi-tenant teardown). Shared weights and the pulled image are left for
+		other instances. → Inactive on success."""
 		frappe.enqueue(
 			"grove.grove.doctype.model_deployment.model_deployment.teardown_deployment",
 			queue="long",
@@ -280,36 +272,30 @@ class ModelDeployment(Document):
 
 	@frappe.whitelist()
 	def get_engine_logs(self, lines: int = 200):
-		"""Button: this engine's own log, read off its box — `docker logs` for the container
-		placement, `journalctl` for the venv one. Where a failed deploy explains itself: the
-		Ansible Play only says the health gate timed out, the engine says why it never came
-		up. Read-only and not stored on the doc; a crash-looping container's log is the whole
-		point and it changes every few seconds."""
+		"""Button: this engine container's own log, read off its box. Where a failed deploy
+		explains itself: the Ansible Play only says the health gate timed out, the engine says
+		why it never came up. Read-only and not stored on the doc; a crash-looping container's
+		log is the whole point and it changes every few seconds."""
 		machine = frappe.db.get_value("Inference Server", self.inference_server, "machine")
 		if not machine:
 			frappe.throw(f"{self.inference_server} has no Machine to read logs from.")
-		unit = f"vllm-{_instance_slug(self.name)}"
 		lines = max(1, min(int(lines), 5000))
-		command = (
-			["docker", "logs", "--tail", str(lines), unit]
-			if self.engine_image
-			else ["journalctl", "--unit", unit, "--lines", str(lines), "--no-pager"]
+		container = f"vllm-{_instance_slug(self.name)}"
+		return frappe.get_doc("Machine", machine).run_command(
+			["docker", "logs", "--tail", str(lines), container]
 		)
-		return frappe.get_doc("Machine", machine).run_command(command)
 
 
 def _instance_slug(md_name):
-	"""Per-deployment slug, safe as both a unit name and a container name → the venv
-	placement's vllm-<slug>.service, the container placement's vllm-<slug>, and the key
-	file either way. One instance per Model Deployment so a box can run many at once."""
+	"""Per-deployment slug, safe as a container name → vllm-<slug>, and the key file beside
+	it. One instance per Model Deployment so a box can run many at once."""
 	return re.sub(r"[^a-z0-9._-]", "-", md_name.lower())
 
 
 def _engine_env(md, hf_token):
-	"""Env vars for the engine process, whichever placement runs it: what Grove derives from
-	the deployment first, the operator's own rows layered on top (same precedence the Pod path
-	uses). VLLM_API_KEY is NOT here — the role resolves it on the box, so the template there
-	(unit or env file) adds it."""
+	"""Env vars for the engine container: what Grove derives from the deployment first, the
+	operator's own rows layered on top (same precedence the Pod path uses). VLLM_API_KEY is
+	NOT here — the role resolves it on the box, so the env-file template there adds it."""
 	env = {}
 	if hf_token:
 		env["HF_TOKEN"] = hf_token
@@ -325,8 +311,8 @@ def _vllm_extravars(md, m, inf, key):
 	"""Assemble the vLLM Ansible extra-vars from the Model launch profile (m) ⊕ this
 	deployment (md) ⊕ its box (inf) ⊕ the internal key. Shared by deploy_model (full serve)
 	and reconfigure_deployment (config-only) so the two paths can never drift. The `vllm serve`
-	flags come from ServeCommand — the same builder the Pod (container) placement uses; the
-	templates on the box only render them."""
+	flags come from ServeCommand — the same builder the Pod path uses; the run script on the
+	box only renders them."""
 	serve = ServeCommand.for_deployment(md)
 
 	# GPU pinning: the deployment names CUDA indices on its box (md.gpus). N GPUs →
@@ -341,30 +327,27 @@ def _vllm_extravars(md, m, inf, key):
 		"vllm_model": m.hf_repo,
 		"vllm_served_name": " ".join([md.model, *serve.aliases]),
 		"vllm_serve_args": serve.args,
-		# One systemd unit + port + key file + venv per deployment (multi-tenant box).
-		# Slug from the MD name → unit vllm-<instance>.service, venv <instance>_venv.
+		# One container + port + key file per deployment (multi-tenant box). Slug from the
+		# MD name → container vllm-<instance> and its run script beside the key.
 		"vllm_instance": _instance_slug(md.name),
-		"vllm_version": md.engine_version or "",  # "" = latest; else pip vllm==<ver>
 		"vllm_port": serve.port,
 		"vllm_api_key": key,
 		"vllm_cuda_visible_devices": ",".join(str(i) for i in gpu_indexes),
 		"vllm_env": _engine_env(md, hf_token),
 		"vllm_hf_token": hf_token,
-		"vllm_use_flashinfer_sampler": "0",
-		# Keep the venv/weights/caches on the mounted data volume (root is tiny / ephemeral).
+		# Keep the weights/caches on the mounted data volume (root is tiny / ephemeral).
 		"vllm_home": vllm_home,
 		"vllm_hf_home": f"{vllm_home}/hf",
 		"vllm_cache_dir": f"{vllm_home}/cache",
 		"vllm_predownload_model": True,
 	}
-	# An Engine Image switches the placement: the role pulls it and Docker owns the container
-	# instead of building a venv behind a unit. Blank → the venv path, unchanged.
-	if md.engine_image:
-		image = frappe.get_cached_doc("Engine Image", md.engine_image)
-		extravars["vllm_image"] = image.full_image
-		if credentials := image.registry_credentials:
-			extravars["vllm_registry_host"] = image.registry_host
-			extravars["vllm_registry_username"], extravars["vllm_registry_token"] = credentials
+	# The image is what the box serves from: the role pulls it and Docker owns the container.
+	# Credentials only exist for a private registry; a public pull skips the login task.
+	image = frappe.get_cached_doc("Engine Image", md.engine_image)
+	extravars["vllm_image"] = image.full_image
+	if credentials := image.registry_credentials:
+		extravars["vllm_registry_host"] = image.registry_host
+		extravars["vllm_registry_username"], extravars["vllm_registry_token"] = credentials
 	return extravars
 
 
@@ -431,11 +414,11 @@ def deploy_model(model_deployment):
 def reconfigure_deployment(model_deployment):
 	"""Re-render the engine config and restart it for an already-served
 	deployment, applying edited per-box tuning (dtype / gpu_memory_utilization /
-	attention_backend / engine_port) WITHOUT the heavy install/pip/predownload steps.
-	Runs serve.yml with skip_tags=["heavy"] — every config/restart/health task still
-	runs (identical to a full serve minus install), just faster. The image pull is not
-	heavy, so a moved tag lands here too. Assumes the box is provisioned and the model
-	was served at least once (venv or image + weights present).
+	attention_backend / engine_port / env rows) WITHOUT the heavy weights predownload.
+	Runs serve.yml with skip_tags=["heavy"] — every config/replace/health task still
+	runs (identical to a full serve minus the download), just faster. The image pull is
+	not heavy, so a moved tag lands here too. Assumes the box is provisioned and the
+	weights are already in its shared cache.
 	Restarts the engine → drops in-flight requests, so it's button-triggered, not
 	automatic."""
 	md = frappe.get_doc("Model Deployment", model_deployment)
@@ -477,10 +460,10 @@ def reconfigure_deployment(model_deployment):
 
 
 def teardown_deployment(model_deployment):
-	"""Stop + remove ONE deployment's engine — its systemd unit or its container — plus its
-	key file and its (exclusive) per-deployment venv from its box (multi-tenant teardown).
-	Leaves the box-shared weights/compile caches and the pulled image intact — other
-	instances may use them. On success → Inactive."""
+	"""Stop + remove ONE deployment's container, the run script and env file that would
+	restart it, and its key file (multi-tenant teardown). Leaves the box-shared
+	weights/compile caches and the pulled image intact — other instances may use them.
+	On success → Inactive."""
 	md = frappe.get_doc("Model Deployment", model_deployment)
 	inf = frappe.get_doc("Inference Server", md.inference_server)
 

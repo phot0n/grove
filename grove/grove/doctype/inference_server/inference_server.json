@@ -57,7 +57,7 @@
   },
   {
    "default": "/opt/vllm",
-   "description": "Mount point of this box's data volume. Weights, caches, keys, venvs and Docker images live under it.",
+   "description": "Mount point of this box's data volume. Weights, caches, keys, container run scripts and Docker images live under it.",
    "fieldname": "data_path",
    "fieldtype": "Data",
    "label": "Data Path",

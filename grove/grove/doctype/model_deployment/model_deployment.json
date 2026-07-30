@@ -13,7 +13,6 @@
   "column_break_engine",
   "engine_port",
   "engine_image",
-  "engine_version",
   "engine_url",
   "internal_api_key",
   "section_tuning",
@@ -75,18 +74,12 @@
    "read_only": 1
   },
   {
-   "description": "Set → serve in a container from this image, with Docker owning its lifecycle (docker ps / docker logs vllm-<slug>). Blank → build a venv on the box behind a systemd unit. The image tag owns the vLLM version, so it cannot be combined with Engine Version. Frozen once deployed — to switch placement, make a new deployment.",
+   "description": "The image this deployment serves from — Docker owns its lifecycle (docker ps / docker logs vllm-<slug>). The tag owns the vLLM version and its whole toolchain; the box only supplies the driver. Frozen once deployed — to move to another image, make a new deployment.",
    "fieldname": "engine_image",
    "fieldtype": "Link",
    "label": "Engine Image",
-   "options": "Engine Image"
-  },
-  {
-   "description": "vLLM version to install for this deployment, e.g. 0.24.0. Empty = latest. \u2192 vllm_version (pip vllm==). Each deployment gets its OWN venv (_venv), so a box can run mixed versions side by side. Set-only-once: frozen after first save \u2014 to change version, make a new deployment.",
-   "fieldname": "engine_version",
-   "fieldtype": "Data",
-   "label": "Engine Version",
-   "set_only_once": 1
+   "options": "Engine Image",
+   "reqd": 1
   },
   {
    "description": "Auto-derived (read-only): http://: \u2014 this deployment's own vLLM instance. The gateway forwards straight here (no LiteLLM); vLLM serves /v1/messages natively.",
@@ -233,7 +226,7 @@
    "label": "Lines"
   },
   {
-   "description": "Reads the engine's log off the box live — docker logs for a container, journalctl for a venv. Nothing is stored on this document.",
+   "description": "Runs docker logs against this deployment's container on its box. Nothing is stored on this document.",
    "fieldname": "fetch_engine_logs",
    "fieldtype": "Button",
    "label": "Fetch Engine Logs"

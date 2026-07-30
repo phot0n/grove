@@ -20,8 +20,8 @@ frappe.ui.form.on('Model Deployment', {
 				frm.call('setup').then(() => frm.reload_doc());
 			});
 			const served = frm.doc.status === 'Active' || frm.doc.status === 'Broken';
-			// Fast re-render of the engine unit (dtype / gpu mem / attention backend /
-			// port) without a full re-install. Only meaningful once served.
+			// Fast re-render of the container's config (dtype / gpu mem / attention backend /
+			// port / env rows) without the weights download. Only meaningful once served.
 			if (served) {
 				frm.add_custom_button(__('Update Engine Config'), () => {
 					frappe.confirm(
@@ -30,8 +30,8 @@ frappe.ui.form.on('Model Deployment', {
 					);
 				});
 			}
-			// Multi-tenant box: remove just THIS instance's container/unit + key (shared
-			// venv/weights stay for other instances). Also the cleanup for a failed deploy —
+			// Multi-tenant box: remove just THIS instance's container + key (shared
+			// weights and image stay for other instances). Also the cleanup for a failed deploy —
 			// a container carries --restart unless-stopped, so a crash-looping engine keeps
 			// coming back until this removes it. Offered while Provisioning too: that is
 			// where a deploy whose worker died leaves the doc, with the container still up.

@@ -1,23 +1,15 @@
 ---
-# Tear down ONE vLLM instance on a multi-tenant box, whichever placement served it:
-# its systemd unit (venv), its container + run script (image), its key file, and its
-# (exclusive) per-deployment venv. Run by model_deployment.teardown_deployment with
-# extra-var vllm_instance. Every task is a no-op for the placement it does not apply to.
-# Deliberately leaves the box-shared weights/compile caches and the pulled image intact —
-# sibling instances and redeploys still use them.
+# Tear down ONE vLLM instance on a multi-tenant box: its container, the run script and env
+# file that would otherwise restart it, and its key file. Run by
+# model_deployment.teardown_deployment with extra-var vllm_instance. Deliberately leaves the
+# box-shared weights/compile caches and the pulled image intact — sibling instances and
+# redeploys still use them.
 - name: Tear down a vLLM instance
   hosts: all
   become: true
   gather_facts: false
   tasks:
-    - name: Stop + disable the instance unit
-      ansible.builtin.systemd:
-        name: "vllm-{{ vllm_instance }}"
-        state: stopped
-        enabled: false
-      failed_when: false   # unit may already be gone
-
-    - name: Remove the instance container (container placement only)
+    - name: Remove the instance container
       ansible.builtin.command: "docker rm -f vllm-{{ vllm_instance }}"
       changed_when: true
       failed_when: false   # no Docker, or no such container → nothing to remove
@@ -32,21 +24,7 @@
         - sh
         - env
 
-    - name: Remove the unit file
-      ansible.builtin.file:
-        path: "/etc/systemd/system/vllm-{{ vllm_instance }}.service"
-        state: absent
-
     - name: Remove the per-instance key file
       ansible.builtin.file:
         path: "{{ vllm_home }}/keys/{{ vllm_instance }}.key"
         state: absent
-
-    - name: Remove the exclusive per-deployment venv (reclaims the multi-GB torch install)
-      ansible.builtin.file:
-        path: "{{ vllm_home }}/venvs/{{ vllm_instance }}_venv"
-        state: absent
-
-    - name: Reload systemd so the removed unit is forgotten
-      ansible.builtin.systemd:
-        daemon_reload: true
