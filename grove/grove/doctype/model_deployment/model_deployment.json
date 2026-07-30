@@ -33,7 +33,11 @@
   "aliases",
   "extra_serve_args",
   "section_env",
-  "env"
+  "env",
+  "tab_logs",
+  "log_lines",
+  "fetch_engine_logs",
+  "engine_logs"
  ],
  "fields": [
   {
@@ -215,6 +219,29 @@
    "fieldtype": "Table",
    "label": "Environment Variables",
    "options": "Pod Env"
+  },
+  {
+   "fieldname": "tab_logs",
+   "fieldtype": "Tab Break",
+   "label": "Logs"
+  },
+  {
+   "default": "200",
+   "description": "How many lines from the end of the log to fetch. Capped at 5000.",
+   "fieldname": "log_lines",
+   "fieldtype": "Int",
+   "label": "Lines"
+  },
+  {
+   "description": "Reads the engine's log off the box live — docker logs for a container, journalctl for a venv. Nothing is stored on this document.",
+   "fieldname": "fetch_engine_logs",
+   "fieldtype": "Button",
+   "label": "Fetch Engine Logs"
+  },
+  {
+   "fieldname": "engine_logs",
+   "fieldtype": "HTML",
+   "label": "Engine Logs"
   }
  ],
  "links": [],

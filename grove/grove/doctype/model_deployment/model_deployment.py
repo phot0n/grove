@@ -278,6 +278,25 @@ class ModelDeployment(Document):
 		)
 		frappe.msgprint(f"Tearing down this instance on {self.inference_server} — watch its Ansible Plays.")
 
+	@frappe.whitelist()
+	def get_engine_logs(self, lines: int = 200):
+		"""Button: this engine's own log, read off its box — `docker logs` for the container
+		placement, `journalctl` for the venv one. Where a failed deploy explains itself: the
+		Ansible Play only says the health gate timed out, the engine says why it never came
+		up. Read-only and not stored on the doc; a crash-looping container's log is the whole
+		point and it changes every few seconds."""
+		machine = frappe.db.get_value("Inference Server", self.inference_server, "machine")
+		if not machine:
+			frappe.throw(f"{self.inference_server} has no Machine to read logs from.")
+		unit = f"vllm-{_instance_slug(self.name)}"
+		lines = max(1, min(int(lines), 5000))
+		command = (
+			["docker", "logs", "--tail", str(lines), unit]
+			if self.engine_image
+			else ["journalctl", "--unit", unit, "--lines", str(lines), "--no-pager"]
+		)
+		return frappe.get_doc("Machine", machine).run_command(command)
+
 
 def _instance_slug(md_name):
 	"""Per-deployment slug, safe as both a unit name and a container name → the venv

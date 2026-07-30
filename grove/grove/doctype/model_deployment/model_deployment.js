@@ -1,4 +1,18 @@
 frappe.ui.form.on('Model Deployment', {
+	fetch_engine_logs(frm) {
+		frm.call('get_engine_logs', { lines: frm.doc.log_lines || 200 }).then((r) => {
+			// Newest last, like the terminal — scrolled to the bottom, where a crash is.
+			const $wrapper = frm.get_field('engine_logs').$wrapper;
+			$wrapper.html(
+				$('<pre>')
+					.css({ 'max-height': '60vh', overflow: 'auto', 'white-space': 'pre-wrap' })
+					.text(r.message || __('Nothing came back — the engine has not started on the box.')),
+			);
+			const el = $wrapper.find('pre')[0];
+			if (el) el.scrollTop = el.scrollHeight;
+		});
+	},
+
 	refresh(frm) {
 		if (frm.is_new()) return;
 		if (frm.doc.model && frm.doc.inference_server) {
