@@ -4,7 +4,7 @@
 
 import unittest
 
-from grove.api import totals_by_model
+from grove.api import _totals_by_model as totals_by_model
 
 FIELDS = ("prompt_tokens", "completion_tokens", "cached_tokens", "total_tokens", "request_count")
 
