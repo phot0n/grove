@@ -30,10 +30,10 @@ frappe.ui.form.on('Pod', {
 				);
 			});
 		}
-		// Restart respawns (RunPod bakes the start command at create) → ports change, then sync.
+		// Restart updates the pod in place (RunPod resets the container) → ports may move, then sync.
 		frm.add_custom_button(__('Restart'), () => {
 			frappe.confirm(
-				__('Restart respawns the pod to apply config — its ports will change (and weights re-download). Continue?'),
+				__('Restart applies this config to the running pod — it resets, keeping its volume, so weights are not re-downloaded. Its ports may move. An edited GPU type or count cannot be applied to a live pod and is refused: that needs Terminate, then Spawn. Continue?'),
 				() => frm.call('restart').then(() => frm.reload_doc()),
 			);
 		});
