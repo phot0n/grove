@@ -78,7 +78,7 @@ def usage(users, month=None):
 	records = frappe.get_all(
 		"Usage Record",
 		filters={"user": ["in", list(emails)], "month": month},
-		fields=["user", *fields],
+		fields=["name", "user", *fields],
 	)
 
 	usage = {}
@@ -89,22 +89,43 @@ def usage(users, month=None):
 		for f in fields:
 			totals[f] += r.get(f) or 0
 		totals["billable_tokens"] = totals["total_tokens"] - totals["cached_tokens"]
-	return {"users": users, "month": month, **usage}
+
+	# Same tokens, split by which model spent them. The gateway meters per model
+	# (m:<metric>:<model>), so every record carries the breakdown as child rows.
+	names = [r.name for r in records]
+	model_rows = frappe.get_all(
+		"Usage Model Row",
+		filters={"parenttype": "Usage Record", "parent": ("in", names)},
+		fields=["model", *fields],
+	) if names else []
+	model_summary = totals_by_model(model_rows, fields)
+	return {"users": users, "month": month, "model_summary": model_summary, **usage}
+
+
+def totals_by_model(rows, fields):
+	"""Usage Model Rows folded into one entry per model, biggest consumer first. Rows arrive
+	one per (record, model) — a user holds several keys, each with its own monthly record — so
+	a model is summed across all of them rather than overwritten."""
+	per_model = {}
+	for row in rows:
+		totals = per_model.setdefault(row["model"], {"model": row["model"], **dict.fromkeys(fields, 0)})
+		for f in fields:
+			totals[f] += row.get(f) or 0
+
+	summary = []
+	for totals in per_model.values():
+		totals["billable_tokens"] = totals["total_tokens"] - totals["cached_tokens"]
+		summary.append(totals)
+	summary.sort(key=lambda t: t["total_tokens"], reverse=True)
+	return summary
 
 
 @frappe.whitelist()
 def available_models():
-	"""Models the caller may actually call: their access set, minus anything without a
-	live route (an unreachable model would only 503)."""
-	from grove.access import effective_models
-
-	allowed = effective_models(for_email(frappe.session.user))
-	if not allowed:
-		return []
 	return frappe.get_all(
 		"Model",
-		{"published": 1, "name": ("in", list(allowed))},
-		["name", "display_name"],
+		{"published": 1},
+		["name", "display_name", "is_embedding"],
 	)
 
 
