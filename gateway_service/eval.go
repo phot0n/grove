@@ -8,6 +8,7 @@ type KeyRecord struct {
 	User      string          // Frappe User (denormalized)
 	KeyPrefix string          // display id, for logs/usage attribution
 	Models    map[string]bool // exactly what this key may call; empty = nothing
+	Priority  int             // vLLM `priority` to stamp on the body; lower is served first
 }
 
 // evaluate is the pure admission decision. Returns an HTTP status (200 = admit)

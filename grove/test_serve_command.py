@@ -111,11 +111,11 @@ class TestServeCommand(unittest.TestCase):
 		self.assertEqual(args[args.index("--gpu-memory-utilization") + 1], "0.9")
 		self.assertEqual(args[args.index("--tensor-parallel-size") + 1], "1")
 		self.assertNotIn("--dtype", args)  # dtype auto → vLLM decides
-		self.assertEqual(args[args.index("--scheduling-policy") + 1], "fcfs")
-
-	def test_scheduling_policy(self):
-		args = serve(scheduling_policy="priority").args
 		self.assertEqual(args[args.index("--scheduling-policy") + 1], "priority")
+
+	def test_scheduling_policy_comes_from_the_model(self):
+		args = serve(dict(CHAT_MODEL, scheduling_policy="fcfs")).args
+		self.assertEqual(args[args.index("--scheduling-policy") + 1], "fcfs")
 
 	def test_embedding_model_drops_chat_flags(self):
 		model = dict(CHAT_MODEL, is_embedding=True)

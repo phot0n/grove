@@ -22,24 +22,24 @@ body = body or ""
 
 local model = ""
 local session = ngx.var.http_x_grove_session
+-- The endpoints whose vLLM schema carries stream_options and priority; the body is left
+-- untouched everywhere else rather than risking a field the schema rejects.
+local uri = ngx.var.uri
+local completions = uri == "/v1/chat/completions" or uri == "/v1/completions"
 local obj = cjson.decode(body)
+local rewrite = false
 if type(obj) == "table" then
 	model = obj.model or ""
 	if (not session or session == "") and type(obj.user) == "string" then
 		session = obj.user
 	end
 	-- Guarantee a usage frame on OpenAI streaming so we can meter (§6 job 3).
-	local uri = ngx.var.uri
-	if obj.stream == true and (uri == "/v1/chat/completions" or uri == "/v1/completions") then
+	if obj.stream == true and completions then
 		if type(obj.stream_options) ~= "table" then
 			obj.stream_options = {}
 		end
 		obj.stream_options.include_usage = true
-		local nb = cjson.encode(obj)
-		if nb then
-			ngx.req.set_body_data(nb)
-			body = nb
-		end
+		rewrite = true
 	end
 end
 
@@ -99,4 +99,19 @@ if d.request_id and d.request_id ~= "" then
 	ngx.req.set_header("X-Request-Id", d.request_id)   -- to the engine
 	ngx.header["X-Request-Id"] = d.request_id          -- back to the client
 	ngx.var.grove_request_id = d.request_id            -- access-log rid=
+end
+
+-- Queueing rank, from the caller's Grove User Group and never from the caller: stamped
+-- unconditionally so a client-supplied `priority` cannot elevate itself. Grove already
+-- flipped the sign, so this is vLLM's convention (lowest served first) and 0 is the
+-- baseline. Only engines running --scheduling-policy priority act on it.
+if type(obj) == "table" and completions then
+	obj.priority = d.priority or 0
+	rewrite = true
+end
+if rewrite then
+	local nb = cjson.encode(obj)
+	if nb then
+		ngx.req.set_body_data(nb)
+	end
 end
