@@ -299,8 +299,6 @@ def _engine_env(md, hf_token):
 	env = {}
 	if hf_token:
 		env["HF_TOKEN"] = hf_token
-	if md.attention_backend and md.attention_backend != "auto":
-		env["VLLM_ATTENTION_BACKEND"] = md.attention_backend
 	if md.allow_long_max_model_len:
 		env["VLLM_ALLOW_LONG_MAX_MODEL_LEN"] = "1"
 	env.update({row.key: row.value or "" for row in md.env or []})

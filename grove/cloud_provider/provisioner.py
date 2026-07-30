@@ -73,9 +73,10 @@ class PodProvisioner:
 	@property
 	def env(self):
 		"""Env injected into the container: HF_HOME on the volume (weights survive restart) +
-		VLLM_API_KEY / VLLM_ATTENTION_BACKEND for a serving pod + the HF token for gated models,
-		then the Pod's own Env rows layered on top (user wins on conflict). PUBLIC_KEY is added
-		by config_kwargs."""
+		VLLM_API_KEY for a serving pod + the HF token for gated models, then the Pod's own Env
+		rows layered on top (user wins on conflict). PUBLIC_KEY is added by config_kwargs.
+		The attention backend is NOT here — it rides the serve command as --attention-backend,
+		because vLLM 0.24 dropped VLLM_ATTENTION_BACKEND."""
 		pod = self.pod
 		mount = pod.volume_mount_path or VOLUME_MOUNT
 		env = {"HF_HOME": f"{mount}/hf"}
@@ -83,8 +84,6 @@ class PodProvisioner:
 			key = pod.get_password("api_key", raise_exception=False)
 			if key:
 				env["VLLM_API_KEY"] = key
-			if pod.attention_backend:
-				env["VLLM_ATTENTION_BACKEND"] = pod.attention_backend
 			if pod.allow_long_max_model_len:
 				env["VLLM_ALLOW_LONG_MAX_MODEL_LEN"] = "1"
 			if frappe.conf.get("hf_token") and frappe.db.get_value("Model", pod.model, "gated"):

@@ -36,6 +36,7 @@ class ServeCommand:
 		gpu_memory_utilization=None,
 		max_model_len=None,
 		scheduling_policy=None,
+		attention_backend=None,
 		aliases=None,
 		extra_serve_args=None,
 		host="0.0.0.0",
@@ -50,6 +51,7 @@ class ServeCommand:
 		self.gpu_memory_utilization = gpu_memory_utilization or DEFAULT_GPU_MEMORY_UTILIZATION
 		self.max_model_len = int(max_model_len or DEFAULT_MAX_MODEL_LEN)
 		self.scheduling_policy = scheduling_policy or DEFAULT_SCHEDULING_POLICY
+		self.attention_backend = attention_backend or "auto"
 		self.aliases = (aliases or "").replace(",", " ").split()
 		self.extra_serve_args = (extra_serve_args or "").split()
 		self.host = host
@@ -68,6 +70,7 @@ class ServeCommand:
 			gpu_memory_utilization=pod.gpu_memory_utilization,
 			max_model_len=pod.max_model_len,
 			scheduling_policy=pod.scheduling_policy,
+			attention_backend=pod.attention_backend,
 			aliases=pod.aliases,
 			extra_serve_args=pod.extra_serve_args,
 		)
@@ -87,6 +90,7 @@ class ServeCommand:
 			gpu_memory_utilization=deployment.gpu_memory_utilization,
 			max_model_len=deployment.max_model_len,
 			scheduling_policy=deployment.scheduling_policy,
+			attention_backend=deployment.attention_backend,
 			aliases=deployment.aliases,
 			extra_serve_args=deployment.extra_serve_args,
 		)
@@ -175,6 +179,10 @@ class ServeCommand:
 			args += ["--pipeline-parallel-size", str(self.pipeline_parallel_size)]
 		if self.dtype != "auto":
 			args += ["--dtype", self.dtype]
+		# A flag, not VLLM_ATTENTION_BACKEND: that env var is gone in vLLM 0.24 (nothing in
+		# the package reads it), so setting it silently left the engine auto-selecting.
+		if self.attention_backend != "auto":
+			args += ["--attention-backend", self.attention_backend]
 		if self.model.get("quantization"):
 			args += ["--quantization", self.model["quantization"]]
 		if self.model.get("modality") == "text":

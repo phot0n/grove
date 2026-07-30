@@ -141,5 +141,20 @@ class TestServeCommand(unittest.TestCase):
 		self.assertEqual(serve(dict(CHAT_MODEL, hf_repo=None)).command, "")
 
 
+class TestAttentionBackend(unittest.TestCase):
+	def build(self, **kwargs):
+		return ServeCommand("qwen3-32b", CHAT_MODEL, port=8080, **kwargs).args
+
+	def test_passed_as_a_flag(self):
+		# NOT VLLM_ATTENTION_BACKEND: vLLM 0.24 removed that env var, so the engine
+		# auto-selected regardless of what the deployment asked for.
+		args = self.build(attention_backend="FLASHINFER")
+		self.assertEqual(args[args.index("--attention-backend") + 1], "FLASHINFER")
+
+	def test_auto_is_left_to_vllm(self):
+		self.assertNotIn("--attention-backend", self.build(attention_backend="auto"))
+		self.assertNotIn("--attention-backend", self.build())
+
+
 if __name__ == "__main__":
 	unittest.main()
