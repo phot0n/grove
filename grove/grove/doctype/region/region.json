@@ -7,7 +7,8 @@
  "engine": "InnoDB",
  "field_order": [
   "label",
-  "cloud_provider"
+  "cloud_provider",
+  "region_code"
  ],
  "fields": [
   {
@@ -23,6 +24,13 @@
    "fieldtype": "Data",
    "in_list_view": 1,
    "label": "Cloud Provider"
+  },
+  {
+   "description": "The provider's own identifier for this region, e.g. ap-south-1. Blank falls back to the Cloud Provider's default region.",
+   "fieldname": "region_code",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Region Code"
   }
  ],
  "links": [

@@ -1,0 +1,102 @@
+# Copyright (c) 2026, Grove and contributors
+# For license information, please see license.txt
+
+import frappe
+from frappe.model.document import Document
+
+from grove.cloud_provider.base import CloudClientError, build_cloud_client
+
+# Fixed ingress rules for the two security groups Create Security Groups can build.
+PROXY_INGRESS_RULES = [
+	{"protocol": "tcp", "from_port": 22, "to_port": 22, "cidr": "0.0.0.0/0"},
+	{"protocol": "tcp", "from_port": 80, "to_port": 80, "cidr": "0.0.0.0/0"},
+	{"protocol": "tcp", "from_port": 443, "to_port": 443, "cidr": "0.0.0.0/0"},
+]
+INFERENCE_SSH_RULE = {"protocol": "tcp", "from_port": 22, "to_port": 22, "cidr": "0.0.0.0/0"}
+INFERENCE_ENGINE_PORT_RANGE = (8080, 8085)
+
+
+class SubnetGroup(Document):
+	# begin: auto-generated types
+	# This code is auto-generated. Do not modify anything in this block.
+
+	from typing import TYPE_CHECKING
+
+	if TYPE_CHECKING:
+		from frappe.types import DF
+
+		cidr_block: DF.Data | None
+		cloud_provider: DF.Link | None
+		inference_security_group_ids: DF.Data | None
+		label: DF.Data
+		proxy_security_group_ids: DF.Data | None
+		region: DF.Link | None
+		subnet_id: DF.Data | None
+		vpc_id: DF.Data | None
+	# end: auto-generated types
+
+	@property
+	def proxy_security_group_id_list(self):
+		"""proxy_security_group_ids as a list, for a Proxy Server box."""
+		return parse_security_group_ids(self.proxy_security_group_ids)
+
+	@property
+	def inference_security_group_id_list(self):
+		"""inference_security_group_ids as a list, for an Inference Server box."""
+		return parse_security_group_ids(self.inference_security_group_ids)
+
+	@property
+	def cloud_client(self):
+		"""CloudClient for this Subnet Group's account (its Cloud Provider's keys and kind)
+		and region. Never a concrete class by name — build_cloud_client picks one."""
+		if not self.cloud_provider:
+			frappe.throw(f"Subnet Group {self.name} has no Cloud Provider set — it's a bare-metal placeholder.")
+		provider = frappe.get_doc("Cloud Provider", self.cloud_provider)
+		secret = provider.get_password("api_key", raise_exception=False)
+		if not (provider.access_key_id and secret):
+			frappe.throw(f"Cloud Provider {provider.name} has no credentials set.")
+		if not self.region:
+			frappe.throw(f"Subnet Group {self.name} has no Region set.")
+		code = frappe.db.get_value("Region", self.region, "region_code")
+		if not code:
+			frappe.throw(f"Region {self.region} has no Region Code set.")
+		try:
+			return build_cloud_client(provider.provider_type, provider.access_key_id, secret, code)
+		except CloudClientError as e:
+			frappe.throw(str(e))
+
+	@frappe.whitelist()
+	def create_security_groups(self):
+		"""Button: create this Subnet Group's Proxy and Inference security groups on AWS, with
+		their fixed ingress rules, and record the ids. Skips a role whose field is already
+		set, so re-clicking after one is filled in by hand never creates a duplicate. The
+		Inference group's engine-port rule sources from the Proxy group, so Proxy is created
+		first when both are missing."""
+		if not self.vpc_id:
+			frappe.throw(f"Set a VPC ID on Subnet Group {self.name} before creating security groups.")
+
+		if not self.proxy_security_group_ids:
+			proxy_sg_id = self.cloud_client.create_security_group(
+				f"{self.name}-proxy", "Grove-managed: SSH + gateway (80/443)", self.vpc_id
+			)
+			self.cloud_client.authorize_ingress(proxy_sg_id, PROXY_INGRESS_RULES)
+			self.db_set("proxy_security_group_ids", proxy_sg_id)
+
+		if not self.inference_security_group_ids:
+			from_port, to_port = INFERENCE_ENGINE_PORT_RANGE
+			engine_port_rule = {
+				"protocol": "tcp", "from_port": from_port, "to_port": to_port,
+				"source_group_id": self.proxy_security_group_id_list[0],
+			}
+			inference_sg_id = self.cloud_client.create_security_group(
+				f"{self.name}-inference", "Grove-managed: SSH + engine ports (8080-8085)", self.vpc_id
+			)
+			self.cloud_client.authorize_ingress(inference_sg_id, [INFERENCE_SSH_RULE, engine_port_rule])
+			self.db_set("inference_security_group_ids", inference_sg_id)
+
+		frappe.msgprint(f"Security groups created for {self.name}.")
+
+
+def parse_security_group_ids(raw):
+	"""A comma-separated security_group_ids field into a list, blanks and whitespace stripped."""
+	return [group.strip() for group in (raw or "").split(",") if group.strip()]

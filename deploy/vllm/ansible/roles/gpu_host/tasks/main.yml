@@ -58,30 +58,92 @@
     state: directory
     mode: "0755"
 
-- name: Look for the data device
-  ansible.builtin.stat:
-    path: "{{ gpu_data_device }}"
-  register: data_device
+- name: Is a data volume already mounted?
+  ansible.builtin.command: "findmnt -no SOURCE {{ gpu_data_mount }}"
+  register: data_mounted
+  changed_when: false
+  failed_when: false
 
-# A box with one big root disk has no second device to mount — gpu_data_mount is then a
-# plain directory on root and everything below is skipped. Nothing else in the role cares
-# whether it is a mount point. Blindly formatting a device that is not there fails the play,
-# and gpu_data_device is a role default: a wrong one would name a disk that IS there.
+- name: Keep the data volume an earlier run mounted
+  ansible.builtin.set_fact:
+    gpu_data_disk: "{{ data_mounted.stdout | trim }}"
+  when: data_mounted.rc == 0
+
+# Which disk is never assumed. Only a whole disk that is entirely free — no filesystem, no
+# partitions, nothing mounted below it, and not ephemeral — is eligible, which by
+# construction rules out the disk carrying /, whether root sits on a partition of it or on
+# the bare disk. A box whose only disk is the root disk therefore selects nothing:
+# gpu_data_mount stays a plain directory on root, nothing is formatted, and the rest of the
+# role does not care. That is the normal shape on a cloud box, where the durable root volume
+# is sized for the weights and the local NVMe is left alone.
+- name: Pick the data volume
+  when: data_mounted.rc != 0
+  block:
+    # --sort flattens the tree, so partitions arrive as siblings of their disk rather than
+    # under it. PKNAME is what still ties the two together, and is the whole reason the root
+    # disk is recognisable: it carries no filesystem and no mountpoint of its own.
+    - name: Read the block devices, largest last
+      ansible.builtin.command: >-
+        lsblk --json --bytes --sort SIZE
+        --output NAME,PATH,TYPE,SIZE,FSTYPE,MOUNTPOINT,PKNAME,MODEL,RM,RO
+      register: lsblk_json
+      changed_when: false
+
+    - name: Find the disk the root filesystem lives on
+      ansible.builtin.shell: "lsblk -no PKNAME $(findmnt -no SOURCE /)"
+      register: root_disk
+      changed_when: false
+
+    - name: Shortlist the disks nothing else is using
+      vars:
+        devices: "{{ (lsblk_json.stdout | from_json).blockdevices }}"
+        parents: "{{ devices | map(attribute='pkname') | reject('none') | list }}"
+        spare: >-
+          {{ devices
+             | selectattr('type', 'equalto', 'disk')
+             | rejectattr('name', 'in', parents)
+             | selectattr('mountpoint', 'none')
+             | selectattr('rm', 'in', [false, '0'])
+             | selectattr('ro', 'in', [false, '0'])
+             | list }}
+      ansible.builtin.set_fact:
+        gpu_spare_disks: "{{ spare | map(attribute='path') | list }}"
+        gpu_free_disks: >-
+          {{ spare | selectattr('fstype', 'none')
+                   | rejectattr('model', 'in', gpu_ephemeral_disk_models)
+                   | map(attribute='path') | list }}
+
+    # A pinned device is the operator's call, so an existing filesystem is allowed — the mkfs
+    # below skips it and the disk is adopted as it stands. Being the root disk, holding
+    # partitions or carrying anything mounted is refused all the same.
+    - name: Refuse a pinned data device that is in use
+      ansible.builtin.assert:
+        that: gpu_data_device in gpu_spare_disks
+        fail_msg: >-
+          gpu_data_device {{ gpu_data_device }} is not a spare whole disk — it is missing,
+          partitioned, or something is mounted on it. Root is on
+          /dev/{{ root_disk.stdout | trim }}. Refusing to format it.
+      when: gpu_data_device | length > 0
+
+    - name: Choose the data device
+      ansible.builtin.set_fact:
+        gpu_data_disk: "{{ gpu_data_device or (gpu_free_disks[-1] if gpu_free_disks else '') }}"
+
 - name: Put the data volume on {{ gpu_data_mount }}
-  when: data_device.stat.exists
+  when: data_mounted.rc != 0 and gpu_data_disk | length > 0
   block:
     - name: Detect existing filesystem on the data device
-      ansible.builtin.command: "blkid -s TYPE -o value {{ gpu_data_device }}"
+      ansible.builtin.command: "blkid -s TYPE -o value {{ gpu_data_disk }}"
       register: data_fs
       changed_when: false
       failed_when: false
 
     - name: Format the data device (only if unformatted)
-      ansible.builtin.command: "mkfs.{{ gpu_data_fstype }} -F {{ gpu_data_device }}"
+      ansible.builtin.command: "mkfs.{{ gpu_data_fstype }} -F {{ gpu_data_disk }}"
       when: (data_fs.stdout | trim) | length == 0
 
     - name: Read the data device UUID
-      ansible.builtin.command: "blkid -s UUID -o value {{ gpu_data_device }}"
+      ansible.builtin.command: "blkid -s UUID -o value {{ gpu_data_disk }}"
       register: data_uuid
       changed_when: false
 
@@ -91,15 +153,19 @@
         regexp: '\s{{ gpu_data_mount }}\s'
         line: "UUID={{ data_uuid.stdout }} {{ gpu_data_mount }} {{ gpu_data_fstype }} defaults,nofail 0 2"
 
-    - name: Is the data volume mounted?
-      ansible.builtin.command: "mountpoint -q {{ gpu_data_mount }}"
-      register: mounted
-      changed_when: false
-      failed_when: false
-
     - name: Mount the data volume
       ansible.builtin.command: "mount {{ gpu_data_mount }}"
-      when: mounted.rc != 0
+
+- name: Data volume
+  ansible.builtin.debug:
+    msg: >-
+      {{ gpu_data_mount }} is on {{ gpu_data_disk | default('', true) or 'the root volume' }}
+      ({{ root_free_gb }} GB free on /)
+  vars:
+    root_free_gb: >-
+      {{ ((ansible_mounts | selectattr('mount', 'equalto', '/')
+           | map(attribute='size_available') | list | default([0], true) | first | int)
+          / 1073741824) | round | int }}
 
 # ── Docker + NVIDIA container runtime ───────────────────────────────────────
 # Every Model Deployment serves from a container, so this is what makes the box able to.

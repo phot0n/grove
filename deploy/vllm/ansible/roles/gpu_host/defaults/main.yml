@@ -14,7 +14,14 @@ gpu_host_monitor_packages:
   - nvtop
 
 # Data volume: the large secondary disk that holds the engine images, weights and
-# caches (the root volume is typically tiny). Mounted where vllm_home points.
-gpu_data_device: /dev/nvme1n1
+# caches.
+gpu_data_device: ""
 gpu_data_mount: /opt/vllm
 gpu_data_fstype: ext4
+
+# Disks that are wiped when the box stops — cloud ephemeral scratch, matched on the model
+# lsblk reports. Never picked automatically: weights are hundreds of GB and re-downloading
+# them on every start costs far more than the durable disk does. Pinning one in
+# gpu_data_device is still allowed, for a box that genuinely wants scratch there.
+gpu_ephemeral_disk_models:
+  - Amazon EC2 NVMe Instance Storage
