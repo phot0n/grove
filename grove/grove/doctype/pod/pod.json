@@ -48,7 +48,10 @@
   "aliases",
   "extra_serve_args",
   "engine_url",
-  "serve_command"
+  "serve_command",
+  "tab_logs",
+  "toggle_log_stream",
+  "log_output"
  ],
  "fields": [
   {
@@ -322,10 +325,27 @@
   {
    "fieldname": "column_break_cwib",
    "fieldtype": "Column Break"
+  },
+  {
+   "depends_on": "eval:doc.pod_id",
+   "fieldname": "tab_logs",
+   "fieldtype": "Tab Break",
+   "label": "Logs"
+  },
+  {
+   "description": "Follows the pod's container logs live (last 100 lines first). Streaming stops on its own after 30 minutes.",
+   "fieldname": "toggle_log_stream",
+   "fieldtype": "Button",
+   "label": "Start Streaming"
+  },
+  {
+   "fieldname": "log_output",
+   "fieldtype": "HTML",
+   "label": "Log Output"
   }
  ],
  "links": [],
- "modified": "2026-07-27 14:07:13.122528",
+ "modified": "2026-08-03 12:00:00.000000",
  "modified_by": "Administrator",
  "module": "Grove",
  "name": "Pod",

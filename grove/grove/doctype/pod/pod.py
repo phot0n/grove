@@ -169,6 +169,29 @@ class Pod(Document):
 		frappe.msgprint(f"Restarting pod {self.name} to apply config, then sync.")
 
 	@frappe.whitelist()
+	def stream_logs(self):
+		"""Follow the pod's container logs on the Logs tab: a background job relays the
+		provider's stream over realtime until stop_logs(). Deduplicated per pod, so a second
+		Start (e.g. after a page reload) does not double up the stream."""
+		from grove import log_relay
+
+		if not self.pod_id:
+			frappe.throw("Pod is not spawned yet — there are no logs to stream.")
+		log_relay.clear_stop("Pod", self.name)
+		frappe.enqueue(
+			"grove.cloud_provider.provisioner.stream_pod_logs",
+			queue="long", timeout=1800, job_id=f"pod-logs-{self.name}", deduplicate=True,
+			pod_name=self.name,
+		)
+
+	@frappe.whitelist()
+	def stop_logs(self):
+		"""Tell the streaming job to finish — it reads this between publishes."""
+		from grove import log_relay
+
+		log_relay.request_stop("Pod", self.name)
+
+	@frappe.whitelist()
 	def terminate(self):
 		"""Terminate the provider pod (frees GPU/disk/billing) and mark this Pod Terminated."""
 		frappe.enqueue(
