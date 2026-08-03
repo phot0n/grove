@@ -2,6 +2,8 @@
 // same 'grove_log' event. Kept per-doctype rather than shared: a shared helper would need an
 // asset bundle, and doctype JS is served straight off disk.
 const LOG_LINE_LIMIT = 2000;
+// Well inside the server's 45s liveness TTL, so one slow ping doesn't cut the stream.
+const LOG_PING_INTERVAL = 15000;
 
 frappe.ui.form.on('Model Deployment', {
 	fetch_engine_logs(frm) {
@@ -95,7 +97,28 @@ function render_logs(frm, force_scroll) {
 
 function set_log_button(frm, streaming) {
 	frm.log_streaming = streaming;
+	set_log_heartbeat(frm, streaming);
 	frm.get_field('toggle_log_stream').set_label(
 		streaming ? __('Stop Streaming') : __('Start Streaming'),
 	);
+}
+
+// The stream lives while this ping keeps its key alive, so it must stop the moment this form
+// is no longer on screen — a job left running holds one of the site's few background workers,
+// plus an SSH connection and a `docker logs -f` on the box. Leaving the route stops it here;
+// closing the tab stops it by never firing again.
+function set_log_heartbeat(frm, streaming) {
+	clearInterval(frm.log_heartbeat);
+	if (!streaming) return;
+	frm.log_heartbeat = setInterval(() => {
+		const route = frappe.get_route();
+		const showing = route[0] === 'Form' && route[1] === frm.doctype && route[2] === frm.docname;
+		if (!showing || !frm.log_streaming) {
+			clearInterval(frm.log_heartbeat);
+			return;
+		}
+		frappe.xcall('grove.log_relay.keep_streaming', {
+			doctype: frm.doctype, docname: frm.docname,
+		});
+	}, LOG_PING_INTERVAL);
 }

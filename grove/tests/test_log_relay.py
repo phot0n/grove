@@ -1,7 +1,7 @@
 # Copyright (c) 2026, Grove and contributors
 # For license information, please see license.txt
-"""The shared log relay: batching, ticks, and the stop flag. Pure — realtime and the cache are
-stubbed, so no site or redis."""
+"""The shared log relay: batching, ticks, and the liveness key a viewer keeps refreshing.
+Pure — realtime and the cache are stubbed, so no site or redis."""
 
 import unittest
 from unittest.mock import patch
@@ -12,19 +12,20 @@ from grove import log_relay
 
 
 class FakeCache:
-	"""Stands in for frappe.cache. Records nothing but the stop flag."""
+	"""Stands in for frappe.cache. Holds only the stream's liveness key, which the real one
+	expires on a TTL — here it is set or not."""
 
-	def __init__(self, stopped=False):
-		self.values = {"stopped": stopped}
+	def __init__(self, alive=True):
+		self.values = {"alive": alive}
 
 	def get_value(self, key, **kwargs):
-		return 1 if self.values["stopped"] else None
+		return 1 if self.values["alive"] else None
 
 	def set_value(self, key, val, **kwargs):
-		self.values["stopped"] = True
+		self.values["alive"] = True
 
 	def delete_value(self, key, **kwargs):
-		self.values["stopped"] = False
+		self.values["alive"] = False
 
 
 def run_relay(events, cache=None):
@@ -62,8 +63,10 @@ class TestRelay(unittest.TestCase):
 		# interval and land together, rather than one socketio publish each.
 		self.assertEqual(published, [{"lines": ["a"]}, {"lines": ["b", "c"], "done": True}])
 
-	def test_the_stop_flag_ends_the_stream_without_draining_it(self):
-		# The generator must be abandoned, not exhausted — that is what kills `docker logs -f`.
+	def test_a_stream_nobody_watches_ends_without_draining_the_source(self):
+		# The viewer stopped refreshing the key (Stop, or they navigated away and it expired).
+		# The generator must be abandoned, not exhausted — that is what kills `docker logs -f`
+		# and frees the background worker the job is holding.
 		consumed = []
 
 		def endless():
@@ -71,14 +74,15 @@ class TestRelay(unittest.TestCase):
 				consumed.append(1)
 				yield "line"
 
-		published = run_relay(endless(), cache=FakeCache(stopped=True))
+		published = run_relay(endless(), cache=FakeCache(alive=False))
 		self.assertTrue(published[-1]["done"])
 		self.assertEqual(len(consumed), 1)
 
-	def test_stopping_clears_the_flag_so_the_next_start_is_not_blocked(self):
-		cache = FakeCache(stopped=True)
+	def test_the_key_is_released_when_the_stream_ends(self):
+		# Left behind, it would keep the next job alive with nobody watching it.
+		cache = FakeCache(alive=True)
 		run_relay(["a"], cache=cache)
-		self.assertFalse(cache.values["stopped"])
+		self.assertFalse(cache.values["alive"])
 
 
 if __name__ == "__main__":

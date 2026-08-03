@@ -297,12 +297,13 @@ class ModelDeployment(Document):
 	@frappe.whitelist()
 	def stream_engine_logs(self):
 		"""Button: follow this engine container's log off its box (`docker logs --follow` over
-		SSH), relayed to this form until stop_engine_logs(). Deduplicated per deployment, so a
-		second Start — after a page reload, say — does not double up the stream."""
+		SSH), relayed to this form for as long as it keeps pinging keep_streaming. Deduplicated
+		per deployment, so a second Start — after a page reload, say — does not double up the
+		stream."""
 		from grove import log_relay
 
 		self.machine  # resolved here so a missing box fails on the button, not in a worker
-		log_relay.clear_stop(self.doctype, self.name)
+		log_relay.keep_alive(self.doctype, self.name)
 		frappe.enqueue(
 			"grove.grove.doctype.model_deployment.model_deployment.stream_engine_logs",
 			queue="long", timeout=1800, job_id=f"md-logs-{self.name}", deduplicate=True,
@@ -311,10 +312,10 @@ class ModelDeployment(Document):
 
 	@frappe.whitelist()
 	def stop_engine_logs(self):
-		"""Tell the streaming job to finish — it reads this between publishes."""
+		"""Tell the streaming job to finish — it checks between publishes."""
 		from grove import log_relay
 
-		log_relay.request_stop(self.doctype, self.name)
+		log_relay.end(self.doctype, self.name)
 
 
 def stream_engine_logs(model_deployment):
