@@ -1,20 +1,30 @@
+// The log viewer here is the twin of the one in pod.js — same realtime payload ({lines, done}),
+// same 'grove_log' event. Kept per-doctype rather than shared: a shared helper would need an
+// asset bundle, and doctype JS is served straight off disk.
+const LOG_LINE_LIMIT = 2000;
+
 frappe.ui.form.on('Model Deployment', {
 	fetch_engine_logs(frm) {
 		frm.call('get_engine_logs', { lines: frm.doc.log_lines || 200 }).then((r) => {
-			// Newest last, like the terminal — scrolled to the bottom, where a crash is.
-			const $wrapper = frm.get_field('engine_logs').$wrapper;
-			$wrapper.html(
-				$('<pre>')
-					.css({ 'max-height': '60vh', overflow: 'auto', 'white-space': 'pre-wrap' })
-					.text(r.message || __('Nothing came back — the engine has not started on the box.')),
-			);
-			const el = $wrapper.find('pre')[0];
-			if (el) el.scrollTop = el.scrollHeight;
+			const text = r.message || __('Nothing came back — the engine has not started on the box.');
+			frm.log_lines = text.split('\n');
+			render_logs(frm, true);
 		});
+	},
+
+	toggle_log_stream(frm) {
+		if (frm.log_streaming) {
+			// The job takes a moment to notice Stop; flip the button now so it doesn't look stuck.
+			frm.call('stop_engine_logs');
+			set_log_button(frm, false);
+		} else {
+			frm.call('stream_engine_logs').then(() => set_log_button(frm, true));
+		}
 	},
 
 	refresh(frm) {
 		if (frm.is_new()) return;
+		setup_log_view(frm);
 		if (frm.doc.model && frm.doc.inference_server) {
 			frm.add_custom_button(__('Deploy'), () => {
 				frm.call('setup').then(() => frm.reload_doc());
@@ -48,3 +58,44 @@ frappe.ui.form.on('Model Deployment', {
 		}
 	},
 });
+
+function setup_log_view(frm) {
+	frm.log_lines = frm.log_lines || [];
+	set_log_button(frm, frm.log_streaming);
+
+	frappe.realtime.off('grove_log');
+	frappe.realtime.on('grove_log', ({ lines, done }) => {
+		// The job takes a moment to notice Stop — drop what it publishes in the meantime.
+		if (!frm.log_streaming && !done) return;
+		frm.log_lines = frm.log_lines.concat(lines || []).slice(-LOG_LINE_LIMIT);
+		render_logs(frm);
+		if (done) set_log_button(frm, false);
+	});
+}
+
+function render_logs(frm, force_scroll) {
+	const $wrapper = frm.get_field('engine_logs').$wrapper;
+	if (!$wrapper.find('pre').length) {
+		$wrapper.html(
+			$('<pre>').css({
+				height: '60vh', overflow: 'auto', margin: 0, padding: '8px',
+				background: 'var(--fg-color)', border: '1px solid var(--border-color)',
+				'border-radius': 'var(--border-radius)', 'font-size': '11px',
+				'white-space': 'pre-wrap',
+			}),
+		);
+	}
+	// Newest last, like the terminal. Only follow the tail if the reader is already at the
+	// bottom — don't yank them back mid-scroll.
+	const pre = $wrapper.find('pre')[0];
+	const follow = force_scroll || pre.scrollHeight - pre.scrollTop - pre.clientHeight < 40;
+	pre.textContent = frm.log_lines.join('\n');
+	if (follow) pre.scrollTop = pre.scrollHeight;
+}
+
+function set_log_button(frm, streaming) {
+	frm.log_streaming = streaming;
+	frm.get_field('toggle_log_stream').set_label(
+		streaming ? __('Stop Streaming') : __('Start Streaming'),
+	);
+}

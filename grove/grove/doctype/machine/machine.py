@@ -2,6 +2,7 @@
 # For license information, please see license.txt
 
 import json
+import selectors
 import shlex
 import subprocess
 
@@ -32,30 +33,63 @@ class Machine(Document):
 		)
 		frappe.msgprint(f"Scanning {self.name}'s GPUs — watch its Ansible Plays, then reload.")
 
-	def run_command(self, command, timeout=60):
-		"""Run one argv on this box over SSH and return what it printed (stdout + stderr).
-		For reads that are not worth a playbook — a log tail, a status — where an Ansible
-		Play doc per call would be noise. Anything that changes the box belongs in a role.
+	def get_ssh_argv(self, command, tty=False):
+		"""The local `ssh` argv that runs one remote argv on this box.
 
-		The argv is quoted word by word, so a unit name or a slug cannot become a second
-		command on the far side. Not root → sudo -n, which fails loudly rather than hanging
-		on a password prompt."""
+		The remote argv is quoted word by word, so a unit name or a slug cannot become a second
+		command on the far side. Not root → sudo -n, which fails loudly rather than hanging on
+		a password prompt. `tty` forces a pty: without one, killing the local ssh leaves the
+		remote command running (sshd only hangs it up when it next writes), so anything that
+		follows output needs it to avoid leaking a process on the box per call."""
 		if not self.public_ip:
 			frappe.throw(f"Machine {self.name} has no public IP — nothing to connect to.")
 		user = self.ssh_user or "root"
 		if user != "root":
 			command = ["sudo", "-n", *command]
 		remote = " ".join(shlex.quote(word) for word in command)
-		ssh = [
+		return [
 			"ssh", "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=accept-new",
 			"-o", "ConnectTimeout=10", "-p", str(self.ssh_port or 22),
+			*(["-tt"] if tty else []),
 			f"{user}@{self.public_ip}", remote,
 		]
+
+	def run_command(self, command, timeout=60):
+		"""Run one argv on this box over SSH and return what it printed (stdout + stderr).
+		For reads that are not worth a playbook — a log tail, a status — where an Ansible
+		Play doc per call would be noise. Anything that changes the box belongs in a role."""
 		try:
-			result = subprocess.run(ssh, capture_output=True, text=True, timeout=timeout)
+			result = subprocess.run(
+				self.get_ssh_argv(command), capture_output=True, text=True, timeout=timeout
+			)
 		except subprocess.TimeoutExpired:
 			frappe.throw(f"{self.name} did not answer within {timeout}s.")
 		return (result.stdout + result.stderr).strip()
+
+	def stream_command(self, command, idle_tick=5):
+		"""Follow one argv on this box over SSH, yielding its output line by line as it arrives
+		— the follow-mode twin of run_command. Yields None after each idle_tick seconds of
+		silence, so a caller can act (stop, flush) without waiting for the next line.
+
+		Runs on a pty (see get_ssh_argv) so that killing the local ssh hangs the remote command
+		up too — a caller that stops consuming must not leave a `docker logs -f` on the box."""
+		process = subprocess.Popen(
+			self.get_ssh_argv(command, tty=True),
+			stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1,
+		)
+		try:
+			selector = selectors.DefaultSelector()
+			selector.register(process.stdout, selectors.EVENT_READ)
+			while True:
+				if not selector.select(timeout=idle_tick):
+					yield None
+					continue
+				line = process.stdout.readline()
+				if not line:  # EOF — the remote command ended
+					return
+				yield line.rstrip("\r\n")  # the pty ends lines \r\n
+		finally:
+			process.kill()
 
 
 def scan_machine_gpus(machine_name):

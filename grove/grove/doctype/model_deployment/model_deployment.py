@@ -33,7 +33,7 @@ class ModelDeployment(Document):
 		allow_long_max_model_len: DF.Check
 		attention_backend: DF.Literal["auto", "FLASH_ATTN", "XFORMERS", "FLASHINFER"]
 		dtype: DF.Literal["auto", "float16", "bfloat16"]
-		engine_image: DF.Link | None
+		engine_image: DF.Link
 		engine_port: DF.Int
 		engine_url: DF.Data | None
 		env: DF.Table[PodEnv]
@@ -42,6 +42,7 @@ class ModelDeployment(Document):
 		gpus: DF.Table[ModelDeploymentGPU]
 		inference_server: DF.Link
 		internal_api_key: DF.Password | None
+		log_lines: DF.Int
 		max_model_len: DF.Int
 		model: DF.Link
 		pipeline_parallel_size: DF.Int
@@ -269,20 +270,65 @@ class ModelDeployment(Document):
 		)
 		frappe.msgprint(f"Tearing down this instance on {self.inference_server} — watch its Ansible Plays.")
 
+	@property
+	def container_name(self):
+		"""This deployment's container on its box. One instance per Model Deployment, so a box
+		can run many at once."""
+		return f"vllm-{_instance_slug(self.name)}"
+
+	@property
+	def machine(self):
+		"""The box this deployment's engine runs on, via its Inference Server."""
+		machine = frappe.db.get_value("Inference Server", self.inference_server, "machine")
+		if not machine:
+			frappe.throw(f"{self.inference_server} has no Machine to reach.")
+		return frappe.get_doc("Machine", machine)
+
 	@frappe.whitelist()
 	def get_engine_logs(self, lines: int = 200):
 		"""Button: this engine container's own log, read off its box. Where a failed deploy
 		explains itself: the Ansible Play only says the health gate timed out, the engine says
 		why it never came up. Read-only and not stored on the doc; a crash-looping container's
 		log is the whole point and it changes every few seconds."""
-		machine = frappe.db.get_value("Inference Server", self.inference_server, "machine")
-		if not machine:
-			frappe.throw(f"{self.inference_server} has no Machine to read logs from.")
-		lines = max(1, min(int(lines), 5000))
-		container = f"vllm-{_instance_slug(self.name)}"
-		return frappe.get_doc("Machine", machine).run_command(
-			["docker", "logs", "--tail", str(lines), container]
+		return self.machine.run_command(
+			["docker", "logs", "--tail", str(_log_lines(lines)), self.container_name]
 		)
+
+	@frappe.whitelist()
+	def stream_engine_logs(self):
+		"""Button: follow this engine container's log off its box (`docker logs --follow` over
+		SSH), relayed to this form until stop_engine_logs(). Deduplicated per deployment, so a
+		second Start — after a page reload, say — does not double up the stream."""
+		from grove import log_relay
+
+		self.machine  # resolved here so a missing box fails on the button, not in a worker
+		log_relay.clear_stop(self.doctype, self.name)
+		frappe.enqueue(
+			"grove.grove.doctype.model_deployment.model_deployment.stream_engine_logs",
+			queue="long", timeout=1800, job_id=f"md-logs-{self.name}", deduplicate=True,
+			model_deployment=self.name,
+		)
+
+	@frappe.whitelist()
+	def stop_engine_logs(self):
+		"""Tell the streaming job to finish — it reads this between publishes."""
+		from grove import log_relay
+
+		log_relay.request_stop(self.doctype, self.name)
+
+
+def stream_engine_logs(model_deployment):
+	"""Job: follow the deployment's container log over SSH and relay it to its form."""
+	from grove import log_relay
+
+	md = frappe.get_doc("Model Deployment", model_deployment)
+	command = ["docker", "logs", "--follow", "--tail", str(_log_lines(md.log_lines)), md.container_name]
+	log_relay.relay(md.machine.stream_command(command), md.doctype, md.name)
+
+
+def _log_lines(lines):
+	"""Backfill size, clamped — `docker logs --tail` will happily read a whole disk."""
+	return max(1, min(int(lines or 200), 5000))
 
 
 def _instance_slug(md_name):
