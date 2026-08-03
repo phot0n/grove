@@ -35,7 +35,6 @@ class ServeCommand:
 		dtype=None,
 		gpu_memory_utilization=None,
 		max_model_len=None,
-		scheduling_policy=None,
 		attention_backend=None,
 		aliases=None,
 		extra_serve_args=None,
@@ -50,7 +49,6 @@ class ServeCommand:
 		self.dtype = dtype or "auto"
 		self.gpu_memory_utilization = gpu_memory_utilization or DEFAULT_GPU_MEMORY_UTILIZATION
 		self.max_model_len = int(max_model_len or DEFAULT_MAX_MODEL_LEN)
-		self.scheduling_policy = scheduling_policy or DEFAULT_SCHEDULING_POLICY
 		self.attention_backend = attention_backend or "auto"
 		self.aliases = (aliases or "").replace(",", " ").split()
 		self.extra_serve_args = (extra_serve_args or "").split()
@@ -69,7 +67,6 @@ class ServeCommand:
 			dtype=pod.dtype,
 			gpu_memory_utilization=pod.gpu_memory_utilization,
 			max_model_len=pod.max_model_len,
-			scheduling_policy=pod.scheduling_policy,
 			attention_backend=pod.attention_backend,
 			aliases=pod.aliases,
 			extra_serve_args=pod.extra_serve_args,
@@ -89,7 +86,6 @@ class ServeCommand:
 			dtype=deployment.dtype,
 			gpu_memory_utilization=deployment.gpu_memory_utilization,
 			max_model_len=deployment.max_model_len,
-			scheduling_policy=deployment.scheduling_policy,
 			attention_backend=deployment.attention_backend,
 			aliases=deployment.aliases,
 			extra_serve_args=deployment.extra_serve_args,
