@@ -19,7 +19,10 @@ type Route struct {
 func pickRoute(routes []Route, stickyURL string) (Route, bool) {
 	var healthy []Route
 	for _, r := range routes {
-		if r.Healthy {
+		// An empty engine URL is unroutable, whatever the pusher claimed: Lua would
+		// hand nginx a bare path as proxy_pass and the caller would see a 500 instead
+		// of the 503 that a model with nowhere to go actually means.
+		if r.Healthy && r.EngineURL != "" {
 			healthy = append(healthy, r)
 		}
 	}
