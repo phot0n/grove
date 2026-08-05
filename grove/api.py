@@ -57,7 +57,7 @@ def provision_key(name: str, email: str, token_limit: int=None, allowed_models: 
 
 
 @frappe.whitelist()
-def revoke_key(api_key):
+def revoke_key(api_key: str):
 	"""Revoke by the full key (not the doc name): hash it → find by key_hash →
 	flip status → revoked. Gateways drop it within the cache TTL."""
 	frappe.only_for(ALLOWED_ROLES)
@@ -72,7 +72,7 @@ def revoke_key(api_key):
 
 
 @frappe.whitelist(allow_guest=True, methods=["POST"])
-def create_control_client(email):
+def create_control_client(email: str):
 	# the secret should not be stored in the Request Log.
 	token = frappe.form_dict.pop("token", None)
 	expected = frappe.conf.get("control_secret")
@@ -105,7 +105,7 @@ def create_control_client_key():
 	return {"api_key": control_user.api_key, "api_secret": api_secret, "user": control_user.name}
 
 @frappe.whitelist()
-def usage(users, month=None):
+def usage(users: list[str] | str, month: str = None):
 	frappe.only_for(ALLOWED_ROLES)
 	from frappe.utils import now_datetime
 
