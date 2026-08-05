@@ -6,6 +6,7 @@ from frappe.model.document import Document
 
 from grove import gateway_sync
 from grove.ansible import Ansible
+from grove.monitoring import run_exporters_play
 from grove.utils import ansible_project_dir, gateway_service_source
 
 
@@ -32,6 +33,20 @@ class ProxyServer(Document):
 			trigger="Manual",
 		)
 		frappe.msgprint(f"Full sync queued for {self.name}.")
+
+	@frappe.whitelist()
+	def install_exporters(self):
+		"""Button: install this box's metrics exporters (long job — it SSHes to the box).
+		They only listen; the Monitoring Agent named on this doc is what scrapes them."""
+		if not self.machine:
+			frappe.throw("Set a Machine before installing exporters.")
+		frappe.enqueue_doc(
+			self.doctype, self.name, "provision_exporters", queue="long", timeout=1800
+		)
+		frappe.msgprint(f"Installing the metrics exporters on {self.name} — watch its Ansible Plays.")
+
+	def provision_exporters(self):
+		return run_exporters_play(self)
 
 	@frappe.whitelist()
 	def deploy_agent(self):

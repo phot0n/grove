@@ -12,6 +12,7 @@
   "column_break_head",
   "status",
   "pod_id",
+  "monitoring_agent",
   "section_image",
   "engine_image",
   "image_name",
@@ -95,6 +96,13 @@
    "in_list_view": 1,
    "label": "Pod ID",
    "read_only": 1
+  },
+  {
+   "description": "The agent that scrapes this pod's engine. Nothing installs inside the pod image, so the agent reaches it over the public engine URL. Blank = not scraped.",
+   "fieldname": "monitoring_agent",
+   "fieldtype": "Link",
+   "label": "Monitoring Agent",
+   "options": "Monitoring Agent"
   },
   {
    "fieldname": "section_image",

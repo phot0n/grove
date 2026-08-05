@@ -1,0 +1,31 @@
+---
+# ── Install ─────────────────────────────────────────────────────────────────
+# vmagent ships inside the vmutils bundle. Pinned so a rebuild lands the same agent.
+vmagent_version: "1.111.0"
+vmagent_config_dir: /etc/vmagent
+vmagent_listen_address: 127.0.0.1:8429
+
+# ── Buffering ───────────────────────────────────────────────────────────────
+# The remote is someone else's, so its downtime is normal, not exceptional: samples queue on
+# disk here instead of being dropped. This queue covers every box this agent scrapes, not one.
+vmagent_buffer_path: /var/lib/vmagent
+vmagent_max_disk_usage: 4GiB
+
+# ── Remote write (Grove Settings → extra-vars) ──────────────────────────────
+# The ingestion service takes a bearer token that carries the tenant and source; there is no
+# username. Verified against it with a real vmagent — Prometheus remote_write over the wire.
+monitoring_remote_write_url: ""
+monitoring_remote_write_token: ""
+monitoring_extra_labels: {}
+
+# ── Service discovery (Grove Settings ⊕ the agent's own doc) ────────────────
+# The agent's whole target list — boxes, engines and pods — comes from here. Re-fetched on
+# the refresh interval, which is what makes a deploy visible without touching this box.
+monitoring_sd_url: ""
+monitoring_sd_token: ""
+monitoring_agent: ""
+monitoring_sd_refresh_interval: 30s
+
+# ── Scraping ────────────────────────────────────────────────────────────────
+monitoring_scrape_interval: 15s
+monitoring_engine_scrape_interval: 5s

@@ -1,0 +1,19 @@
+---
+# NVIDIA's GPU exporter, from NVIDIA's own apt repo rather than their container. The deb
+# carries the binary, the metric CSVs and a finished systemd unit, so this role installs two
+# packages and starts two services — no image to pull, no container to reconcile, and no
+# SYS_ADMIN capability question (natively it runs as root, so profiling metrics just work).
+#
+# DCGM 4.x is required for Blackwell cards; 3.x does not know them and silently reports
+# nothing for the GPU it cannot identify.
+dcgm_packages:
+  - datacenter-gpu-manager-4-cuda12   # libdcgm + the nvidia-dcgm hostengine service
+  - datacenter-gpu-manager-exporter   # /usr/bin/dcgm-exporter + nvidia-dcgm-exporter.service
+
+# NVIDIA's CUDA repo — a different one from the container-toolkit repo the gpu_host role adds.
+# The codename must match the box, or apt installs a repo that resolves nothing.
+dcgm_cuda_keyring_url: https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/x86_64/cuda-keyring_1.1-1_all.deb
+
+# What the shipped unit listens on, and what grove/monitoring.py hands the agent as this box's
+# GPU target. The two are asserted equal in tests/test_monitoring.py.
+dcgm_exporter_port: 9400

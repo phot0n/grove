@@ -6,6 +6,7 @@ import frappe
 from frappe.model.document import Document
 
 from grove.ansible import Ansible
+from grove.monitoring import run_exporters_play
 from grove.utils import ansible_project_dir
 
 
@@ -23,7 +24,7 @@ class InferenceServer(Document):
 		machine: DF.Link
 		machine_ip: DF.Data | None
 		region: DF.Link | None
-		status: DF.Literal["Pending", "Installing", "Active", "Broken"]
+		status: DF.Literal["Pending", "Installing", "Active", "Broken", "Terminated"]
 	# end: auto-generated types
 
 	@frappe.whitelist()
@@ -61,6 +62,21 @@ class InferenceServer(Document):
 		return gpus
 
 	@frappe.whitelist()
+	def install_exporters(self):
+		"""Button: install this box's metrics exporters — node, and DCGM since it has GPUs
+		(long job — it SSHes to the box). They only listen; the Monitoring Agent named on
+		this doc is what scrapes them."""
+		if not self.machine:
+			frappe.throw("Set a Machine before installing exporters.")
+		frappe.enqueue_doc(
+			self.doctype, self.name, "provision_exporters", queue="long", timeout=1800
+		)
+		frappe.msgprint(f"Installing the metrics exporters on {self.name} — watch its Ansible Plays.")
+
+	def provision_exporters(self):
+		return run_exporters_play(self)
+
+	@frappe.whitelist()
 	def setup(self):
 		"""Button: one-time host bootstrap (NVIDIA driver + data volume) via the
 		gpu_host role. Run once per box before deploying models onto it — Model
@@ -78,9 +94,11 @@ class InferenceServer(Document):
 
 	def provision(self):
 		"""One-time host bootstrap for an Inference Server: NVIDIA driver + data
-		volume + Docker (the gpu_host role via provision.yml). Runs once per box — model
-		serves (deploy_model) assume an already-provisioned host and gate on
-		is_provisioned. Mirrors deploy_agent on the proxy side."""
+		volume + Docker (the gpu_host role), then its metrics exporters (node_exporter,
+		dcgm_exporter if the Machine has GPUs) — all in the one provision.yml play, so Setup
+		is a single Ansible run. Runs once per box — model serves (deploy_model) assume an
+		already-provisioned host and gate on is_provisioned. Mirrors deploy_agent on the
+		proxy side."""
 		frappe.db.set_value("Inference Server", self.name, "status", "Installing")
 		frappe.db.commit()
 
@@ -91,7 +109,10 @@ class InferenceServer(Document):
 			server_type="Inference Server",
 			server_name=self.name,
 			machine_name=self.machine,
-			extravars={"gpu_data_mount": self.data_path},
+			extravars={
+				"gpu_data_mount": self.data_path,
+				"monitoring_has_gpu": bool(frappe.get_cached_doc("Machine", self.machine).gpus),
+			},
 		)
 
 		ok = rc == 0

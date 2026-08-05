@@ -1,0 +1,97 @@
+---
+# Requirements are asserted in agent.yml's pre_tasks, before node_exporter installs — a check
+# here fails after the box is already half built.
+- name: Read the installed vmagent version
+  ansible.builtin.command: vmagent -version
+  register: vmagent_probe
+  changed_when: false
+  failed_when: false
+
+- name: Install vmagent {{ vmagent_version }}
+  when: vmagent_version not in (vmagent_probe.stdout | default('')) + (vmagent_probe.stderr | default(''))
+  block:
+    - name: Unpack vmutils into a staging dir
+      ansible.builtin.unarchive:
+        src: "https://github.com/VictoriaMetrics/VictoriaMetrics/releases/download/v{{ vmagent_version }}/vmutils-linux-{{ monitoring_arch }}-v{{ vmagent_version }}.tar.gz"
+        dest: /tmp
+        remote_src: true
+
+    - name: Install the binary
+      ansible.builtin.copy:
+        src: /tmp/vmagent-prod
+        dest: /usr/local/bin/vmagent
+        remote_src: true
+        mode: "0755"
+      notify: restart vmagent
+
+- name: Create the config and buffer directories
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    mode: "0755"
+  loop:
+    - "{{ vmagent_config_dir }}"
+    - "{{ vmagent_buffer_path }}"
+
+# In files, not the unit's argv: /proc/<pid>/cmdline is world-readable, and Ansible records
+# the argv it runs on the Ansible Task doc.
+- name: Write the remote write token
+  ansible.builtin.copy:
+    content: "{{ monitoring_remote_write_token }}"
+    dest: "{{ vmagent_config_dir }}/remote_write.token"
+    mode: "0600"
+  no_log: true
+  notify: restart vmagent
+
+# The SD token is in the URL (see scrape.yml.j2), so this file holds a live credential and
+# gets the same 0600 the token files do. Boxes built before that carry a now-unread sd.token.
+- name: Drop the superseded service-discovery token file
+  ansible.builtin.file:
+    path: "{{ vmagent_config_dir }}/sd.token"
+    state: absent
+
+- name: Write the scrape config
+  ansible.builtin.template:
+    src: scrape.yml.j2
+    dest: "{{ vmagent_config_dir }}/scrape.yml"
+    mode: "0600"
+  no_log: true
+  notify: restart vmagent
+
+- name: Write the vmagent unit
+  ansible.builtin.template:
+    src: vmagent.service.j2
+    dest: /etc/systemd/system/vmagent.service
+    mode: "0644"
+  notify: restart vmagent
+
+- name: Enable and start vmagent
+  ansible.builtin.systemd:
+    name: vmagent
+    state: started
+    enabled: true
+    daemon_reload: true
+
+- name: Flush handlers so the health check sees the current config
+  ansible.builtin.meta: flush_handlers
+
+# A bad scrape config is fatal to vmagent, and Restart=on-failure hides that behind a crash
+# loop — so this waits long enough that a refused connection means broken, not slow.
+- name: Check vmagent answers
+  ansible.builtin.uri:
+    url: "http://{{ vmagent_listen_address }}/health"
+    return_content: false
+    status_code: 200
+  retries: 15
+  delay: 4
+  register: vmagent_health
+  until: vmagent_health.status == 200
+  failed_when: false
+
+# The play failed here before with nothing but "Connection refused" — the reason was in the
+# journal, reachable only by SSHing to the box. It fails with the reason attached now.
+- name: Report why vmagent is not answering
+  when: vmagent_health.status != 200
+  ansible.builtin.command: journalctl -u vmagent -n 30 --no-pager
+  changed_when: false
+  failed_when: true

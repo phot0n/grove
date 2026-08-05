@@ -1,0 +1,13 @@
+[Unit]
+Description=Prometheus node exporter (host metrics, scraped by the Monitoring Agent)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/node_exporter --web.listen-address={{ node_exporter_bind }}:{{ node_exporter_port }}
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target

@@ -10,6 +10,7 @@
   "machine_ip",
   "region",
   "status",
+  "monitoring_agent",
   "is_provisioned",
   "data_path",
   "section_gpus",
@@ -46,7 +47,14 @@
    "fieldtype": "Select",
    "in_list_view": 1,
    "label": "Status",
-   "options": "Pending\nInstalling\nActive\nBroken"
+   "options": "Pending\nInstalling\nActive\nBroken\nTerminated"
+  },
+  {
+   "description": "The agent that scrapes this box's exporters and every engine on it. Blank = not scraped.",
+   "fieldname": "monitoring_agent",
+   "fieldtype": "Link",
+   "label": "Monitoring Agent",
+   "options": "Monitoring Agent"
   },
   {
    "default": "0",
@@ -64,6 +72,7 @@
    "reqd": 1
   },
   {
+   "depends_on": "eval:doc.status == 'Active'",
    "fieldname": "section_gpus",
    "fieldtype": "Section Break",
    "label": "GPUs"

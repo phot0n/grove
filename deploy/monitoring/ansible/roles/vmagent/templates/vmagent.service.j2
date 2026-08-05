@@ -1,0 +1,31 @@
+{#
+  Rendered by the vmagent role. The token is read from a file, never the argv:
+  /proc/<pid>/cmdline is world-readable and Ansible records the argv it runs.
+#}
+[Unit]
+Description=vmagent — scrape this box and push to the remote VictoriaMetrics
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/vmagent \
+  -promscrape.config={{ vmagent_config_dir }}/scrape.yml \
+  -promscrape.httpSDCheckInterval={{ monitoring_sd_refresh_interval }} \
+  -httpListenAddr={{ vmagent_listen_address }} \
+  -remoteWrite.url={{ monitoring_remote_write_url }} \
+  -remoteWrite.bearerTokenFile={{ vmagent_config_dir }}/remote_write.token \
+{# Their endpoint speaks plain Prometheus remote write. Without this vmagent probes for the
+   VictoriaMetrics protocol first and blocks ~30s on the timeout at every start. #}
+  -remoteWrite.forcePromProto=true \
+{% for key, value in monitoring_extra_labels.items() %}
+  -remoteWrite.label={{ key }}={{ value }} \
+{% endfor %}
+  -remoteWrite.tmpDataPath={{ vmagent_buffer_path }} \
+  -remoteWrite.maxDiskUsagePerURL={{ vmagent_max_disk_usage }}
+Restart=on-failure
+RestartSec=5
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target
