@@ -10,17 +10,17 @@ from grove.utils import slugify
 
 HF_CONFIG_URL = "https://huggingface.co/{repo}/resolve/main/config.json"
 HF_MODEL_URL = "https://huggingface.co/api/models/{repo}"
+# Repo root listing, with a size per file. The limit is well past any real shard count.
+HF_TREE_URL = "https://huggingface.co/api/models/{repo}/tree/main?limit=1000"
 
-# Bytes per parameter for the dtypes HF reports in a repo's safetensors index. Quantized
-# repos mix them (e.g. FP8 weights with BF16 norms), so the total is summed per dtype.
+# Bytes per parameter, for the Weights dtype override only — the shipped size is measured off
+# the files themselves rather than costed out like this.
 DTYPE_BYTES = {
-	"F64": 8, "I64": 8,
-	"F32": 4, "I32": 4, "U32": 4,
-	"BF16": 2, "F16": 2, "I16": 2, "U16": 2,
-	"F8_E4M3": 1, "F8_E5M2": 1, "F8_E8M0": 1, "I8": 1, "U8": 1, "BOOL": 1,
-	"F4": 0.5, "NF4": 0.5,
+	"float32": 4, "bfloat16": 2, "float16": 2, "fp8": 1, "int8": 1, "int4": 0.5,
 }
-_UNKNOWN_DTYPE_BYTES = 2  # widest common case, so an unseen dtype errs toward "too big"
+# HF reports a packed quantization as its container type: AWQ/GPTQ pack eight 4-bit weights
+# into one int32, so for those repos the counts describe containers, not parameters.
+PACKED_DTYPES = {"I16", "U16", "I32", "U32"}
 
 
 class Model(Document):
@@ -36,7 +36,6 @@ class Model(Document):
 		display_name: DF.Data
 		enable_auto_tool_choice: DF.Check
 		enable_prefix_caching: DF.Check
-		gated: DF.Check
 		hf_repo: DF.Data | None
 		hidden_layers: DF.Int
 		is_embedding: DF.Check
@@ -47,6 +46,7 @@ class Model(Document):
 		scheduling_policy: DF.Literal["priority", "fcfs"]
 		thinking: DF.Check
 		tool_call_parser: DF.Data | None
+		weights_dtype: DF.Literal["", "bfloat16", "float16", "float32", "fp8", "int8", "int4"]
 		weights_gb: DF.Float
 	# end: auto-generated types
 
@@ -71,6 +71,18 @@ class Model(Document):
 		# Grove User Group or Grove User.
 		if self.published and not has_active_deployment(self.name):
 			self.published = 0
+
+	@property
+	def repo_id(self):
+		"""The repo alone. A GGUF repo publishes a dozen quantizations of the same model, so
+		vLLM is pointed at one of them with `unsloth/Qwen3-0.6B-GGUF:Q4_K_M` — a ref the HF
+		API does not take."""
+		return (self.hf_repo or "").split(":")[0]
+
+	@property
+	def gguf_quant(self):
+		"""The quantization named after the colon, blank for a safetensors repo."""
+		return (self.hf_repo or "").partition(":")[2]
 
 	@frappe.whitelist()
 	def fetch_architecture(self):
@@ -101,16 +113,46 @@ class Model(Document):
 		return self._hf_json(HF_CONFIG_URL)
 
 	def get_weights_gb(self):
-		"""Size of the weights in GB, summed per dtype off the repo's safetensors index.
-		None when the repo publishes no index (older or non-safetensors repos). Decimal GB
-		to match how GPU VRAM is quoted."""
-		parameters = (self._hf_json(HF_MODEL_URL).get("safetensors") or {}).get("parameters")
+		"""Size of the weights in GB — decimal, to match how GPU VRAM is quoted. Normally what
+		the repo's own weights weigh; with a Weights dtype set, its parameters re-costed at
+		that precision instead."""
+		if self.weights_dtype:
+			return self.get_rescaled_weights_gb()
+		return self.get_shipped_weights_gb()
+
+	def get_shipped_weights_gb(self):
+		"""What the repo's weights actually weigh: its top-level safetensors shards, added up
+		as they are on disk — or the single GGUF file, for a repo ref that names a quantization.
+		None when it publishes neither.
+
+		Measured, not costed out from parameter counts. HF reports a count per dtype, but a
+		packed quantization reports its container type — GLM-5.2-AWQ-INT4 comes back as 726
+		billion I32, which prices at 2959 GB against a real 474 GB. Subfolders are skipped on
+		purpose: that is where a repo keeps other quantizations of the same weights, and adding
+		those would charge for the model more than once."""
+		suffix = f"{self.gguf_quant}.gguf" if self.gguf_quant else ".safetensors"
+		total_bytes = sum(
+			entry.get("size") or 0
+			for entry in self._hf_json(HF_TREE_URL)
+			if entry.get("type") == "file" and is_root_weights_file(entry.get("path", ""), suffix)
+		)
+		return round(total_bytes / 1_000_000_000, 2) or None
+
+	def get_rescaled_weights_gb(self):
+		"""The repo's parameters re-costed at the chosen Weights dtype — for a repo served at a
+		precision it does not ship in, e.g. vLLM quantizing a bf16 repo to fp8. Refused for a
+		repo that already ships quantized: its counts are packed containers, so there is no
+		parameter count left to re-cost."""
+		parameters = (self._hf_json(HF_MODEL_URL).get("safetensors") or {}).get("parameters") or {}
+		if packed := PACKED_DTYPES.intersection(parameters):
+			frappe.throw(
+				f"{self.hf_repo} already ships quantized — its weights are packed as "
+				f"{', '.join(sorted(packed))}, so there is no parameter count to re-cost at "
+				f"{self.weights_dtype}. Clear Weights dtype to measure the repo as it is."
+			)
 		if not parameters:
 			return None
-		total_bytes = sum(
-			count * DTYPE_BYTES.get(dtype, _UNKNOWN_DTYPE_BYTES)
-			for dtype, count in parameters.items()
-		)
+		total_bytes = sum(parameters.values()) * DTYPE_BYTES[self.weights_dtype]
 		return round(total_bytes / 1_000_000_000, 2)
 
 	def _hf_json(self, url_template):
@@ -120,7 +162,7 @@ class Model(Document):
 		headers = {"Authorization": f"Bearer {token}"} if token else {}
 		try:
 			response = requests.get(
-				url_template.format(repo=self.hf_repo), headers=headers, timeout=30
+				url_template.format(repo=self.repo_id), headers=headers, timeout=30
 			)
 		except requests.RequestException as e:
 			frappe.throw(f"Could not reach Hugging Face: {e}")
@@ -132,6 +174,13 @@ class Model(Document):
 		if not response.ok:
 			frappe.throw(f"Hugging Face returned {response.status_code} for {self.hf_repo}.")
 		return response.json()
+
+
+def is_root_weights_file(path, suffix):
+	"""A weights file the repo serves from — one at the root, not one in a subfolder. The
+	listing is requested non-recursively, so this is a second line of defence: a repo keeps
+	its other quantizations in subfolders, and counting those bills the same model twice."""
+	return path.endswith(suffix) and "/" not in path
 
 
 def is_scheduling_policy_frozen(before, after):

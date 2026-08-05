@@ -14,12 +14,12 @@
   "column_break_launch",
   "is_embedding",
   "enable_prefix_caching",
-  "gated",
   "scheduling_policy",
   "section_shape",
   "attention_heads",
   "hidden_layers",
   "column_break_iewq",
+  "weights_dtype",
   "weights_gb",
   "section_tools",
   "enable_auto_tool_choice",
@@ -38,7 +38,7 @@
    "reqd": 1
   },
   {
-   "description": "\u2192 vllm serve ; the name is the --served-model-name.",
+   "description": "\u2192 vllm serve ; the name is the --served-model-name. A GGUF repo ships many quantizations \u2014 name one with repo:QUANT (unsloth/Qwen3-0.6B-GGUF:Q4_K_M) so only that file is pulled, and add --tokenizer &lt;base repo&gt; to Extra Serve Args on the deployment, since converting a GGUF's own tokenizer is slow and unreliable. Single-file quantizations only; a split one has to be merged first.",
    "fieldname": "hf_repo",
    "fieldtype": "Data",
    "label": "HF Repo"
@@ -92,13 +92,6 @@
    "label": "Enable Prefix Caching"
   },
   {
-   "default": "0",
-   "description": "Needs an HF token to download (passed as HF_TOKEN).",
-   "fieldname": "gated",
-   "fieldtype": "Check",
-   "label": "Gated"
-  },
-  {
    "default": "priority",
    "description": "\u2192 --scheduling-policy, for every placement of this model. priority = serve by the request's priority field first (lower value first), ties broken by arrival; with no per-request priority set yet, that is the same order as fcfs. Frozen while Published \u2014 it is baked into the running engines.",
    "fieldname": "scheduling_policy",
@@ -124,6 +117,13 @@
    "fieldname": "hidden_layers",
    "fieldtype": "Int",
    "label": "Hidden Layers"
+  },
+  {
+   "description": "Precision to size the weights at, when it is not how the repo ships. Blank (the usual case) measures the repo's own safetensors. Set it only to plan for serving at another precision \u2014 e.g. a bf16 repo vLLM will quantize to fp8. An already-quantized repo cannot be re-costed and will say so. Takes effect on the next Fetch Architecture.",
+   "fieldname": "weights_dtype",
+   "fieldtype": "Select",
+   "label": "Weights dtype",
+   "options": "\nbfloat16\nfloat16\nfloat32\nfp8\nint8\nint4"
   },
   {
    "description": "Size of the weights, summed per dtype from the repo's safetensors index. A placement whose GPUs can't hold this much is rejected \u2014 note it counts weights only, so the KV cache and activations need headroom on top.",
@@ -184,7 +184,7 @@
    "link_fieldname": "model"
   }
  ],
- "modified": "2026-07-29 04:09:53.060610",
+ "modified": "2026-08-04 10:00:00.000000",
  "modified_by": "Administrator",
  "module": "Grove",
  "name": "Model",

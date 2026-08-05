@@ -8,6 +8,14 @@ import re
 
 import frappe
 
+MIB_PER_GB = 1024
+
+
+def vram_gb_from_mib(mib):
+	"""MiB → whole marketed GB. Rounds half up, unlike Python's round(), which is banker's:
+	an L4 reporting exactly 23040 MiB is a 24 GB card, and round() would call it 22."""
+	return int(mib // MIB_PER_GB + (1 if mib % MIB_PER_GB * 2 >= MIB_PER_GB else 0))
+
 
 def app_grove_root():
 	"""Path to .../apps/grove — the parent of the `grove` python package, i.e. the repo

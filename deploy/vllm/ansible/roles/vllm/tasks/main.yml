@@ -101,6 +101,14 @@
       {{ vllm_api_key if (vllm_api_key | length > 0)
          else (vllm_api_key_slurp.content | b64decode | trim) }}
 
+# A GGUF repo publishes a dozen quantizations of one model, so vLLM takes `repo:QUANT` and
+# serves a single file out of it. `hf download` has no such ref — it wants the repo, and left
+# alone would pull every quantization. Split the suffix back off and pass it as the file glob.
+- name: Split a GGUF quantization off the model ref
+  ansible.builtin.set_fact:
+    vllm_download_repo: "{{ vllm_model.split(':')[0] }}"
+    vllm_download_glob: "{{ '*' + vllm_model.split(':')[1] + '.gguf' if ':' in vllm_model else '' }}"
+
 # The image's own hf does the download, into the box-shared cache every instance mounts.
 # `-e HF_TOKEN` forwards the value from the task environment below rather than spelling it
 # out in the argv, which Ansible records verbatim on the Ansible Task doc.
@@ -109,11 +117,17 @@
     docker run --rm --entrypoint hf
     -e HF_TOKEN
     -v {{ vllm_hf_home }}:/root/.cache/huggingface
-    {{ vllm_image }} download {{ vllm_model }}
+    {{ vllm_image }} download {{ vllm_download_repo }}
+    {{ '--include ' + vllm_download_glob if vllm_download_glob else '' }}
   environment:
     HF_TOKEN: "{{ vllm_hf_token }}"
   args:
-    creates: "{{ vllm_hf_home }}/hub/models--{{ vllm_model | replace('/', '--') }}"
+    # Down to the file for a GGUF ref, not just the repo dir: the quantizations share one repo,
+    # so a repo-level guard would skip the download after a switch from Q4_K_M to Q8_0 and
+    # leave vLLM to fetch it inline, under the health gate.
+    creates: >-
+      {{ vllm_hf_home }}/hub/models--{{ vllm_download_repo | replace('/', '--') }}{{
+      '/snapshots/*/' + vllm_download_glob if vllm_download_glob else '' }}
   when: vllm_predownload_model | bool
   # Weights are many GB → same long-silent-download problem as the pull; run detached + poll
   # so a dropped SSH session can't abort it.
