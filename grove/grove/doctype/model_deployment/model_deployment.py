@@ -13,9 +13,13 @@ from grove.serve_command import ServeCommand
 
 
 ENGINE_PORT_BASE = 8080
-# Statuses whose deployment no longer runs an engine on the box → its port is
-# free to reuse. Everything else (Draft/Provisioning/Active/Broken) reserves its port.
-_PORT_FREE_STATUSES = ("Inactive", "Terminated")
+# Only teardown takes the container off the box, so only Terminated releases what it held.
+# Everything else — Inactive included, since Start expects the same port and GPUs back —
+# keeps its claim on the box.
+_PORT_FREE_STATUSES = ("Terminated",)
+# Statuses whose deployment still owns its GPUs: one is serving on them, the other is a stop
+# that intends to come back.
+_GPU_CLAIMING_STATUSES = ("Active", "Inactive")
 
 
 class ModelDeployment(Document):
@@ -136,10 +140,12 @@ class ModelDeployment(Document):
 
 	def reject_claimed_gpus(self):
 		"""A GPU backs one engine at a time — two vLLMs on one card split its VRAM and both
-		then OOM at a size each thought it had. Read live off the other Active deployments on
-		this box rather than a stored flag, so it always matches what's really running.
-		Called on save for early feedback, and again at deploy time because a sibling can go
-		Active in between (status moves via db.set_value, which skips validate)."""
+		then OOM at a size each thought it had. Read live off the other deployments holding
+		GPUs on this box rather than a stored flag, so it always matches what is really there.
+		A stopped one counts: its VRAM is free right now, but Start puts an engine back on
+		those cards. Called on save for early feedback, and again at deploy time because a
+		sibling can go Active in between (status moves via db.set_value, which skips
+		validate)."""
 		declared = {int(r.gpu_index) for r in self.gpus or []}
 		if not (declared and self.inference_server):
 			return
@@ -148,7 +154,7 @@ class ModelDeployment(Document):
 			filters={
 				"inference_server": self.inference_server,
 				"name": ["!=", self.name or ""],
-				"status": "Active",
+				"status": ["in", _GPU_CLAIMING_STATUSES],
 			},
 			pluck="name",
 		)
@@ -166,7 +172,7 @@ class ModelDeployment(Document):
 			frappe.throw(
 				"<br>".join(
 					f"GPU {', '.join(str(i) for i in sorted(indices))} on {self.inference_server} "
-					f"is already serving Active deployment {deployment}."
+					f"is already claimed by deployment {deployment}."
 					for deployment, indices in clashes.items()
 				)
 			)
@@ -175,7 +181,7 @@ class ModelDeployment(Document):
 		"""Allocate a box-local vLLM port once (multi-tenant box: one port per
 		deployment). Lowest free port from ENGINE_PORT_BASE up, scoped to THIS
 		Inference Server, skipping ports held by non-freed deployments. Ports released
-		by teardown (status Inactive/Terminated + port cleared) are reused. Assigned
+		by teardown (status Terminated + port cleared) are reused. Assigned
 		once, then stable — teardown clears it so a later redeploy reallocates."""
 		if self.engine_port or not self.inference_server:
 			return
@@ -258,10 +264,43 @@ class ModelDeployment(Document):
 		frappe.msgprint(f"Re-rendering engine config on {self.inference_server} — watch its Ansible Plays.")
 
 	@frappe.whitelist()
+	def stop(self):
+		"""Button: stop this engine's container, leaving it — with its run script, key and
+		port — on the box, so Start brings the same engine back without a redeploy. Docker's
+		restart policy is unless-stopped, so the stop holds across a reboot. → Inactive."""
+		self.set_container_running(False)
+
+	@frappe.whitelist()
+	def start(self):
+		"""Button: start the container Stop left on the box. → Active."""
+		self.set_container_running(True)
+
+	def set_container_running(self, running):
+		"""Run docker start/stop and set the status from what the container actually does
+		afterwards — run_command reports output, not an exit code, so the state is read back
+		rather than assumed."""
+		machine = self.machine
+		action = "start" if running else "stop"
+		# `docker stop` waits out the engine's SIGTERM grace before it kills it.
+		output = machine.run_command(["docker", action, self.container_name], timeout=120)
+		state = machine.run_command(
+			["docker", "inspect", "--format", "{{.State.Running}}", self.container_name]
+		)
+		if state != str(running).lower():
+			frappe.throw(
+				f"{self.container_name} on {machine.name} did not {action} — docker said "
+				f"'{output or state}'. Deploy to recreate it if it is gone."
+			)
+		self.db_set("status", "Active" if running else "Inactive")
+		from grove.grove.doctype.model.model import sync_published
+
+		sync_published(self.model)
+
+	@frappe.whitelist()
 	def teardown(self):
 		"""Button: stop + remove THIS deployment's container, its run script and its key file
 		from the box (multi-tenant teardown). Shared weights and the pulled image are left for
-		other instances. → Inactive on success."""
+		other instances. → Terminated on success."""
 		frappe.enqueue(
 			"grove.grove.doctype.model_deployment.model_deployment.teardown_deployment",
 			queue="long",
@@ -364,7 +403,7 @@ def _vllm_extravars(md, m, inf, key):
 	# sees them. No rows → single-GPU, unpinned (whatever the box exposes).
 	gpu_indexes = sorted(int(r.gpu_index) for r in (md.gpus or []))
 
-	hf_token = frappe.conf.get("hf_token", "") if m.gated else ""
+	hf_token = frappe.conf.get("hf_token", "")
 	vllm_home = inf.data_path
 
 	extravars = {
@@ -514,7 +553,7 @@ def teardown_deployment(model_deployment):
 	"""Stop + remove ONE deployment's container, the run script and env file that would
 	restart it, and its key file (multi-tenant teardown). Leaves the box-shared
 	weights/compile caches and the pulled image intact — other instances may use them.
-	On success → Inactive."""
+	On success → Terminated."""
 	md = frappe.get_doc("Model Deployment", model_deployment)
 	inf = frappe.get_doc("Inference Server", md.inference_server)
 
@@ -537,7 +576,7 @@ def teardown_deployment(model_deployment):
 		# Release the box-local port (0 = free → reallocated on a later redeploy;
 		# the Int column is NOT NULL, so 0 not None).
 		frappe.db.set_value(
-			"Model Deployment", md.name, {"status": "Inactive", "engine_port": 0}
+			"Model Deployment", md.name, {"status": "Terminated", "engine_port": 0}
 		)
 		from grove.grove.doctype.model.model import sync_published
 

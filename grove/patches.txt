@@ -8,3 +8,4 @@ grove.patches.rename_api_key_to_grove_api_key
 grove.patches.move_policy_to_grove_user
 grove.patches.move_group_members_to_grove_user
 grove.patches.name_grove_user_by_hash
+grove.patches.terminate_torn_down_deployments

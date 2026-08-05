@@ -42,12 +42,27 @@ frappe.ui.form.on('Model Deployment', {
 					);
 				});
 			}
+			// Pause without giving the box back: the container, its config, its port and its
+			// GPUs stay claimed, so Start is a `docker start` rather than a redeploy.
+			if (served) {
+				frm.add_custom_button(__('Stop'), () => {
+					frappe.confirm(
+						__('Stop this engine? It stops serving and stays on the box until you start it again.'),
+						() => frm.call('stop').then(() => frm.reload_doc()),
+					);
+				});
+			}
+			if (frm.doc.status === 'Inactive') {
+				frm.add_custom_button(__('Start'), () => {
+					frm.call('start').then(() => frm.reload_doc());
+				});
+			}
 			// Multi-tenant box: remove just THIS instance's container + key (shared
 			// weights and image stay for other instances). Also the cleanup for a failed deploy —
 			// a container carries --restart unless-stopped, so a crash-looping engine keeps
 			// coming back until this removes it. Offered while Provisioning too: that is
 			// where a deploy whose worker died leaves the doc, with the container still up.
-			if (served || frm.doc.status === 'Provisioning') {
+			if (served || frm.doc.status === 'Provisioning' || frm.doc.status === 'Inactive') {
 				frm.add_custom_button(__('Tear Down'), () => {
 					frappe.confirm(
 						frm.doc.status === 'Provisioning'
