@@ -9,12 +9,14 @@ from frappe.tests import IntegrationTestCase
 
 from grove.cloud_provider.aws import (
 	build_ip_permission,
+	cloud_config,
 	machine_status,
 	parse_gpus,
 	parse_instance_store,
-	vram_gb_from_mib,
+	root_volume_id,
 )
 from grove.grove.doctype.machine.machine import _scan_message, parse_nvidia_smi
+from grove.utils import vram_gb_from_mib
 
 # describe_instance_types for a g6.12xlarge, trimmed to the two keys Grove reads.
 G6_12XLARGE = {
@@ -158,6 +160,58 @@ class TestBuildIpPermission(unittest.TestCase):
 		})
 
 
+class TestRootVolumeId(unittest.TestCase):
+	def test_matches_root_device_by_name(self):
+		instance = {
+			"RootDeviceName": "/dev/sda1",
+			"BlockDeviceMappings": [
+				{"DeviceName": "/dev/sdb", "Ebs": {"VolumeId": "vol-data"}},
+				{"DeviceName": "/dev/sda1", "Ebs": {"VolumeId": "vol-root"}},
+			],
+		}
+		self.assertEqual(root_volume_id(instance), "vol-root")
+
+	def test_no_matching_mapping_is_none(self):
+		instance = {"RootDeviceName": "/dev/sda1", "BlockDeviceMappings": []}
+		self.assertIsNone(root_volume_id(instance))
+
+	def test_missing_keys_is_none(self):
+		self.assertIsNone(root_volume_id({}))
+
+
+class TestCloudConfig(unittest.TestCase):
+	def test_grants_root_a_real_login_not_just_the_key(self):
+		config = cloud_config("ssh-ed25519 AAAA one")
+		self.assertIn("disable_root: false", config, "key present but root shell still blocked")
+
+	def test_lists_every_key(self):
+		config = cloud_config("ssh-ed25519 AAAA one\nssh-ed25519 AAAA two")
+		self.assertIn("  - ssh-ed25519 AAAA one", config)
+		self.assertIn("  - ssh-ed25519 AAAA two", config)
+
+	def test_no_keys_is_empty(self):
+		self.assertEqual(cloud_config(""), "")
+
+
+class TestLaunchResetsStatusOnFailure(IntegrationTestCase):
+	"""A launch() failure must not strand a Machine at Provisioning forever — nothing in the
+	UI or provision()'s own guard offers a way out of that state once instance_id is blank
+	but status says Provisioning."""
+
+	def test_failure_before_instance_id_resets_to_pending(self):
+		machine = frappe.get_doc({
+			"doctype": "Machine", "machine_name": "test-launch-failure",
+			"instance_type": "g6.12xlarge", "root_volume_gb": 100,
+		}).insert(ignore_permissions=True)
+		self.addCleanup(machine.delete, ignore_permissions=True)
+
+		# No cloud_provider set — self.cloud_client throws before instance_id is ever touched,
+		# same shape as a bad AMI/credentials/quota failure inside run_instance itself.
+		with self.assertRaises(frappe.ValidationError):
+			machine.launch()
+		self.assertEqual(frappe.db.get_value("Machine", machine.name, "status"), "Pending")
+
+
 class TestBaremetalMachine(IntegrationTestCase):
 	"""Registering a box by hand must not get harder now that AWS fields exist."""
 
@@ -168,7 +222,7 @@ class TestBaremetalMachine(IntegrationTestCase):
 		self.addCleanup(machine.delete, ignore_permissions=True)
 		self.assertFalse(machine.cloud_provider)
 		self.assertFalse(machine.provider_type, "an on-prem box shows no AWS section")
-		self.assertIsNone(machine.subnet_group_doc, "no Subnet Group and no Cloud Provider default")
+		self.assertIsNone(machine.network_doc, "no Network and no Cloud Provider default")
 
 	def test_provision_throws_instead_of_reaching_boto3(self):
 		machine = frappe.get_doc({
@@ -179,27 +233,86 @@ class TestBaremetalMachine(IntegrationTestCase):
 		with self.assertRaises(frappe.ValidationError):
 			machine.provision()
 
-	def test_dummy_subnet_group_does_not_wipe_manually_set_region(self):
+	def test_dummy_network_does_not_wipe_manually_set_region(self):
 		region = frappe.get_doc({
 			"doctype": "Region", "name": "test-baremetal-region", "label": "test-baremetal-region",
 		}).insert(ignore_permissions=True)
 		self.addCleanup(region.delete, ignore_permissions=True)
 
-		dummy_group = frappe.get_doc({
-			"doctype": "Subnet Group", "name": "test-baremetal-dummy-group", "label": "test-baremetal-dummy-group",
+		dummy_network = frappe.get_doc({
+			"doctype": "Network", "name": "test-baremetal-dummy-network",
 		}).insert(ignore_permissions=True)
-		self.addCleanup(dummy_group.delete, ignore_permissions=True)
+		self.addCleanup(dummy_network.delete, ignore_permissions=True)
 
 		machine = frappe.get_doc({
 			"doctype": "Machine", "machine_name": "test-baremetal-03",
-			"region": region.name, "subnet_group": dummy_group.name,
+			"region": region.name, "network": dummy_network.name,
 		}).insert(ignore_permissions=True)
 		self.addCleanup(machine.delete, ignore_permissions=True)
-		self.assertEqual(machine.region, region.name, "a region-less Subnet Group must not clear it")
+		self.assertEqual(machine.region, region.name, "a region-less Network must not clear it")
 
 
-class TestSubnetGroupResolution(IntegrationTestCase):
-	"""subnet_group_doc's override/fallback, and Subnet Group as the one owner of region."""
+class TestSyncDependentServers(IntegrationTestCase):
+	"""A Machine going Terminated/Offline/Draining must not leave its Proxy/Inference
+	Server still claiming Active — that would be a lie about what's actually running."""
+
+	def setUp(self):
+		self.machine = frappe.get_doc({
+			"doctype": "Machine", "machine_name": "test-sync-dependents",
+		}).insert(ignore_permissions=True)
+		self.addCleanup(self.machine.delete, ignore_permissions=True)
+
+		self.inference_server = frappe.get_doc({
+			"doctype": "Inference Server", "name": "test-sync-dependents-inference",
+			"machine": self.machine.name, "status": "Active", "data_path": "/opt/vllm",
+		}).insert(ignore_permissions=True)
+		self.addCleanup(self.inference_server.delete, ignore_permissions=True)
+
+		self.proxy_server = frappe.get_doc({
+			"doctype": "Proxy Server", "name": "test-sync-dependents-proxy",
+			"machine": self.machine.name, "status": "Active",
+		}).insert(ignore_permissions=True)
+		self.addCleanup(self.proxy_server.delete, ignore_permissions=True)
+
+	def test_terminated_machine_breaks_active_servers(self):
+		self.machine.status = "Terminated"
+		self.machine.sync_dependent_servers()
+		self.assertEqual(
+			frappe.db.get_value("Inference Server", self.inference_server.name, "status"), "Terminated"
+		)
+		self.assertEqual(
+			frappe.db.get_value("Proxy Server", self.proxy_server.name, "status"), "Terminated"
+		)
+
+	def test_stopped_machine_marks_servers_broken_not_terminated(self):
+		"""Draining/Offline: the box just stopped, Start can still bring it back — Broken,
+		not Terminated."""
+		self.machine.status = "Draining"
+		self.machine.sync_dependent_servers()
+		self.assertEqual(
+			frappe.db.get_value("Inference Server", self.inference_server.name, "status"), "Broken"
+		)
+
+	def test_active_machine_leaves_servers_alone(self):
+		self.machine.status = "Active"
+		self.machine.sync_dependent_servers()
+		self.assertEqual(
+			frappe.db.get_value("Inference Server", self.inference_server.name, "status"), "Active"
+		)
+
+	def test_non_active_server_is_not_touched(self):
+		"""Pending/Installing/Broken already say "not serving" — only Active can go stale."""
+		frappe.db.set_value("Inference Server", self.inference_server.name, "status", "Pending")
+		self.machine.status = "Terminated"
+		self.machine.sync_dependent_servers()
+		self.assertEqual(
+			frappe.db.get_value("Inference Server", self.inference_server.name, "status"), "Pending"
+		)
+
+
+class TestNetworkResolution(IntegrationTestCase):
+	"""network_doc resolution, Network as the one owner of region, and Machine Image
+	resolution (Machine's own, else its Network's — no Cloud Provider fallback for either)."""
 
 	def setUp(self):
 		self.region_a = frappe.get_doc({
@@ -213,89 +326,111 @@ class TestSubnetGroupResolution(IntegrationTestCase):
 		self.addCleanup(self.region_b.delete, ignore_permissions=True)
 
 		self.provider = frappe.get_doc({
-			"doctype": "Cloud Provider", "name": "test-subnet-group-provider", "provider_type": "aws",
+			"doctype": "Cloud Provider", "name": "test-network-provider", "provider_type": "aws",
 			"api_key": "dummy-secret", "access_key_id": "dummy-key",
 		}).insert(ignore_permissions=True)
 		self.addCleanup(self.provider.delete, ignore_permissions=True)
 
-		self.default_group = frappe.get_doc({
-			"doctype": "Subnet Group", "name": "test-default-group", "label": "test-default-group",
-			"cloud_provider": self.provider.name, "region": self.region_a.name,
-			"subnet_id": "subnet-default",
-			"proxy_security_group_ids": "sg-default-proxy",
-			"inference_security_group_ids": "sg-default-inference",
-		}).insert(ignore_permissions=True)
-		self.addCleanup(self.default_group.delete, ignore_permissions=True)
-		self.provider.db_set("default_subnet_group", self.default_group.name)
-		self.addCleanup(self.provider.db_set, "default_subnet_group", None)
-
-		self.override_group = frappe.get_doc({
-			"doctype": "Subnet Group", "name": "test-override-group", "label": "test-override-group",
+		self.network = frappe.get_doc({
+			"doctype": "Network", "name": "test-network",
 			"cloud_provider": self.provider.name, "region": self.region_b.name,
-			"subnet_id": "subnet-override",
-			"proxy_security_group_ids": "sg-override-proxy",
-			"inference_security_group_ids": "sg-override-inference",
+			"subnet_id": "subnet-x",
+			"proxy_security_group_ids": "sg-proxy",
+			"inference_security_group_ids": "sg-inference",
 		}).insert(ignore_permissions=True)
-		self.addCleanup(self.override_group.delete, ignore_permissions=True)
+		self.addCleanup(self.network.delete, ignore_permissions=True)
 
-	def test_falls_back_to_cloud_provider_default(self):
+	def test_network_doc_resolves_the_linked_network(self):
 		machine = frappe.get_doc({
-			"doctype": "Machine", "machine_name": "test-sg-fallback", "cloud_provider": self.provider.name,
+			"doctype": "Machine", "machine_name": "test-net-link", "cloud_provider": self.provider.name,
+			"network": self.network.name,
 		}).insert(ignore_permissions=True)
 		self.addCleanup(machine.delete, ignore_permissions=True)
-		self.assertEqual(machine.subnet_group_doc.name, self.default_group.name)
+		self.assertEqual(machine.network_doc.name, self.network.name)
 
-	def test_machine_subnet_group_overrides_default(self):
+	def test_region_derived_from_network(self):
 		machine = frappe.get_doc({
-			"doctype": "Machine", "machine_name": "test-sg-override", "cloud_provider": self.provider.name,
-			"subnet_group": self.override_group.name,
+			"doctype": "Machine", "machine_name": "test-net-region", "cloud_provider": self.provider.name,
+			"network": self.network.name, "region": self.region_a.name,
 		}).insert(ignore_permissions=True)
 		self.addCleanup(machine.delete, ignore_permissions=True)
-		self.assertEqual(machine.subnet_group_doc.name, self.override_group.name)
-
-	def test_region_derived_from_subnet_group(self):
-		machine = frappe.get_doc({
-			"doctype": "Machine", "machine_name": "test-sg-region", "cloud_provider": self.provider.name,
-			"subnet_group": self.override_group.name, "region": self.region_a.name,
-		}).insert(ignore_permissions=True)
-		self.addCleanup(machine.delete, ignore_permissions=True)
-		self.assertEqual(machine.region, self.region_b.name, "Subnet Group's region wins over the typed one")
+		self.assertEqual(machine.region, self.region_b.name, "Network's region wins over the typed one")
 
 	def test_proxy_role_picks_proxy_security_groups(self):
 		machine = frappe.get_doc({
-			"doctype": "Machine", "machine_name": "test-sg-role-proxy", "cloud_provider": self.provider.name,
-			"subnet_group": self.override_group.name, "security_group_role": "Proxy Server",
+			"doctype": "Machine", "machine_name": "test-net-role-proxy", "cloud_provider": self.provider.name,
+			"network": self.network.name, "machine_type": "Proxy Server",
 		}).insert(ignore_permissions=True)
 		self.addCleanup(machine.delete, ignore_permissions=True)
-		self.assertEqual(
-			machine.get_security_group_ids(machine.subnet_group_doc), ["sg-override-proxy"]
-		)
+		self.assertEqual(machine.get_security_group_ids(machine.network_doc), ["sg-proxy"])
 
 	def test_inference_role_picks_inference_security_groups(self):
 		machine = frappe.get_doc({
-			"doctype": "Machine", "machine_name": "test-sg-role-inference", "cloud_provider": self.provider.name,
-			"subnet_group": self.override_group.name, "security_group_role": "Inference Server",
+			"doctype": "Machine", "machine_name": "test-net-role-inference", "cloud_provider": self.provider.name,
+			"network": self.network.name, "machine_type": "Inference Server",
 		}).insert(ignore_permissions=True)
 		self.addCleanup(machine.delete, ignore_permissions=True)
-		self.assertEqual(
-			machine.get_security_group_ids(machine.subnet_group_doc), ["sg-override-inference"]
-		)
+		self.assertEqual(machine.get_security_group_ids(machine.network_doc), ["sg-inference"])
 
-	def test_no_role_set_throws_when_subnet_group_present(self):
+	def test_monitoring_agent_role_picks_inference_security_groups(self):
+		# It needs 22 and nothing else inbound; the proxy list would open 80/443 for nothing.
 		machine = frappe.get_doc({
-			"doctype": "Machine", "machine_name": "test-sg-role-missing", "cloud_provider": self.provider.name,
-			"subnet_group": self.override_group.name,
+			"doctype": "Machine", "machine_name": "test-net-role-agent", "cloud_provider": self.provider.name,
+			"network": self.network.name, "machine_type": "Monitoring Agent",
+		}).insert(ignore_permissions=True)
+		self.addCleanup(machine.delete, ignore_permissions=True)
+		self.assertEqual(machine.get_security_group_ids(machine.network_doc), ["sg-inference"])
+
+	def test_no_role_set_throws_when_network_present(self):
+		machine = frappe.get_doc({
+			"doctype": "Machine", "machine_name": "test-net-role-missing", "cloud_provider": self.provider.name,
+			"network": self.network.name,
 		}).insert(ignore_permissions=True)
 		self.addCleanup(machine.delete, ignore_permissions=True)
 		with self.assertRaises(frappe.ValidationError):
-			machine.get_security_group_ids(machine.subnet_group_doc)
+			machine.get_security_group_ids(machine.network_doc)
 
-	def test_no_subnet_group_is_empty_list_regardless_of_role(self):
+	def test_no_network_is_empty_list_regardless_of_role(self):
 		machine = frappe.get_doc({
-			"doctype": "Machine", "machine_name": "test-sg-role-no-group",
+			"doctype": "Machine", "machine_name": "test-net-role-no-network",
 		}).insert(ignore_permissions=True)
 		self.addCleanup(machine.delete, ignore_permissions=True)
 		self.assertEqual(machine.get_security_group_ids(None), [])
+
+	def test_region_code_throws_when_no_region(self):
+		machine = frappe.get_doc({
+			"doctype": "Machine", "machine_name": "test-net-no-region", "cloud_provider": self.provider.name,
+		}).insert(ignore_permissions=True)
+		self.addCleanup(machine.delete, ignore_permissions=True)
+		with self.assertRaises(frappe.ValidationError):
+			machine.region_code
+
+	def test_resolved_machine_image_prefers_the_machines_own(self):
+		self.network.db_set("machine_image", "ami-network-default")
+		machine = frappe.get_doc({
+			"doctype": "Machine", "machine_name": "test-net-image-own", "cloud_provider": self.provider.name,
+			"network": self.network.name, "machine_image": "ami-machine-own",
+		}).insert(ignore_permissions=True)
+		self.addCleanup(machine.delete, ignore_permissions=True)
+		self.assertEqual(machine.resolved_machine_image, "ami-machine-own")
+
+	def test_resolved_machine_image_falls_back_to_network(self):
+		self.network.db_set("machine_image", "ami-network-default")
+		machine = frappe.get_doc({
+			"doctype": "Machine", "machine_name": "test-net-image-fallback", "cloud_provider": self.provider.name,
+			"network": self.network.name,
+		}).insert(ignore_permissions=True)
+		self.addCleanup(machine.delete, ignore_permissions=True)
+		self.assertEqual(machine.resolved_machine_image, "ami-network-default")
+
+	def test_resolved_machine_image_throws_when_neither_set(self):
+		machine = frappe.get_doc({
+			"doctype": "Machine", "machine_name": "test-net-image-missing", "cloud_provider": self.provider.name,
+			"network": self.network.name,
+		}).insert(ignore_permissions=True)
+		self.addCleanup(machine.delete, ignore_permissions=True)
+		with self.assertRaises(frappe.ValidationError):
+			machine.resolved_machine_image
 
 
 if __name__ == "__main__":

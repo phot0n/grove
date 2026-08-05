@@ -10,16 +10,9 @@ import frappe
 from frappe.model.document import Document
 
 from grove.ansible import Ansible
-from grove.cloud_provider.aws import (
-	cloud_config,
-	machine_status,
-	parse_gpus,
-	parse_instance_store,
-	vram_gb_from_mib,
-)
 from grove.cloud_provider.base import CloudClientError, build_cloud_client
 from grove.grove.doctype.ssh_key.ssh_key import injected_public_keys
-from grove.utils import ansible_project_dir
+from grove.utils import ansible_project_dir, vram_gb_from_mib
 
 # Task name in scan_gpus.yml whose output carries the nvidia-smi CSV.
 SCAN_TASK = "query nvidia-smi"
@@ -30,8 +23,8 @@ class Machine(Document):
 	pods are a separate, standalone Pod doctype — not backed by a Machine."""
 
 	def validate(self):
-		if self.subnet_group:
-			region = frappe.db.get_value("Subnet Group", self.subnet_group, "region")
+		if self.network:
+			region = frappe.db.get_value("Network", self.network, "region")
 			if region:
 				self.region = region
 
@@ -70,47 +63,45 @@ class Machine(Document):
 
 	@property
 	def region_code(self):
-		"""The region to talk to: this box's Region, else the account's default."""
-		code = frappe.db.get_value("Region", self.region, "region_code") if self.region else None
-		code = code or frappe.db.get_value("Cloud Provider", self.cloud_provider, "default_region")
-		if not code:
-			frappe.throw(
-				f"No AWS region for {self.name} — set a Region Code on Region {self.region}, "
-				f"or a Default Region on Cloud Provider {self.cloud_provider}."
-			)
-		return code
-
-	def get_launch_setting(self, field, required=True):
-		"""A launch field: this Machine's value, else the Cloud Provider's account default."""
-		value = self.get(field) or frappe.db.get_value("Cloud Provider", self.cloud_provider, field)
-		if not value and required:
-			frappe.throw(
-				f"Set {frappe.unscrub(field)} on Machine {self.name} "
-				f"or on Cloud Provider {self.cloud_provider}."
-			)
-		return value or ""
+		"""The region to talk to — this box's Region, whose Name is the provider's own region
+		code. No account-wide fallback: every AWS Machine needs a Region, directly or via its
+		Network."""
+		if not self.region:
+			frappe.throw(f"Machine {self.name} has no Region set — link a Network, or set one directly.")
+		return self.region
 
 	@property
-	def subnet_group_doc(self):
-		"""This Machine's Subnet Group, else the Cloud Provider's default. None for on-prem."""
-		name = self.subnet_group or frappe.db.get_value(
-			"Cloud Provider", self.cloud_provider, "default_subnet_group"
-		)
-		return frappe.get_cached_doc("Subnet Group", name) if name else None
+	def resolved_machine_image(self):
+		"""This Machine's own Machine Image, else its Network's — AMI ids are region-scoped,
+		so the default lives on Network (one region each), not on Cloud Provider (one account,
+		many regions)."""
+		network = self.network_doc
+		value = self.machine_image or (network.machine_image if network else "")
+		if not value:
+			suffix = f" or on Network {network.name}" if network else ""
+			frappe.throw(f"Set Machine Image on Machine {self.name}{suffix}.")
+		return value
 
-	def get_security_group_ids(self, subnet_group):
-		"""This box's security groups: the Subnet Group's Proxy Server or Inference Server list,
-		matching this Machine's Security Group Role. Empty when there's no Subnet Group."""
-		if not subnet_group:
+	@property
+	def network_doc(self):
+		"""This Machine's Network. None for on-prem, or an AWS box with no Network linked."""
+		return frappe.get_cached_doc("Network", self.network) if self.network else None
+
+	def get_security_group_ids(self, network):
+		"""This box's security groups: the Network's Proxy Server or Inference Server list,
+		matching this Machine's Machine Type. Empty when there's no Network.
+
+		A Monitoring Agent box takes the inference list. It needs only 22 inbound — its vmagent
+		and its node_exporter both bind 127.0.0.1, and its scrapes and remote writes are all
+		outbound — so the proxy list would open 80/443 to the world for nothing."""
+		if not network:
 			return []
-		if not self.security_group_role:
-			frappe.throw(
-				f"Set a Security Group Role on Machine {self.name} to pick its security groups."
-			)
+		if not self.machine_type:
+			frappe.throw(f"Set a Machine Type on Machine {self.name} to pick its security groups.")
 		return (
-			subnet_group.proxy_security_group_id_list
-			if self.security_group_role == "Proxy Server"
-			else subnet_group.inference_security_group_id_list
+			network.proxy_security_group_id_list
+			if self.machine_type == "Proxy Server"
+			else network.inference_security_group_id_list
 		)
 
 	@frappe.whitelist()
@@ -122,27 +113,32 @@ class Machine(Document):
 		if not (self.instance_type and self.root_volume_gb):
 			frappe.throw("Set an Instance Type and a Root Volume (GB) before provisioning.")
 		self.cloud_client
-		self.get_launch_setting("ami_id")
-		self.get_security_group_ids(self.subnet_group_doc)
+		self.resolved_machine_image
+		self.get_security_group_ids(self.network_doc)
 		frappe.enqueue_doc(self.doctype, self.name, "launch", queue="long", timeout=1800)
 		frappe.msgprint(f"Provisioning {self.name} — reload when it reports Active.")
 
 	def launch(self):
 		"""Job: run the instance, wait for it to be reachable, then record what AWS gave back
-		and seed the GPU table from the instance type."""
+		and seed the GPU table from the instance type. A failure before instance_id is set
+		(bad AMI, credentials, quota, ...) resets status to Pending rather than stranding the
+		Machine at Provisioning forever — the UI only offers Provision again once it's back."""
 		self.db_set("status", "Provisioning", commit=True)
-		client = self.cloud_client
-		subnet_group = self.subnet_group_doc
-		instance = client.run_instance(
-			name=self.name,
-			instance_type=self.instance_type,
-			image_id=self.get_launch_setting("ami_id"),
-			subnet_id=subnet_group.subnet_id if subnet_group else "",
-			security_group_ids=self.get_security_group_ids(subnet_group),
-			key_pair_name=self.get_launch_setting("key_pair_name", required=False),
-			root_volume_gb=self.root_volume_gb,
-			user_data=cloud_config(injected_public_keys()),
-		)
+		try:
+			client = self.cloud_client
+			network = self.network_doc
+			instance = client.run_instance(
+				name=self.name,
+				instance_type=self.instance_type,
+				image_id=self.resolved_machine_image,
+				subnet_id=network.subnet_id if network else "",
+				security_group_ids=self.get_security_group_ids(network),
+				root_volume_gb=self.root_volume_gb,
+				ssh_public_keys=injected_public_keys(),
+			)
+		except Exception:
+			self.db_set("status", "Pending", commit=True)
+			raise
 		# Committed before the poll: a timeout further down must not roll this back and leave
 		# a billed instance that Grove has no record of.
 		self.db_set("instance_id", instance["instance_id"], commit=True)
@@ -150,13 +146,15 @@ class Machine(Document):
 		self.db_set({
 			"public_ip": ready["public_ip"],
 			"private_ip": ready["private_ip"],
-			"status": machine_status(ready["state"]),
+			"status": ready["status"],
 		}, commit=True)
 		self.sync_instance_type(client)
 
 	@frappe.whitelist()
 	def sync(self):
-		"""Button: pull state, IPs and instance-type facts back off AWS."""
+		"""Button: pull state, IPs and launch facts back off AWS — instance_type, machine_image
+		and root_volume_gb included, so a box registered by hand (instance_id set, nothing
+		else) gets fully backfilled from what's actually running."""
 		self.require_instance()
 		client = self.cloud_client
 		try:
@@ -165,27 +163,51 @@ class Machine(Document):
 			if e.code != "InvalidInstanceID.NotFound":
 				raise
 			self.db_set({"status": "Terminated", "instance_id": "", "public_ip": "", "private_ip": ""})
+			self.sync_dependent_servers()
 			frappe.msgprint(f"{self.name} no longer exists on AWS — marked Terminated.")
 			return
 		self.db_set({
-			"status": machine_status(instance["state"]),
+			"status": instance["status"],
 			"public_ip": instance["public_ip"] or "",
 			"private_ip": instance["private_ip"] or "",
+			"instance_type": instance["instance_type"] or "",
+			"machine_image": instance["image_id"] or "",
+			"root_volume_gb": instance["root_volume_gb"] or 0,
 		})
+		self.sync_dependent_servers()
 		self.sync_instance_type(client)
+
+	def sync_dependent_servers(self):
+		"""Reflect this Machine no longer serving onto every Proxy/Inference Server and
+		Monitoring Agent built on it — Active there would be a lie once the box itself is
+		Terminated, Offline or Draining. Terminated propagates as Terminated (the box is gone
+		for good, along with whatever was on it); Offline/Draining propagate as Broken
+		(stopped, but Start can still bring it back). Only touches ones that were Active —
+		Pending/Installing/Broken/Terminated already say what's true.
+
+		An agent matters most here: it is the only doc whose silence looks exactly like a
+		healthy idle fleet, so a stopped agent box has to say so on the doc."""
+		if self.status not in ("Terminated", "Offline", "Draining"):
+			return
+		dependent_status = "Terminated" if self.status == "Terminated" else "Broken"
+		for doctype in ("Proxy Server", "Inference Server", "Monitoring Agent"):
+			for name in frappe.get_all(
+				doctype, filters={"machine": self.name, "status": "Active"}, pluck="name"
+			):
+				frappe.db.set_value(doctype, name, "status", dependent_status)
 
 	def sync_instance_type(self, client):
 		"""Record what this instance type ships: its ephemeral local NVMe (which Grove leaves
 		unmounted) and its GPUs. The GPU table is only seeded when EMPTY — a scanned table is
-		nvidia-smi's answer and is never overwritten by AWS's coarser one."""
+		nvidia-smi's answer and is never overwritten by the provider's coarser one."""
 		if not self.instance_type:
 			return
 		info = client.get_instance_type_info(self.instance_type)
-		store = parse_instance_store(info)
+		store = info["instance_store"]
 		self.db_set({"instance_store_disks": store["disks"], "instance_store_gb": store["total_gb"]})
 		if self.gpus:
 			return
-		for gpu in parse_gpus(info):
+		for gpu in info["gpus"]:
 			self.append("gpus", gpu)
 		self.save(ignore_permissions=True)
 		frappe.db.commit()
@@ -196,6 +218,7 @@ class Machine(Document):
 		self.require_instance()
 		self.cloud_client.stop_instance(self.instance_id)
 		self.db_set({"status": "Draining", "public_ip": ""})
+		self.sync_dependent_servers()
 		frappe.msgprint(f"Stopping {self.name} — Sync once it settles.")
 
 	@frappe.whitelist()
@@ -215,7 +238,7 @@ class Machine(Document):
 		self.db_set({
 			"public_ip": ready["public_ip"],
 			"private_ip": ready["private_ip"],
-			"status": machine_status(ready["state"]),
+			"status": ready["status"],
 		}, commit=True)
 
 	@frappe.whitelist()
@@ -224,6 +247,7 @@ class Machine(Document):
 		self.require_instance()
 		self.cloud_client.terminate_instance(self.instance_id)
 		self.db_set({"status": "Terminated", "instance_id": "", "public_ip": "", "private_ip": ""})
+		self.sync_dependent_servers()
 		frappe.msgprint(f"Terminated {self.name}.")
 
 	def require_instance(self):

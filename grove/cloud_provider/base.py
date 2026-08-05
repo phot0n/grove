@@ -1,6 +1,6 @@
 # Copyright (c) 2026, Grove and contributors
 # For license information, please see license.txt
-"""The provider-agnostic contract Machine and Subnet Group call through. A concrete client
+"""The provider-agnostic contract Machine and Network call through. A concrete client
 (EC2Client, ...) implements every method here; neither doctype ever names a concrete class or
 branches on provider_type — build_cloud_client is the one place that dispatch happens."""
 
@@ -23,18 +23,24 @@ class CloudClient(ABC):
 	@abstractmethod
 	def run_instance(
 		self, name, instance_type, image_id, subnet_id, security_group_ids,
-		key_pair_name, root_volume_gb, user_data="",
+		root_volume_gb, ssh_public_keys="",
 	):
-		"""Launch one instance, tagged with the Machine's name. Returns the parsed instance —
-		see get_instance for its shape."""
+		"""Launch one instance, tagged with the Machine's name and authorised for the given
+		SSH public keys (newline-joined) however this provider injects them. Returns the
+		parsed instance — see get_instance for its shape."""
 
 	@abstractmethod
 	def get_instance(self, instance_id):
-		"""Fetch one instance → {instance_id, state, public_ip, private_ip, instance_type}."""
+		"""Fetch one instance → {instance_id, status, public_ip, private_ip, instance_type,
+		image_id, root_volume_gb}. status is already mapped to Grove's own vocabulary
+		(Pending/Provisioning/Active/Draining/Offline/Terminated) — callers never see a
+		provider's raw state. The launch facts (instance_type, image_id, root_volume_gb) let
+		Sync backfill a Machine that was registered by hand instead of launched through Grove."""
 
 	@abstractmethod
 	def get_instance_type_info(self, instance_type):
-		"""The raw facts a provider reports for an instance type (local storage, GPUs, ...)."""
+		"""This instance type's facts, already in Grove's own shape:
+		{instance_store: {disks, total_gb}, gpus: [{gpu_index, gpu_model, vram_gb, gpu_uuid}]}."""
 
 	@abstractmethod
 	def poll_instance_ready(self, instance_id, timeout_sec=300, poll_interval_sec=5):
@@ -53,6 +59,11 @@ class CloudClient(ABC):
 		"""Destroy the instance and its durable storage."""
 
 	@abstractmethod
+	def create_network(self, name, cidr_block, subnet_cidr_block, availability_zone):
+		"""Create a VPC with one public subnet — its own Internet Gateway and a route to it.
+		Returns {vpc_id, subnet_id, internet_gateway_id, route_table_id}."""
+
+	@abstractmethod
 	def create_security_group(self, name, description, vpc_id):
 		"""Create a network security group. Returns its id, with no ingress rules yet."""
 
@@ -63,7 +74,7 @@ class CloudClient(ABC):
 
 def build_cloud_client(provider_type, access_key_id, secret_access_key, region):
 	"""The CloudClient for a Cloud Provider's provider_type. Add a provider by adding one
-	entry here — Machine and Subnet Group never change."""
+	entry here — Machine and Network never change."""
 	from grove.cloud_provider.aws import EC2Client
 
 	clients = {"aws": EC2Client}

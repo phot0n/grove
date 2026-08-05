@@ -1,6 +1,8 @@
 # Copyright (c) 2026, Grove and contributors
 # For license information, please see license.txt
 
+import ipaddress
+
 import frappe
 from frappe.model.document import Document
 
@@ -15,8 +17,13 @@ PROXY_INGRESS_RULES = [
 INFERENCE_SSH_RULE = {"protocol": "tcp", "from_port": 22, "to_port": 22, "cidr": "0.0.0.0/0"}
 INFERENCE_ENGINE_PORT_RANGE = (8080, 8085)
 
+# Pool auto-assigned CIDR blocks are carved from — /16s never collide with each other, so any
+# two Networks can be peered later without an overlap.
+CIDR_POOL = ipaddress.ip_network("10.0.0.0/8")
+CIDR_PREFIX = 16
 
-class SubnetGroup(Document):
+
+class Network(Document):
 	# begin: auto-generated types
 	# This code is auto-generated. Do not modify anything in this block.
 
@@ -25,15 +32,33 @@ class SubnetGroup(Document):
 	if TYPE_CHECKING:
 		from frappe.types import DF
 
+		availability_zone: DF.Data | None
 		cidr_block: DF.Data | None
 		cloud_provider: DF.Link | None
 		inference_security_group_ids: DF.Data | None
-		label: DF.Data
+		internet_gateway_id: DF.Data | None
+		machine_image: DF.Data | None
 		proxy_security_group_ids: DF.Data | None
 		region: DF.Link | None
+		route_table_id: DF.Data | None
+		subnet_cidr_block: DF.Data | None
 		subnet_id: DF.Data | None
 		vpc_id: DF.Data | None
 	# end: auto-generated types
+
+	def validate(self):
+		if self.cloud_provider and not self.cidr_block:
+			self.cidr_block = self.next_available_cidr_block
+
+	@property
+	def next_available_cidr_block(self):
+		"""First /16 in 10.0.0.0/8 not already used by another Network."""
+		filters = {"name": ["!=", self.name]} if not self.is_new() else {}
+		used = {row for row in frappe.get_all("Network", pluck="cidr_block", filters=filters) if row}
+		for block in CIDR_POOL.subnets(new_prefix=CIDR_PREFIX):
+			if str(block) not in used:
+				return str(block)
+		frappe.throw(f"No /16 CIDR block available within {CIDR_POOL}.")
 
 	@property
 	def proxy_security_group_id_list(self):
@@ -47,33 +72,55 @@ class SubnetGroup(Document):
 
 	@property
 	def cloud_client(self):
-		"""CloudClient for this Subnet Group's account (its Cloud Provider's keys and kind)
-		and region. Never a concrete class by name — build_cloud_client picks one."""
+		"""CloudClient for this Network's account (its Cloud Provider's keys and kind) and
+		region. Never a concrete class by name — build_cloud_client picks one."""
 		if not self.cloud_provider:
-			frappe.throw(f"Subnet Group {self.name} has no Cloud Provider set — it's a bare-metal placeholder.")
+			frappe.throw(f"Network {self.name} has no Cloud Provider set — it's a bare-metal placeholder.")
 		provider = frappe.get_doc("Cloud Provider", self.cloud_provider)
 		secret = provider.get_password("api_key", raise_exception=False)
 		if not (provider.access_key_id and secret):
 			frappe.throw(f"Cloud Provider {provider.name} has no credentials set.")
 		if not self.region:
-			frappe.throw(f"Subnet Group {self.name} has no Region set.")
-		code = frappe.db.get_value("Region", self.region, "region_code")
-		if not code:
-			frappe.throw(f"Region {self.region} has no Region Code set.")
+			frappe.throw(f"Network {self.name} has no Region set.")
 		try:
-			return build_cloud_client(provider.provider_type, provider.access_key_id, secret, code)
+			return build_cloud_client(provider.provider_type, provider.access_key_id, secret, self.region)
 		except CloudClientError as e:
 			frappe.throw(str(e))
 
 	@frappe.whitelist()
+	def create_network(self):
+		"""Button: create this Network's VPC and public subnet on AWS — a route to an Internet
+		Gateway and auto-assigned public IPs, so a launched Machine is reachable over SSH —
+		then its security groups too, so one click gets a Network fully ready for a Machine."""
+		if self.vpc_id:
+			frappe.throw(f"Network {self.name} already has a VPC ID set.")
+		if not (self.cidr_block and self.subnet_cidr_block and self.availability_zone):
+			frappe.throw(
+				f"Set CIDR Block, Subnet CIDR Block and Availability Zone on Network {self.name} "
+				f"before creating a VPC."
+			)
+
+		network = self.cloud_client.create_network(
+			self.name, self.cidr_block, self.subnet_cidr_block, self.availability_zone
+		)
+		self.db_set({
+			"vpc_id": network["vpc_id"],
+			"subnet_id": network["subnet_id"],
+			"internet_gateway_id": network["internet_gateway_id"],
+			"route_table_id": network["route_table_id"],
+		})
+		frappe.msgprint(f"VPC and subnet created for {self.name}.")
+		self.create_security_groups()
+
+	@frappe.whitelist()
 	def create_security_groups(self):
-		"""Button: create this Subnet Group's Proxy and Inference security groups on AWS, with
-		their fixed ingress rules, and record the ids. Skips a role whose field is already
-		set, so re-clicking after one is filled in by hand never creates a duplicate. The
-		Inference group's engine-port rule sources from the Proxy group, so Proxy is created
-		first when both are missing."""
+		"""Button: create this Network's Proxy and Inference security groups on AWS, with their
+		fixed ingress rules, and record the ids. Skips a role whose field is already set, so
+		re-clicking after one is filled in by hand never creates a duplicate. The Inference
+		group's engine-port rule sources from the Proxy group, so Proxy is created first when
+		both are missing. Also runs as the second half of Create Network."""
 		if not self.vpc_id:
-			frappe.throw(f"Set a VPC ID on Subnet Group {self.name} before creating security groups.")
+			frappe.throw(f"Set a VPC ID on Network {self.name} before creating security groups.")
 
 		if not self.proxy_security_group_ids:
 			proxy_sg_id = self.cloud_client.create_security_group(
