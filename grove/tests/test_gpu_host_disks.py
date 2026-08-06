@@ -19,7 +19,7 @@ from pathlib import Path
 import yaml
 from jinja2 import Environment
 
-ROLE = Path(__file__).parent.parent.parent / "deploy/vllm/ansible/roles/gpu_host"
+ROLE = Path(__file__).parent.parent.parent / "playbooks/inference_server/roles/gpu_host"
 TASKS = yaml.safe_load((ROLE / "tasks/main.yml").read_text())
 DEFAULTS = yaml.safe_load((ROLE / "defaults/main.yml").read_text())
 

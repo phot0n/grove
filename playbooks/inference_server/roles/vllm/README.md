@@ -33,7 +33,7 @@ restart state.
 ## Usage
 
 ```bash
-cd deploy/vllm/ansible
+cd playbooks/inference_server
 cp inventory.example.ini inventory.ini      # set ansible_host / user
 ansible-playbook serve.yml -e vllm_image=vllm/vllm-openai:v0.24.0
 ```

@@ -53,7 +53,7 @@
    "read_only": 1
   },
   {
-   "description": "The args required to serve this model (mapped to deploy/vllm role vars). Blank = flag omitted / role default.",
+   "description": "The args required to serve this model (mapped to playbooks/inference_server vllm role vars). Blank = flag omitted / role default.",
    "fieldname": "section_launch",
    "fieldtype": "Section Break",
    "label": "vLLM Launch Profile"

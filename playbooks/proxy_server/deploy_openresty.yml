@@ -9,7 +9,7 @@
   become: true
   gather_facts: false
   vars:
-    grove_dir: "{{ playbook_dir }}/.."
+    grove_dir: "{{ playbook_dir }}"
 
   tasks:
     - name: grove lua dir

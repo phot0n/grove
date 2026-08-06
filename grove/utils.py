@@ -19,14 +19,24 @@ def vram_gb_from_mib(mib):
 
 def app_grove_root():
 	"""Path to .../apps/grove — the parent of the `grove` python package, i.e. the repo
-	root where deploy/ and gateway_service/ live."""
+	root where playbooks/ and gateway_service/ live."""
 	return os.path.dirname(frappe.get_app_path("grove"))
 
 
-def ansible_project_dir(component):
-	"""The ansible project directory for a deploy component, e.g. 'vllm' →
-	.../apps/grove/deploy/vllm/ansible."""
-	return os.path.join(app_grove_root(), "deploy", component, "ansible")
+def ansible_project_dir(doctype):
+	"""The ansible project directory for the doctype whose boxes a playbook runs against, e.g.
+	'Inference Server' → .../apps/grove/playbooks/inference_server. Its playbooks sit at
+	the top and its roles in roles/ beside them; a role two doctypes share is symlinked in."""
+	return os.path.join(
+		app_grove_root(), "playbooks", doctype.lower().replace(" ", "_")
+	)
+
+
+def shared_roles_dir():
+	"""playbooks/roles — roles more than one doctype's playbooks use (the exporters, which go
+	on every box whoever owns it). Ansible searches it after a playbook's own roles/, so a role
+	is written once and named from anywhere without a copy or a symlink to keep pointing."""
+	return os.path.join(app_grove_root(), "playbooks", "roles")
 
 
 def gateway_service_source():

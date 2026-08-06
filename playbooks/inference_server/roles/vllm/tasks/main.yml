@@ -35,6 +35,54 @@
     - "{{ vllm_home }}/keys"
     - "{{ vllm_container_dir }}"
 
+# A GGUF repo publishes a dozen quantizations of one model, so vLLM takes `repo:QUANT` and
+# serves a single file out of it. `hf download` has no such ref — it wants the repo, and left
+# alone would pull every quantization. Split the suffix back off and pass it as the file glob.
+# Set here rather than beside the download because the space check below needs the repo too.
+- name: Split a GGUF quantization off the model ref
+  ansible.builtin.set_fact:
+    vllm_download_repo: "{{ vllm_model.split(':')[0] }}"
+    vllm_download_glob: "{{ '*' + vllm_model.split(':')[1] + '.gguf' if ':' in vllm_model else '' }}"
+
+# ── Room to work ────────────────────────────────────────────────────────────
+# The image and the weights land on one disk, and Docker only reports ENOSPC after minutes of
+# pulling — from a path inside the image's own filesystem, which names no disk the operator
+# recognises. Both downloads are checked here instead, against what the box is still missing:
+# an image already pulled or weights already cached cost this deploy nothing, so a redeploy on
+# a full-but-working box is never blocked.
+- name: Is the engine image already on the box?
+  ansible.builtin.command: "docker image inspect {{ vllm_image }}"
+  register: vllm_image_present
+  changed_when: false
+  failed_when: false
+
+- name: Are the weights already in the shared cache?
+  ansible.builtin.stat:
+    path: "{{ vllm_hf_home }}/hub/models--{{ vllm_download_repo | replace('/', '--') }}"
+  register: vllm_weights_cached
+
+- name: Read the free space on the data path
+  ansible.builtin.command: "df --output=avail --block-size=1G {{ vllm_home }}"
+  register: vllm_df
+  changed_when: false
+
+- name: Check the data path can hold what is still to be downloaded
+  vars:
+    free_gb: "{{ vllm_df.stdout_lines[-1] | trim | regex_replace('G$', '') | int }}"
+    image_gb: "{{ 0 if vllm_image_present.rc == 0 else vllm_image_gb }}"
+    weights_gb: "{{ 0 if vllm_weights_cached.stat.exists else vllm_weights_gb }}"
+    needed_gb: "{{ (image_gb | float + weights_gb | float) | round(1) }}"
+  ansible.builtin.assert:
+    that: needed_gb | float == 0 or free_gb | int >= needed_gb | float
+    fail_msg: >-
+      {{ vllm_home }} has {{ free_gb }} GB free, but this deploy still has to download
+      {{ needed_gb }} GB there ({{ image_gb }} GB of engine image, {{ weights_gb }} GB of
+      weights). Grow this box's root volume — Resize Root Volume on its Machine — and run
+      again. Note the image needs more room than it downloads: its layers arrive compressed
+      and are unpacked onto the same disk.
+    success_msg: >-
+      {{ vllm_home }} has {{ free_gb }} GB free for {{ needed_gb }} GB of downloads.
+
 - name: Log in to the image registry
   ansible.builtin.command: "docker login {{ vllm_registry_host }} --username {{ vllm_registry_username }} --password-stdin"
   args:
@@ -100,14 +148,6 @@
     vllm_effective_api_key: >-
       {{ vllm_api_key if (vllm_api_key | length > 0)
          else (vllm_api_key_slurp.content | b64decode | trim) }}
-
-# A GGUF repo publishes a dozen quantizations of one model, so vLLM takes `repo:QUANT` and
-# serves a single file out of it. `hf download` has no such ref — it wants the repo, and left
-# alone would pull every quantization. Split the suffix back off and pass it as the file glob.
-- name: Split a GGUF quantization off the model ref
-  ansible.builtin.set_fact:
-    vllm_download_repo: "{{ vllm_model.split(':')[0] }}"
-    vllm_download_glob: "{{ '*' + vllm_model.split(':')[1] + '.gguf' if ':' in vllm_model else '' }}"
 
 # The image's own hf does the download, into the box-shared cache every instance mounts.
 # `-e HF_TOKEN` forwards the value from the task environment below rather than spelling it

@@ -1,7 +1,7 @@
 ---
 # Read the box's GPU inventory off nvidia-smi. Run by machine.scan_gpus, which parses the
 # task output back into the Machine's GPU child rows. Read-only — nothing on the host changes.
-# Lives under deploy/machine (not deploy/vllm): this describes the hardware, and holds
+# Lives under playbooks/machine (not playbooks/inference_server): this describes the hardware, and holds
 # whether or not the box ever serves a model.
 - name: Scan GPUs
   hosts: all

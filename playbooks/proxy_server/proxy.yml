@@ -7,7 +7,7 @@
   become: true
   gather_facts: true
   vars:
-    grove_dir: "{{ playbook_dir }}/.."
+    grove_dir: "{{ playbook_dir }}"
     # Pinned to what the live gateway is verified on. Both come from upstream repos, not
     # the distro, so "latest" moves under us on a rebuild — and both sit in the request
     # path. The codename suffix is appended at install time so the pin stays portable.

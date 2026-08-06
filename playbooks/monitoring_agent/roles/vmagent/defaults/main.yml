@@ -26,6 +26,13 @@ monitoring_sd_token: ""
 monitoring_agent: ""
 monitoring_sd_refresh_interval: 30s
 
+# Set from the agent's Push Targets Manually box. True swaps both jobs to file_sd and takes the
+# lists below instead of the URL above — for a Grove the box cannot reach. The lists are then a
+# snapshot: nothing re-fetches them, so they are only as fresh as the last Push Targets.
+monitoring_static_targets: false
+monitoring_host_targets: []
+monitoring_engine_targets: []
+
 # ── Scraping ────────────────────────────────────────────────────────────────
 monitoring_scrape_interval: 15s
 monitoring_engine_scrape_interval: 5s

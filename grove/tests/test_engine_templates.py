@@ -16,7 +16,7 @@ from jinja2 import Environment, FileSystemLoader
 # Ansible renders with trim_blocks on; matching it is the whole point of this file.
 TEMPLATES = Environment(
 	loader=FileSystemLoader(
-		Path(__file__).parent.parent.parent / "deploy/vllm/ansible/roles/vllm/templates"
+		Path(__file__).parent.parent.parent / "playbooks/inference_server/roles/vllm/templates"
 	),
 	trim_blocks=True,
 	keep_trailing_newline=True,

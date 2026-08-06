@@ -39,6 +39,12 @@ vllm_serve_args: []
 # VLLM_API_KEY is not in here — it is resolved on the box and added by the template.
 vllm_env: {}
 vllm_predownload_model: true
+# What this deploy still has to fit on the box's disk, checked before either download starts.
+# The image figure is the COMPRESSED size the registry publishes (Engine Image → Fetch Size),
+# so it understates what docker writes — layers arrive compressed and are unpacked onto the
+# same disk. Either at 0 means Grove never fetched it, and that half of the check is skipped.
+vllm_image_gb: 0
+vllm_weights_gb: 0
 
 # ── Auth / secrets ──────────────────────────────────────────────────────────
 vllm_api_key: ""                       # "" = auto-generate + persist to {{ vllm_api_key_file }}

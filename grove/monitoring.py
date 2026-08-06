@@ -13,9 +13,6 @@ from urllib.parse import urlparse
 import frappe
 from werkzeug.wrappers import Response
 
-from grove.ansible import Ansible
-from grove.utils import ansible_project_dir
-
 NODE_EXPORTER_PORT = 9100
 DCGM_EXPORTER_PORT = 9400
 # vmagent's own /metrics — its -httpListenAddr in the vmagent role.
@@ -32,12 +29,11 @@ def run_exporters_play(server):
 	machine = frappe.get_doc("Machine", server.machine)
 	if not machine.public_ip:
 		frappe.throw(f"Machine {machine.name} has no public IP — nothing to connect to.")
-	ansible = Ansible(project_root=ansible_project_dir("monitoring"))
-	return ansible.run_playbook(
-		playbook_name="exporters.yml",
-		server_type=server.doctype,
-		server_name=server.name,
-		machine_name=server.machine,
+	# The play lives with the agent's — it is a monitoring play whoever owns the box it lands
+	# on, and the roles it needs are already there.
+	return server.run_playbook(
+		"exporters.yml",
+		project="Monitoring Agent",
 		extravars={"monitoring_has_gpu": bool(machine.gpus)},
 	)
 
