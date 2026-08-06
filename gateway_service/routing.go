@@ -8,7 +8,11 @@ type Route struct {
 	Healthy     bool    `json:"healthy"`
 	Region      string  `json:"region"`
 	Load        float64 `json:"load"`
-	Server      string  `json:"server"` // inference-server / pod id — the request-id's target part
+	// Model Deployment / pod id — which placement this is, and the request-id's target part.
+	// One box can serve the same model from two deployments, so Server alone names neither.
+	// Empty on a route pushed before this field existed; buildRequestID falls back.
+	Deployment string `json:"deployment"`
+	Server     string `json:"server"` // inference-server / pod id — which box it is on
 }
 
 // pickRoute implements Tier-1 selection with session stickiness (§6 jobs 5-6):

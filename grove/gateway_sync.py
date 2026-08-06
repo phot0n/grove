@@ -109,7 +109,10 @@ def _routes_for_proxy(proxy_name):
 				"engine_url": d.engine_url,
 				"internal_key": internal_key,
 				"healthy": True,
-				"server": d.inference_server or d.name,  # request-id target part
+				# Which placement was chosen (request-id target part, access-log deployment=).
+				# A box can serve the same model twice, so the server alone cannot name an engine.
+				"deployment": d.name,
+				"server": d.inference_server or d.name,  # which box it is on
 			})
 
 	# Standalone serving Pods (a vLLM image serving the Model directly — no Model Deployment)
@@ -125,7 +128,10 @@ def _routes_for_proxy(proxy_name):
 			"engine_url": p.engine_url,
 			"internal_key": internal_key,
 			"healthy": True,
-			"server": p.name,  # request-id target part
+			# A pod IS its own placement — it carries no separate deployment doc, so both
+			# fields are the pod. Kept explicit so consumers never special-case a pod route.
+			"deployment": p.name,
+			"server": p.name,
 		})
 	return routes
 

@@ -66,3 +66,25 @@ func TestPickRouteEmpty(t *testing.T) {
 		t.Fatal("expected ok=false for empty routes")
 	}
 }
+
+func TestPickRouteCarriesTheDeployment(t *testing.T) {
+	// Two deployments of one model on one box: identical Server, so only Deployment tells them
+	// apart — which is why the request id and the access line are built from it.
+	//
+	// Both carry Load 0, which is what EVERY real route has: gateway_sync emits no `load` key and
+	// nothing else writes one, so the least-loaded comparison is inert and healthy[0] always wins.
+	// The tests above use loads that only ever appear in a test.
+	routes := []Route{
+		{EngineURL: "https://box/e/md-00007", Deployment: "MD-00007", Server: "inf-a", Healthy: true},
+		{EngineURL: "https://box/e/md-00008", Deployment: "MD-00008", Server: "inf-a", Healthy: true},
+	}
+	r, ok := pickRoute(routes, "")
+	if !ok || r.Deployment != "MD-00007" {
+		t.Fatalf("want the first healthy route, got %q ok=%v", r.Deployment, ok)
+	}
+	// A session pinned to the second one reaches it — today the only way it sees traffic at all.
+	r, ok = pickRoute(routes, "https://box/e/md-00008")
+	if !ok || r.Deployment != "MD-00008" {
+		t.Fatalf("want the sticky deployment, got %q ok=%v", r.Deployment, ok)
+	}
+}

@@ -87,7 +87,10 @@ type decideResp struct {
 	MeterID     string `json:"meter_id,omitempty"` // = sha256(secret); Lua echoes it to /meter
 	Prefix      string `json:"prefix,omitempty"`
 	Session     string `json:"session,omitempty"`
-	RequestID   string `json:"request_id,omitempty"` // gr-<gateway>-<server>-<keyprefix>-<rand>
+	// Which placement was picked. Lua puts it on the access line, because the engine proxy made
+	// $upstream_addr the box's :443 for every engine on it.
+	Deployment string `json:"deployment,omitempty"`
+	RequestID  string `json:"request_id,omitempty"` // gr-<gateway>-<deployment>-<keyprefix>-<rand>
 	// Never omitempty: Lua stamps this on every admitted body, and a missing 0 would let a
 	// client's own `priority` stand and elevate itself.
 	Priority int `json:"priority"`
@@ -151,23 +154,31 @@ func (s *server) handleDecide(w http.ResponseWriter, r *http.Request) {
 		MeterID:     meterID,
 		Prefix:      rec.KeyPrefix,
 		Session:     session,
+		Deployment:  route.Deployment,
 		RequestID:   s.buildRequestID(route, rec.KeyPrefix),
 		Priority:    rec.Priority,
 	})
 }
 
 // buildRequestID stamps a traceable id on every admitted request:
-// gr-<gateway>-<inference server>-<key prefix>-<random>. The key prefix is the API Key's
-// unique doc name (already unique per key); the random tail makes each request unique. Parts
-// are sanitized so the only '-' is the separator. Server falls back to a short hash of the
-// engine URL for legacy routes pushed without a server id.
+// gr-<gateway>-<deployment>-<key prefix>-<random>. The key prefix is the API Key's unique doc
+// name (already unique per key); the random tail makes each request unique. Parts are sanitized
+// so the only '-' is the separator.
+//
+// The target is the Model Deployment, not the box: a box can serve one model from two
+// deployments, and naming the box makes those two requests indistinguishable. Falls back to the
+// server for routes pushed before the deployment field existed, then to a short hash of the
+// engine URL — each tier a strictly worse name, none of them wrong.
 func (s *server) buildRequestID(route Route, keyPrefix string) string {
-	srv := route.Server
-	if srv == "" {
-		srv = sha256hex(route.EngineURL)[:8]
+	target := route.Deployment
+	if target == "" {
+		target = route.Server
+	}
+	if target == "" {
+		target = sha256hex(route.EngineURL)[:8]
 	}
 	return fmt.Sprintf("gr-%s-%s-%s-%s",
-		cleanIDPart(s.gatewayID), cleanIDPart(srv), cleanIDPart(keyPrefix), randHex(6))
+		cleanIDPart(s.gatewayID), cleanIDPart(target), cleanIDPart(keyPrefix), randHex(16))
 }
 
 // ---- /meter --------------------------------------------------------------

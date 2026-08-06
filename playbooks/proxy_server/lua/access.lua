@@ -101,6 +101,12 @@ if d.request_id and d.request_id ~= "" then
 	ngx.var.grove_request_id = d.request_id            -- access-log rid=
 end
 
+-- Which placement served this. $upstream_addr no longer answers that: every engine on a box is
+-- reached through the box's engine proxy, so it reads <ip>:443 whichever container replied.
+if d.deployment and d.deployment ~= "" then
+	ngx.var.grove_deployment = d.deployment
+end
+
 -- Queueing rank, from the caller's Grove User Group and never from the caller: stamped
 -- unconditionally so a client-supplied `priority` cannot elevate itself. Grove already
 -- flipped the sign, so this is vLLM's convention (lowest served first) and 0 is the
