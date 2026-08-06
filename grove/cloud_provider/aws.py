@@ -24,6 +24,11 @@ INSTANCE_STATUS = {
 	"terminated": "Terminated",
 }
 
+# AWS spells x86 its own way. Everywhere else in Grove — Engine Image manifests, monitoring_arch
+# in the playbooks, Docker's own platform strings — it is amd64, and these values are compared
+# against those. arm64 is spelled the same on both sides.
+ARCHITECTURE = {"x86_64": "amd64"}
+
 
 class AWSError(CloudClientError):
 	"""Carries AWS's own error code, so a caller can tell "the instance is gone"
@@ -66,6 +71,19 @@ def parse_gpus(instance_type_info):
 				"gpu_uuid": "",
 			})
 	return gpus
+
+
+def normalize_architecture(aws_architecture):
+	"""An AWS architecture name → Grove's own. Anything AWS adds passes through unmapped rather
+	than becoming a wrong answer; a blank stays blank, which is how an on-prem box reads."""
+	return ARCHITECTURE.get(aws_architecture, aws_architecture or "")
+
+
+def parse_architecture(instance_type_info):
+	"""describe_instance_types → the one architecture this type runs. AWS returns a list because
+	a few old types booted either 32- or 64-bit; every current one names exactly one."""
+	architectures = (instance_type_info.get("ProcessorInfo") or {}).get("SupportedArchitectures") or []
+	return normalize_architecture(architectures[0] if architectures else "")
 
 
 def machine_status(ec2_state):
@@ -138,7 +156,7 @@ class EC2Client(CloudClient):
 			"MinCount": 1,
 			"MaxCount": 1,
 			"BlockDeviceMappings": [{
-				"DeviceName": self.get_root_device_name(image_id),
+				"DeviceName": self.get_image_info(image_id)["root_device_name"],
 				"Ebs": {"VolumeSize": int(root_volume_gb), "VolumeType": "gp3",
 						"DeleteOnTermination": True},
 			}],
@@ -156,13 +174,20 @@ class EC2Client(CloudClient):
 			raise AWSError(f"RunInstances returned no instance for {name}")
 		return self._parse_instance(instances[0])
 
-	def get_root_device_name(self, ami_id):
-		"""The AMI's own root device (/dev/sda1 on most Ubuntu images, /dev/xvda on some).
-		BlockDeviceMappings only resizes the root volume if it names the same device."""
+	def get_image_info(self, ami_id):
+		"""What launching from this AMI needs to agree with: {root_device_name, cpu_architecture}.
+
+		BlockDeviceMappings only resizes the root volume if it names the AMI's own root device
+		(/dev/sda1 on most Ubuntu images, /dev/xvda on some). The architecture is what an arm64
+		instance type has to be checked against — an AMI built for the other one launches without
+		complaint and then never boots."""
 		images = self._call(self.ec2.describe_images, ImageIds=[ami_id]).get("Images") or []
 		if not images:
 			raise AWSError(f"AMI {ami_id} not found in {self.region}")
-		return images[0].get("RootDeviceName") or "/dev/sda1"
+		return {
+			"root_device_name": images[0].get("RootDeviceName") or "/dev/sda1",
+			"cpu_architecture": normalize_architecture(images[0].get("Architecture")),
+		}
 
 	def get_instance(self, instance_id):
 		"""Fetch one instance → parsed (status, public_ip, private_ip, instance_type, image_id,
@@ -176,27 +201,60 @@ class EC2Client(CloudClient):
 		raise AWSError(f"Instance {instance_id} not found")
 
 	def get_instance_type_info(self, instance_type):
-		"""This instance type's local storage and GPUs, already in Grove's own shape — a
-		single describe_instance_types call carries both."""
+		"""This instance type's local storage, GPUs, architecture and whether it is bare metal,
+		already in Grove's own shape — one describe_instance_types call carries all four."""
 		types = self._call(
 			self.ec2.describe_instance_types, InstanceTypes=[instance_type]
 		).get("InstanceTypes") or []
 		if not types:
 			raise AWSError(f"Instance type {instance_type} not available in {self.region}")
 		info = types[0]
-		return {"instance_store": parse_instance_store(info), "gpus": parse_gpus(info)}
+		return {
+			"instance_store": parse_instance_store(info),
+			"gpus": parse_gpus(info),
+			"is_bare_metal": bool(info.get("BareMetal")),
+			"cpu_architecture": parse_architecture(info),
+		}
 
-	def poll_instance_ready(self, instance_id, timeout_sec=300, poll_interval_sec=5):
-		"""Poll until the instance is running and has a public IP, so Ansible can connect."""
+	def poll_instance_ready(self, instance_id, timeout_sec=900, poll_interval_sec=10):
+		"""Poll until the instance is reachable: running, addressed, and past both of EC2's own
+		status checks.
+
+		Running is not reachable. A bare metal instance reports running with a public IP about a
+		minute in and then spends another ten to twenty in firmware POST with nothing listening —
+		returning on the state alone hands Ansible a box that refuses the connection. Every
+		instance has the same gap; metal only makes it wide enough to always lose."""
 		start = time.time()
 		while time.time() - start < timeout_sec:
 			instance = self.get_instance(instance_id)
-			if instance["_ec2_state"] == "running" and instance["public_ip"]:
-				return instance
 			if instance["_ec2_state"] in ("terminated", "shutting-down"):
 				raise AWSError(f"Instance {instance_id} went {instance['_ec2_state']} while starting")
+			if (
+				instance["_ec2_state"] == "running"
+				and instance["public_ip"]
+				and self.is_instance_reachable(instance_id)
+			):
+				return instance
 			time.sleep(poll_interval_sec)
 		raise AWSError(f"Instance {instance_id} was not reachable within {timeout_sec}s")
+
+	def is_instance_reachable(self, instance_id):
+		"""Whether EC2 reports both of an instance's status checks passing — the system one for
+		the host under it, the instance one for the box itself.
+
+		IncludeAllInstances is load-bearing: without it the response silently omits any instance
+		that is not already running, and an empty list would be indistinguishable from an answer."""
+		statuses = self._call(
+			self.ec2.describe_instance_status,
+			InstanceIds=[instance_id],
+			IncludeAllInstances=True,
+		).get("InstanceStatuses") or []
+		if not statuses:
+			return False
+		return all(
+			(statuses[0].get(check) or {}).get("Status") == "ok"
+			for check in ("SystemStatus", "InstanceStatus")
+		)
 
 	def allocate_static_ip(self, instance_id):
 		"""Allocate an Elastic IP and put it on the instance. Returns {public_ip, allocation_id}

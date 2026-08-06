@@ -112,7 +112,8 @@ class InferenceServer(AnsibleHost, Document):
 			self.name,
 			"provision",
 			queue="long",
-			timeout=3600,
+			# Has to outlast the driver reboot, which is half an hour on a bare metal box.
+			timeout=5400,
 		)
 		frappe.msgprint(f"Provisioning {self.name} — watch its Ansible Plays.")
 
@@ -126,11 +127,14 @@ class InferenceServer(AnsibleHost, Document):
 		frappe.db.set_value("Inference Server", self.name, "status", "Installing")
 		frappe.db.commit()
 
+		is_bare_metal = frappe.db.get_value("Machine", self.machine, "is_bare_metal")
 		play_name, rc = self.run_playbook(
 			"provision.yml",
 			extravars={
 				"gpu_data_mount": self.data_path,
 				"monitoring_has_gpu": bool(self.gpus),
+				# The driver reboot outlasts Ansible's default on a bare metal box.
+				"gpu_reboot_timeout": 1800 if is_bare_metal else 600,
 			},
 		)
 

@@ -132,19 +132,40 @@ class Machine(AnsibleHost, Document):
 			else network.inference_security_group_id_list
 		)
 
+	@property
+	def boot_timeout_sec(self):
+		"""How long this box may take to become reachable. A bare metal instance POSTs real
+		firmware before anything listens, on a launch and on every start after one."""
+		return 2400 if self.is_bare_metal else 900
+
 	@frappe.whitelist()
 	def provision(self):
-		"""Button: launch this box on EC2. The client is built here, so bad credentials or a
-		missing region fail on the button rather than inside a job."""
+		"""Button: launch this box on EC2. Everything that can be checked without a running
+		instance is checked here — credentials, region, image, security groups, and the instance
+		type — so a typo fails on the button rather than after AWS has started billing."""
 		if self.instance_id:
 			frappe.throw(f"Machine {self.name} already has instance {self.instance_id}.")
 		if not (self.instance_type and self.root_volume_gb):
 			frappe.throw("Set an Instance Type and a Root Volume (GB) before provisioning.")
-		self.cloud_client
-		self.resolved_machine_image
+		client = self.cloud_client
 		self.get_security_group_ids(self.network_doc)
-		frappe.enqueue_doc(self.doctype, self.name, "launch", queue="long", timeout=1800)
+		self.sync_instance_type(client)
+		self.validate_image_architecture(client)
+		frappe.enqueue_doc(self.doctype, self.name, "launch", queue="long", timeout=3000)
 		frappe.msgprint(f"Provisioning {self.name} — reload when it reports Active.")
+
+	def validate_image_architecture(self, client):
+		"""Refuse an AMI built for a different architecture than the instance type runs. AWS
+		accepts the launch and the box then never boots — there is no console to read and no
+		status check that ever passes, only a twenty-minute wait ending in a timeout."""
+		image = self.resolved_machine_image
+		image_architecture = client.get_image_info(image)["cpu_architecture"]
+		if self.cpu_architecture and image_architecture != self.cpu_architecture:
+			frappe.throw(
+				f"AMI {image} is {image_architecture}, but {self.instance_type} runs "
+				f"{self.cpu_architecture}. Set a {self.cpu_architecture} Machine Image on "
+				f"{self.name}, or on its Network."
+			)
 
 	def launch(self):
 		"""Job: run the instance, wait for it to be reachable, then record what AWS gave back
@@ -164,13 +185,17 @@ class Machine(AnsibleHost, Document):
 				root_volume_gb=self.root_volume_gb,
 				ssh_public_keys=injected_public_keys(),
 			)
-		except Exception:
+		except Exception as e:
+			# On the doc, not only in the job's Error Log: InsufficientInstanceCapacity is the
+			# ordinary answer for a GPU type, and an operator watching this snap back to Pending
+			# has nothing else to read.
+			self.add_comment("Comment", f"Provision failed: {e}")
 			self.db_set("status", "Pending", commit=True)
 			raise
 		# Committed before the poll: a timeout further down must not roll this back and leave
 		# a billed instance that Grove has no record of.
 		self.db_set("instance_id", instance["instance_id"], commit=True)
-		ready = client.poll_instance_ready(instance["instance_id"])
+		ready = client.poll_instance_ready(instance["instance_id"], timeout_sec=self.boot_timeout_sec)
 		self.db_set({
 			"public_ip": ready["public_ip"],
 			"private_ip": ready["private_ip"],
@@ -256,14 +281,23 @@ class Machine(AnsibleHost, Document):
 				frappe.db.set_value(doctype, name, "status", dependent_status)
 
 	def sync_instance_type(self, client):
-		"""Record what this instance type ships: its ephemeral local NVMe (which Grove leaves
-		unmounted) and its GPUs. The GPU table is only seeded when EMPTY — a scanned table is
-		nvidia-smi's answer and is never overwritten by the provider's coarser one."""
+		"""Record what this instance type is and ships: its architecture, whether it is bare
+		metal, its ephemeral local NVMe (which Grove leaves unmounted) and its GPUs. Runs at
+		preflight as well as after launch — it reads the type, never the instance — so the
+		architecture and the boot timeout are known before anything needs them.
+
+		The GPU table is only seeded when EMPTY — a scanned table is nvidia-smi's answer and is
+		never overwritten by the provider's coarser one."""
 		if not self.instance_type:
 			return
 		info = client.get_instance_type_info(self.instance_type)
 		store = info["instance_store"]
-		self.db_set({"instance_store_disks": store["disks"], "instance_store_gb": store["total_gb"]})
+		self.db_set({
+			"cpu_architecture": info["cpu_architecture"],
+			"is_bare_metal": int(info["is_bare_metal"]),
+			"instance_store_disks": store["disks"],
+			"instance_store_gb": store["total_gb"],
+		})
 		if self.gpus:
 			return
 		for gpu in info["gpus"]:
@@ -287,14 +321,15 @@ class Machine(AnsibleHost, Document):
 		the new one rather than leaving the old, now-wrong address on the doc."""
 		self.require_instance()
 		self.cloud_client
-		frappe.enqueue_doc(self.doctype, self.name, "resume", queue="long", timeout=900)
+		frappe.enqueue_doc(self.doctype, self.name, "resume", queue="long", timeout=3000)
 		frappe.msgprint(f"Starting {self.name} — reload when it reports Active.")
 
 	def resume(self):
-		"""Job: start the instance and record the address AWS gives it this time."""
+		"""Job: start the instance and record the address AWS gives it this time. A start costs
+		the same firmware POST a launch does, so it waits as long."""
 		client = self.cloud_client
 		client.start_instance(self.instance_id)
-		ready = client.poll_instance_ready(self.instance_id)
+		ready = client.poll_instance_ready(self.instance_id, timeout_sec=self.boot_timeout_sec)
 		self.db_set({
 			"public_ip": ready["public_ip"],
 			"private_ip": ready["private_ip"],

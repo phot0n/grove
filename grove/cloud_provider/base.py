@@ -40,11 +40,21 @@ class CloudClient(ABC):
 	@abstractmethod
 	def get_instance_type_info(self, instance_type):
 		"""This instance type's facts, already in Grove's own shape:
-		{instance_store: {disks, total_gb}, gpus: [{gpu_index, gpu_model, vram_gb, gpu_uuid}]}."""
+		{instance_store: {disks, total_gb}, gpus: [{gpu_index, gpu_model, vram_gb, gpu_uuid}],
+		is_bare_metal: bool, cpu_architecture: 'amd64' | 'arm64'}. The architecture is in Docker's
+		vocabulary, not the provider's, because that is what an Engine Image is matched against."""
 
 	@abstractmethod
-	def poll_instance_ready(self, instance_id, timeout_sec=300, poll_interval_sec=5):
-		"""Poll until the instance is running and reachable."""
+	def get_image_info(self, image_id):
+		"""What launching from this machine image has to agree with: {root_device_name,
+		cpu_architecture}."""
+
+	@abstractmethod
+	def poll_instance_ready(self, instance_id, timeout_sec=900, poll_interval_sec=10):
+		"""Poll until the instance is reachable — not merely running. A provider reports an
+		instance running well before its OS answers, and on a bare metal box that gap is twenty
+		minutes wide, so an implementation must wait for whatever readiness signal it has rather
+		than for the state to flip."""
 
 	@abstractmethod
 	def resize_root_volume(self, instance_id, size_gb, timeout_sec=600, poll_interval_sec=10):

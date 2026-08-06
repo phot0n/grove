@@ -8,6 +8,7 @@
  "field_order": [
   "image_provider",
   "image_path",
+  "cpu_architecture",
   "full_image",
   "size_gb"
  ],
@@ -28,6 +29,16 @@
    "reqd": 1,
    "in_list_view": 1,
    "description": "Repository path and tag within the registry, e.g. 'vllm/vllm-openai:v0.11.0'. The registry host is prefixed automatically."
+  },
+  {
+   "fieldname": "cpu_architecture",
+   "fieldtype": "Select",
+   "label": "CPU Architecture",
+   "options": "amd64\narm64",
+   "default": "amd64",
+   "reqd": 1,
+   "in_list_view": 1,
+   "description": "Architecture this image is built for. Matched against the box's at deployment, and used to pick the right entry out of a multi-arch tag when reading the size."
   },
   {
    "fieldname": "full_image",

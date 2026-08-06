@@ -76,11 +76,28 @@ class ModelDeployment(Document):
 				f"Engine Image cannot change after deployment (this one is {self.status}). "
 				"Create a new Model Deployment to serve from a different image."
 			)
+		self._validate_engine_architecture()
 		for row in self.env or []:
 			if not is_env_key(row.key):
 				frappe.throw(f"'{row.key}' is not a valid environment variable name.")
 			if not is_env_value(row.value):
 				frappe.throw(f"Value for '{row.key}' cannot contain a newline or a double quote.")
+
+	def _validate_engine_architecture(self):
+		"""The image and the box it runs on have to be the same architecture. Docker pulls the
+		wrong one happily and fails at exec, deep inside a play, with nothing that names the
+		cause. A box with no architecture recorded is on-prem — nothing to check it against."""
+		machine = frappe.db.get_value("Inference Server", self.inference_server, "machine")
+		box_architecture = frappe.db.get_value("Machine", machine, "cpu_architecture") if machine else None
+		if not box_architecture:
+			return
+		image_architecture = frappe.db.get_value("Engine Image", self.engine_image, "cpu_architecture")
+		if image_architecture != box_architecture:
+			frappe.throw(
+				f"Engine Image {self.engine_image} is {image_architecture}, but "
+				f"{self.inference_server} runs on {box_architecture}. Pick an "
+				f"{box_architecture} image."
+			)
 
 	# ── GPU pinning ───────────────────────────────────────────────────────────
 	# The box's cards come from its Inference Server. A deployment names the CUDA indices it
