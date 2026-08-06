@@ -519,8 +519,9 @@ def reconfigure_deployment(model_deployment):
 	runs (identical to a full serve minus the download), just faster. The image pull is
 	not heavy, so a moved tag lands here too. Assumes the box is provisioned and the
 	weights are already in its shared cache.
-	Restarts the engine → drops in-flight requests, so it's button-triggered, not
-	automatic."""
+	Replaces the engine container when the rendered config actually moved → drops in-flight
+	requests, so it's button-triggered, not automatic. The deployment stays Active for the run;
+	see the note below the extra-vars."""
 	md = frappe.get_doc("Model Deployment", model_deployment)
 	m = frappe.get_doc("Model", md.model)
 	inf = md.server
@@ -536,9 +537,16 @@ def reconfigure_deployment(model_deployment):
 
 	extravars = _vllm_extravars(md, m, inf, key)
 
-	frappe.db.set_value("Model Deployment", md.name, "status", "Provisioning")
-	frappe.db.commit()
-
+	# Status is deliberately NOT moved to Provisioning here, unlike deploy_model.
+	#
+	# It is read as "is this engine serving?" — _routes_for_proxy only routes Active — and the
+	# scheduler pushes the full route table every 2 minutes. Flipping it for the duration of the
+	# play therefore takes the model out of the gateway for MINUTES, and this play usually does
+	# not stop the engine at all: the container is replaced only when the run script or env file
+	# renders differently, so a re-run that changes nothing leaves it serving throughout. Paying a
+	# guaranteed multi-minute outage to cover a restart that is seconds long and often does not
+	# happen is the wrong trade. A run that does replace the container has a gap no route table
+	# could have hidden anyway.
 	play_name, rc = inf.run_playbook(
 		"serve.yml",
 		extravars=extravars,

@@ -153,11 +153,18 @@ def engine_targets(agent):
 	return [entry for entry in entries if entry]
 
 
+# A box that still exists is worth scraping whatever state it is in — Broken most of all, since
+# its metrics are how you find out why. Terminated is the one status that means the machine is
+# gone, so a target for it can only ever be down, and a permanently-down target is worse than no
+# target: it reads exactly like a box that just died.
+_GONE_STATUS = "Terminated"
+
+
 def inference_boxes(agent):
 	"""Inference Servers this agent scrapes, as plain rows: name, box, address, GPUs."""
 	servers = frappe.get_all(
 		"Inference Server",
-		filters={"monitoring_agent": agent},
+		filters={"monitoring_agent": agent, "status": ("!=", _GONE_STATUS)},
 		fields=["name", "machine", "machine_ip as ip", "region"],
 	)
 	return _with_gpu_flag(servers)
@@ -167,7 +174,7 @@ def proxy_boxes(agent):
 	"""Proxy Servers this agent scrapes. Never GPU boxes — no DCGM target for them."""
 	servers = frappe.get_all(
 		"Proxy Server",
-		filters={"monitoring_agent": agent},
+		filters={"monitoring_agent": agent, "status": ("!=", _GONE_STATUS)},
 		fields=["name", "machine", "public_ip as ip", "region"],
 	)
 	return [{**server, "has_gpu": False} for server in servers]

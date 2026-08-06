@@ -13,7 +13,10 @@ from grove.grove.doctype.model_deployment.model_deployment import (
 	ENGINE_PORT_BASE,
 	ModelDeployment,
 	_engine_env,
+	reconfigure_deployment,
 )
+
+MODULE = "grove.grove.doctype.model_deployment.model_deployment"
 
 
 def deployment(env=None, attention_backend="auto", allow_long_max_model_len=0):
@@ -169,6 +172,63 @@ class TestGpuInventory(unittest.TestCase):
 		card = SimpleNamespace(gpu_index=0, gpu_model="H100", vram_gb=80)
 		with self.assertRaises(frappe.ValidationError):
 			self.fill(3, [card])
+
+
+class TestReconfigureKeepsTheModelRoutable(unittest.TestCase):
+	"""Update Engine Config must not take the model out of the gateway while it runs.
+
+	`status` is read as "is this engine serving?" — `_routes_for_proxy` routes only Active — and
+	the scheduler pushes the WHOLE route table every two minutes. So a status written before the
+	play is a guaranteed multi-minute outage, for a run that replaces the container only when the
+	rendered config actually moved. This cost a live 503 on qwen3.5-4b once; the test is here so
+	it cannot come back quietly."""
+
+	def writes_during(self, rc):
+		"""Every db.set_value payload a reconfigure emits, in order."""
+		md = SimpleNamespace(
+			name="MD-00007",
+			model="qwen3.5-4b",
+			derived_engine_url="https://10.0.0.9/e/md-00007",
+			get_password=lambda *args, **kwargs: "internal-key",
+			server=SimpleNamespace(
+				name="INF-1",
+				is_provisioned=1,
+				run_playbook=lambda *args, **kwargs: ("PLAY-1", rc),
+			),
+		)
+		written = []
+
+		def set_value(doctype, name, values, value=None):
+			# Accepts both shapes frappe supports — a dict, or a field/value pair. The pair form
+			# is how the removed Provisioning write was made, so this records it as a plain
+			# failure of the assertions below instead of a TypeError.
+			written.append({values: value} if isinstance(values, str) else values)
+
+		db = SimpleNamespace(set_value=set_value, commit=lambda: None)
+		with (
+			patch.object(frappe, "get_doc", lambda doctype, name=None: md),
+			patch.object(frappe, "db", db),
+			patch(f"{MODULE}._vllm_extravars", return_value={}),
+		):
+			reconfigure_deployment("MD-00007")
+		return written
+
+	def test_nothing_is_written_before_the_play(self):
+		# One write, and it is the post-play one. A second, earlier write is the bug.
+		self.assertEqual(len(self.writes_during(rc=0)), 1)
+
+	def test_the_deployment_never_leaves_active_on_a_good_run(self):
+		self.assertNotIn("Provisioning", str(self.writes_during(rc=0)))
+
+	def test_a_good_run_lands_active_with_the_migrated_url(self):
+		[final] = self.writes_during(rc=0)
+		self.assertEqual(final["status"], "Active")
+		self.assertEqual(final["engine_url"], "https://10.0.0.9/e/md-00007")
+
+	def test_a_failed_run_is_broken_and_leaves_the_url_alone(self):
+		# A play that failed may not have written the box's nginx location, so the URL must not
+		# move — the gateway would forward to a route that is not there.
+		self.assertEqual(self.writes_during(rc=2), [{"status": "Broken"}])
 
 
 if __name__ == "__main__":
