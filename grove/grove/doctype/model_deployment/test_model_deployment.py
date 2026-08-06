@@ -137,5 +137,39 @@ class TestGpuClaims(unittest.TestCase):
 		self.assertTrue(self.claim(1, [{"name": "md-a", "status": "Active", "gpu_index": 0}]))
 
 
+class TestGpuInventory(unittest.TestCase):
+	"""Pinned GPUs are checked and their display columns filled from the Inference Server's
+	inventory — a deployment never reads a Machine itself."""
+
+	def fill(self, gpu_index, on_box):
+		"""The deployment's GPU row after validation against the box's cards."""
+		row = SimpleNamespace(gpu_index=gpu_index, gpu_model=None, vram_gb=None)
+		doc = SimpleNamespace(
+			inference_server="box",
+			gpus=[row],
+			server=SimpleNamespace(gpus=on_box),
+			reject_claimed_gpus=lambda: None,
+			tensor_parallel_size=0,
+		)
+		serve = SimpleNamespace(placement_errors=[], tensor_parallel_size=1)
+		with patch(
+			"grove.grove.doctype.model_deployment.model_deployment.ServeCommand.for_deployment",
+			return_value=serve,
+		):
+			with patch.object(frappe, "throw", side_effect=frappe.ValidationError):
+				ModelDeployment._validate_gpus(doc)
+		return row
+
+	def test_display_columns_come_from_the_box(self):
+		card = SimpleNamespace(gpu_index=1, gpu_model="H100", vram_gb=80)
+		row = self.fill(1, [SimpleNamespace(gpu_index=0, gpu_model="H100", vram_gb=80), card])
+		self.assertEqual((row.gpu_model, row.vram_gb), ("H100", 80))
+
+	def test_a_gpu_the_box_does_not_have_is_refused(self):
+		card = SimpleNamespace(gpu_index=0, gpu_model="H100", vram_gb=80)
+		with self.assertRaises(frappe.ValidationError):
+			self.fill(3, [card])
+
+
 if __name__ == "__main__":
 	unittest.main()

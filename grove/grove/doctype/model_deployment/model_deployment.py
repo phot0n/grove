@@ -7,8 +7,7 @@ import secrets
 import frappe
 from frappe.model.document import Document
 
-from grove.ansible import Ansible
-from grove.utils import ansible_project_dir, is_env_key, is_env_value
+from grove.utils import is_env_key, is_env_value
 from grove.serve_command import ServeCommand
 
 
@@ -84,37 +83,21 @@ class ModelDeployment(Document):
 				frappe.throw(f"Value for '{row.key}' cannot contain a newline or a double quote.")
 
 	# ── GPU pinning ───────────────────────────────────────────────────────────
-	# GPUs live as child rows on the box's Machine (Machine GPU). A deployment names the
-	# CUDA indices it wants (self.gpus); validate() checks they exist and fills the display
-	# columns. No GPU rows → single-GPU, unpinned (back-compat). No cross-deployment
-	# allocation tracking — the operator assigns indices deliberately.
+	# The box's cards come from its Inference Server. A deployment names the CUDA indices it
+	# wants (self.gpus); validate() checks they exist and fills the display columns. No GPU
+	# rows → single-GPU, unpinned (back-compat). No cross-deployment allocation tracking —
+	# the operator assigns indices deliberately.
 
 	@property
 	def gpu_vram_gb(self):
 		"""VRAM per pinned GPU, taken as the smallest of them — a mixed box is capped by its
-		smallest card. None until the Machine GPU rows carry a VRAM figure."""
+		smallest card. None until the box's GPU inventory carries a VRAM figure."""
 		sizes = [row.vram_gb for row in self.gpus or [] if row.vram_gb]
 		return min(sizes) if sizes else None
 
-	def _machine(self):
-		"""The Machine backing this deployment's Inference Server (or None)."""
-		if not self.inference_server:
-			return None
-		return frappe.db.get_value("Inference Server", self.inference_server, "machine")
-
-	def _machine_gpu(self, machine, gpu_index):
-		"""The Machine GPU child row for (machine, CUDA index), or None."""
-		rows = frappe.get_all(
-			"Machine GPU",
-			filters={"parent": machine, "parenttype": "Machine", "gpu_index": gpu_index},
-			fields=["name", "gpu_model", "vram_gb"],
-			limit=1,
-		)
-		return rows[0] if rows else None
-
 	def _validate_gpus(self):
 		"""Derive tensor_parallel_size, reject duplicate/unknown GPUs, and fill each row's
-		display columns from its Machine GPU."""
+		display columns from the box's GPU inventory."""
 		seen = set()
 		for r in self.gpus or []:
 			if r.gpu_index in seen:
@@ -123,13 +106,17 @@ class ModelDeployment(Document):
 
 		# Fill the display columns first — the placement check reads vram_gb off these rows.
 		# No box yet → the reqd check on inference_server flags it; the split is still checked.
-		if machine := self._machine():
-			for r in self.gpus or []:
-				row = self._machine_gpu(machine, r.gpu_index)
-				if not row:
-					frappe.throw(f"Machine {machine} has no GPU with CUDA index {r.gpu_index}.")
-				r.gpu_model = row.gpu_model
-				r.vram_gb = row.vram_gb
+		if self.gpus and self.inference_server:
+			on_box = {int(gpu.gpu_index): gpu for gpu in self.server.gpus}
+			for r in self.gpus:
+				gpu = on_box.get(int(r.gpu_index))
+				if not gpu:
+					frappe.throw(
+						f"Inference Server {self.inference_server} has no GPU with CUDA "
+						f"index {r.gpu_index}."
+					)
+				r.gpu_model = gpu.gpu_model
+				r.vram_gb = gpu.vram_gb
 
 		self.reject_claimed_gpus()
 
@@ -239,7 +226,7 @@ class ModelDeployment(Document):
 	@frappe.whitelist()
 	def setup(self):
 		"""Button: (re)serve this deployment's model on its Inference Server via
-		the deploy/vllm role (args from the Model launch profile ⊕ this doc), then
+		the playbooks/inference_server vllm role (args from the Model launch profile ⊕ this doc), then
 		wire the gateway route."""
 		frappe.enqueue(
 			"grove.grove.doctype.model_deployment.model_deployment.deploy_model",
@@ -279,16 +266,16 @@ class ModelDeployment(Document):
 		"""Run docker start/stop and set the status from what the container actually does
 		afterwards — run_command reports output, not an exit code, so the state is read back
 		rather than assumed."""
-		machine = self.machine
+		server = self.server
 		action = "start" if running else "stop"
 		# `docker stop` waits out the engine's SIGTERM grace before it kills it.
-		output = machine.run_command(["docker", action, self.container_name], timeout=120)
-		state = machine.run_command(
+		output = server.run_command(["docker", action, self.container_name], timeout=120)
+		state = server.run_command(
 			["docker", "inspect", "--format", "{{.State.Running}}", self.container_name]
 		)
 		if state != str(running).lower():
 			frappe.throw(
-				f"{self.container_name} on {machine.name} did not {action} — docker said "
+				f"{self.container_name} on {server.name} did not {action} — docker said "
 				f"'{output or state}'. Deploy to recreate it if it is gone."
 			)
 		self.db_set("status", "Active" if running else "Inactive")
@@ -316,12 +303,11 @@ class ModelDeployment(Document):
 		return f"vllm-{_instance_slug(self.name)}"
 
 	@property
-	def machine(self):
-		"""The box this deployment's engine runs on, via its Inference Server."""
-		machine = frappe.db.get_value("Inference Server", self.inference_server, "machine")
-		if not machine:
-			frappe.throw(f"{self.inference_server} has no Machine to reach.")
-		return frappe.get_doc("Machine", machine)
+	def server(self):
+		"""The Inference Server this deployment runs on — its only route to the box."""
+		if not self.inference_server:
+			frappe.throw(f"Model Deployment {self.name} has no Inference Server.")
+		return frappe.get_doc("Inference Server", self.inference_server)
 
 	@frappe.whitelist()
 	def get_engine_logs(self, lines: int = 200):
@@ -329,7 +315,7 @@ class ModelDeployment(Document):
 		explains itself: the Ansible Play only says the health gate timed out, the engine says
 		why it never came up. Read-only and not stored on the doc; a crash-looping container's
 		log is the whole point and it changes every few seconds."""
-		return self.machine.run_command(
+		return self.server.run_command(
 			["docker", "logs", "--tail", str(_log_lines(lines)), self.container_name]
 		)
 
@@ -341,7 +327,7 @@ class ModelDeployment(Document):
 		stream."""
 		from grove import log_relay
 
-		self.machine  # resolved here so a missing box fails on the button, not in a worker
+		self.server  # resolved here so a missing box fails on the button, not in a worker
 		log_relay.keep_alive(self.doctype, self.name)
 		frappe.enqueue(
 			"grove.grove.doctype.model_deployment.model_deployment.stream_engine_logs",
@@ -363,7 +349,7 @@ def stream_engine_logs(model_deployment):
 
 	md = frappe.get_doc("Model Deployment", model_deployment)
 	command = ["docker", "logs", "--follow", "--tail", str(_log_lines(md.log_lines)), md.container_name]
-	log_relay.relay(md.machine.stream_command(command), md.doctype, md.name)
+	log_relay.relay(md.server.stream_command(command), md.doctype, md.name)
 
 
 def _log_lines(lines):
@@ -423,11 +409,15 @@ def _vllm_extravars(md, m, inf, key):
 		"vllm_hf_home": f"{vllm_home}/hf",
 		"vllm_cache_dir": f"{vllm_home}/cache",
 		"vllm_predownload_model": True,
+		# What the role checks the box's free space against, before either download starts.
+		# 0 means the figure was never fetched, which the role reads as "cannot check".
+		"vllm_weights_gb": serve.weights_gb,
 	}
 	# The image is what the box serves from: the role pulls it and Docker owns the container.
 	# Credentials only exist for a private registry; a public pull skips the login task.
 	image = frappe.get_cached_doc("Engine Image", md.engine_image)
 	extravars["vllm_image"] = image.full_image
+	extravars["vllm_image_gb"] = image.size_gb or 0
 	if credentials := image.registry_credentials:
 		extravars["vllm_registry_host"] = image.registry_host
 		extravars["vllm_registry_username"], extravars["vllm_registry_token"] = credentials
@@ -435,15 +425,13 @@ def _vllm_extravars(md, m, inf, key):
 
 
 def deploy_model(model_deployment):
-	"""Serve a Model Deployment on its Inference Server via the deploy/vllm role.
+	"""Serve a Model Deployment on its Inference Server via the playbooks/inference_server vllm role.
 	Every vLLM arg is assembled from the Model launch profile ⊕ this deployment
 	(§8E) and passed as Ansible extra-vars — the DocTypes are the source of truth,
 	not a hand-written group_vars. On success → Active + push the routing table."""
 	md = frappe.get_doc("Model Deployment", model_deployment)
-	if not md.inference_server:
-		frappe.throw(f"Model Deployment {md.name} has no Inference Server")
 	m = frappe.get_doc("Model", md.model)
-	inf = frappe.get_doc("Inference Server", md.inference_server)
+	inf = md.server
 	if not inf.is_provisioned:
 		frappe.throw(
 			f"Inference Server {inf.name} is not provisioned — run its Setup "
@@ -474,13 +462,8 @@ def deploy_model(model_deployment):
 	frappe.db.set_value("Model Deployment", md.name, "status", "Provisioning")
 	frappe.db.commit()
 
-	project_dir = ansible_project_dir("vllm")
-	ansible = Ansible(project_root=project_dir)
-	play_name, rc = ansible.run_playbook(
-		playbook_name="serve.yml",
-		server_type="Inference Server",
-		server_name=inf.name,
-		machine_name=inf.machine,
+	play_name, rc = inf.run_playbook(
+		"serve.yml",
 		extravars=extravars,
 		reference_doctype="Model Deployment",
 		reference_docname=md.name,
@@ -512,10 +495,8 @@ def reconfigure_deployment(model_deployment):
 	Restarts the engine → drops in-flight requests, so it's button-triggered, not
 	automatic."""
 	md = frappe.get_doc("Model Deployment", model_deployment)
-	if not md.inference_server:
-		frappe.throw(f"Model Deployment {md.name} has no Inference Server")
 	m = frappe.get_doc("Model", md.model)
-	inf = frappe.get_doc("Inference Server", md.inference_server)
+	inf = md.server
 	if not inf.is_provisioned:
 		frappe.throw(f"Inference Server {inf.name} is not provisioned — deploy the model first.")
 
@@ -531,13 +512,8 @@ def reconfigure_deployment(model_deployment):
 	frappe.db.set_value("Model Deployment", md.name, "status", "Provisioning")
 	frappe.db.commit()
 
-	project_dir = ansible_project_dir("vllm")
-	ansible = Ansible(project_root=project_dir)
-	play_name, rc = ansible.run_playbook(
-		playbook_name="serve.yml",
-		server_type="Inference Server",
-		server_name=inf.name,
-		machine_name=inf.machine,
+	play_name, rc = inf.run_playbook(
+		"serve.yml",
 		extravars=extravars,
 		skip_tags=["heavy"],
 		reference_doctype="Model Deployment",
@@ -555,15 +531,10 @@ def teardown_deployment(model_deployment):
 	weights/compile caches and the pulled image intact — other instances may use them.
 	On success → Terminated."""
 	md = frappe.get_doc("Model Deployment", model_deployment)
-	inf = frappe.get_doc("Inference Server", md.inference_server)
+	inf = md.server
 
-	project_dir = ansible_project_dir("vllm")
-	ansible = Ansible(project_root=project_dir)
-	play_name, rc = ansible.run_playbook(
-		playbook_name="teardown.yml",
-		server_type="Inference Server",
-		server_name=inf.name,
-		machine_name=inf.machine,
+	play_name, rc = inf.run_playbook(
+		"teardown.yml",
 		extravars={
 			"vllm_instance": _instance_slug(md.name),
 			"vllm_home": inf.data_path,

@@ -5,12 +5,11 @@
 import frappe
 from frappe.model.document import Document
 
-from grove.ansible import Ansible
+from grove.ansible import AnsibleHost
 from grove.monitoring import run_exporters_play
-from grove.utils import ansible_project_dir
 
 
-class InferenceServer(Document):
+class InferenceServer(AnsibleHost, Document):
 	# begin: auto-generated types
 	# This code is auto-generated. Do not modify anything in this block.
 
@@ -21,11 +20,43 @@ class InferenceServer(Document):
 
 		data_path: DF.Data
 		is_provisioned: DF.Check
+		is_static_ip: DF.Check
 		machine: DF.Link
 		machine_ip: DF.Data | None
 		region: DF.Link | None
 		status: DF.Literal["Pending", "Installing", "Active", "Broken", "Terminated"]
 	# end: auto-generated types
+
+	# ── The box ───────────────────────────────────────────────────────────────
+	# Everything that reaches the hardware goes through here: a Model Deployment talks to
+	# its Inference Server, and the Server is the only side that knows about a Machine.
+
+	@property
+	def machine_doc(self):
+		"""The box this server runs on."""
+		if not self.machine:
+			frappe.throw(f"Inference Server {self.name} has no Machine to reach.")
+		return frappe.get_doc("Machine", self.machine)
+
+	@property
+	def gpus(self):
+		"""The cards on this box (Machine GPU rows), in CUDA index order."""
+		if not self.machine:
+			return []
+		return frappe.get_all(
+			"Machine GPU",
+			filters={"parent": self.machine, "parenttype": "Machine"},
+			fields=["gpu_index", "gpu_model", "vram_gb"],
+			order_by="gpu_index",
+		)
+
+	def run_command(self, command, timeout=60):
+		"""Run one argv on this server's box over SSH and return what it printed."""
+		return self.machine_doc.run_command(command, timeout=timeout)
+
+	def stream_command(self, command):
+		"""Follow one argv on this server's box, yielding its output line by line."""
+		return self.machine_doc.stream_command(command)
 
 	@frappe.whitelist()
 	def get_gpu_allocation(self):
@@ -35,14 +66,7 @@ class InferenceServer(Document):
 
 		Two deployments naming the same CUDA index is not prevented anywhere — the row
 		reports every claimant so the clash is visible rather than silently halving VRAM."""
-		if not self.machine:
-			return []
-		gpus = frappe.get_all(
-			"Machine GPU",
-			filters={"parent": self.machine, "parenttype": "Machine"},
-			fields=["gpu_index", "gpu_model", "vram_gb"],
-			order_by="gpu_index",
-		)
+		gpus = self.gpus
 		claims = {}
 		for deployment in frappe.get_all(
 			"Model Deployment",
@@ -102,16 +126,11 @@ class InferenceServer(Document):
 		frappe.db.set_value("Inference Server", self.name, "status", "Installing")
 		frappe.db.commit()
 
-		project_dir = ansible_project_dir("vllm")
-		ansible = Ansible(project_root=project_dir)
-		play_name, rc = ansible.run_playbook(
-			playbook_name="provision.yml",
-			server_type="Inference Server",
-			server_name=self.name,
-			machine_name=self.machine,
+		play_name, rc = self.run_playbook(
+			"provision.yml",
 			extravars={
 				"gpu_data_mount": self.data_path,
-				"monitoring_has_gpu": bool(frappe.get_cached_doc("Machine", self.machine).gpus),
+				"monitoring_has_gpu": bool(self.gpus),
 			},
 		)
 
