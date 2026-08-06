@@ -50,13 +50,10 @@ class GroveSettings(Document):
 
 	@property
 	def monitoring_variables(self):
-		"""Ansible vars every Monitoring Agent needs: where to push, as whom, and where to ask
-		what to scrape. The intervals and buffer size are per-agent and come from its own doc."""
+		"""Ansible vars every Monitoring Agent needs that are fleet-wide: where to ask what to
+		scrape, and the fallback push endpoint. What identifies one agent — its token, its
+		region's endpoint, its intervals — comes from its own doc."""
 		return {
-			"monitoring_remote_write_url": self.metrics_remote_write_url or "",
-			"monitoring_remote_write_token": self.get_password(
-				"metrics_token", raise_exception=False
-			) or "",
 			"monitoring_extra_labels": json.loads(self.monitoring_extra_labels or "{}"),
 			"monitoring_sd_url": f"{get_url()}/api/method/grove.monitoring.targets",
 			"monitoring_sd_token": self.get_password("sd_token", raise_exception=False) or "",

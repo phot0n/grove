@@ -28,8 +28,21 @@ from grove.monitoring import (
 	engine_entry,
 )
 
-ROLES = Path(__file__).parent.parent.parent / "deploy/monitoring/ansible/roles"
-VMAGENT_ROLE = ROLES / "vmagent"
+PLAYBOOKS = Path(__file__).parent.parent.parent / "playbooks"
+AGENT = PLAYBOOKS / "monitoring_agent"
+# The exporters go on every box whoever owns it, so they live in the shared roles folder
+# rather than any one doctype's.
+SHARED_ROLES = PLAYBOOKS / "roles"
+
+
+def role_dir(name):
+	"""Where a role lives — the shared folder, else the agent's own. The two places Ansible
+	itself looks, in that order."""
+	shared = SHARED_ROLES / name
+	return shared if shared.is_dir() else AGENT / "roles" / name
+
+
+VMAGENT_ROLE = role_dir("vmagent")
 
 TEMPLATES = Environment(
 	loader=FileSystemLoader(VMAGENT_ROLE / "templates"),
@@ -107,7 +120,7 @@ class TestExporterPortsAgree(unittest.TestCase):
 	port and reports the box down, which reads identically to a dead box."""
 
 	def role_default(self, role, key):
-		return yaml.safe_load((ROLES / role / "defaults/main.yml").read_text())[key]
+		return yaml.safe_load((role_dir(role) / "defaults/main.yml").read_text())[key]
 
 	def test_the_gpu_exporter_is_scraped_where_it_listens(self):
 		self.assertEqual(self.role_default("dcgm_exporter", "dcgm_exporter_port"), DCGM_EXPORTER_PORT)
@@ -123,7 +136,7 @@ class TestExporterPortsAgree(unittest.TestCase):
 
 	def test_the_agent_box_installs_the_node_exporter_it_will_be_asked_to_scrape(self):
 		# Nothing else installs one there: the agent box carries no Inference/Proxy Server doc.
-		play = yaml.safe_load((ROLES.parent / "agent.yml").read_text())[0]
+		play = yaml.safe_load((AGENT / "agent.yml").read_text())[0]
 		self.assertIn("node_exporter", play["roles"])
 
 
@@ -190,7 +203,7 @@ class TestTheAgentPlayChecksBeforeItInstalls(unittest.TestCase):
 	role therefore fails with node_exporter already on the box — a half-built machine and a play
 	log to read it out of. The checks belong ahead of every role."""
 
-	PLAY = yaml.safe_load((ROLES.parent / "agent.yml").read_text())[0]
+	PLAY = yaml.safe_load((AGENT / "agent.yml").read_text())[0]
 
 	def test_every_setting_the_play_needs_is_asserted_before_any_role_runs(self):
 		asserted = yaml.dump(self.PLAY["pre_tasks"])
@@ -205,10 +218,15 @@ class TestTheAgentPlayChecksBeforeItInstalls(unittest.TestCase):
 				self.assertIn(variable, asserted)
 
 	def test_no_role_defers_a_check_until_after_something_is_installed(self):
+		# Every task file, not just main.yml — vmagent's config half lives in config.yml so
+		# update_config can re-run it, and a check hidden there installs just as much first.
 		for role in self.PLAY["roles"]:
-			with self.subTest(role):
-				tasks = yaml.safe_load((ROLES / role / "tasks/main.yml").read_text())
-				self.assertNotIn("ansible.builtin.assert", {key for task in tasks for key in task})
+			for task_file in sorted((role_dir(role) / "tasks").glob("*.yml")):
+				with self.subTest(f"{role}/{task_file.name}"):
+					tasks = yaml.safe_load(task_file.read_text())
+					self.assertNotIn(
+						"ansible.builtin.assert", {key for task in tasks for key in task}
+					)
 
 
 class TestEveryTemplateVariableHasADefault(unittest.TestCase):
@@ -218,10 +236,11 @@ class TestEveryTemplateVariableHasADefault(unittest.TestCase):
 	override names `defaults/main.yml` already declares."""
 
 	def test_each_role_defaults_every_variable_its_templates_use(self):
-		for role in sorted(path.name for path in ROLES.iterdir() if (path / "templates").is_dir()):
-			defaults = yaml.safe_load((ROLES / role / "defaults/main.yml").read_text()) or {}
+		monitoring_roles = [*SHARED_ROLES.iterdir(), *(AGENT / "roles").iterdir()]
+		for role in sorted(path.name for path in monitoring_roles if (path / "templates").is_dir()):
+			defaults = yaml.safe_load((role_dir(role) / "defaults/main.yml").read_text()) or {}
 			environment = Environment(
-				loader=FileSystemLoader(ROLES / role / "templates"), undefined=StrictUndefined
+				loader=FileSystemLoader(role_dir(role) / "templates"), undefined=StrictUndefined
 			)
 			for template in environment.list_templates():
 				with self.subTest(f"{role}/{template}"):
@@ -239,6 +258,7 @@ class TestScrapeConfig(unittest.TestCase):
 		"monitoring_agent": "MA-1",
 		"monitoring_sd_token": "0f3a-b21c_9d.e~4a7b",
 		"vmagent_config_dir": "/etc/vmagent",
+		"monitoring_static_targets": False,
 	}
 
 	def setUp(self):
@@ -295,9 +315,74 @@ class TestScrapeConfig(unittest.TestCase):
 
 	def test_the_file_holding_the_token_is_not_world_readable(self):
 		# The token is in this file now, so its mode is the only thing protecting it on the box.
-		tasks = yaml.safe_load((VMAGENT_ROLE / "tasks/main.yml").read_text())
+		tasks = yaml.safe_load((VMAGENT_ROLE / "tasks/targets.yml").read_text())
 		[write] = [task for task in tasks if task.get("ansible.builtin.template", {}).get("src") == "scrape.yml.j2"]
 		self.assertEqual(write["ansible.builtin.template"]["mode"], "0600")
+
+
+class TestPushedTargets(unittest.TestCase):
+	"""The file_sd half: Grove writes the lists instead of serving them, for a box that cannot
+	reach Grove at all. Same entries either way — only how they arrive changes."""
+
+	BASE = {**TestScrapeConfig.BASE, "monitoring_static_targets": True}
+
+	def setUp(self):
+		self.config = yaml.safe_load(TEMPLATES.get_template("scrape.yml.j2").render(**self.BASE))
+		self.jobs = {job["job_name"]: job for job in self.config["scrape_configs"]}
+
+	def test_both_jobs_read_files_and_never_ask_grove(self):
+		self.assertEqual(set(self.jobs), {"grove-host", "grove-engine"})
+		for job in self.jobs.values():
+			self.assertNotIn("http_sd_configs", job)
+			[sd] = job["file_sd_configs"]
+			self.assertEqual(set(sd), {"files"})
+
+	def test_each_job_reads_its_own_kind(self):
+		self.assertEqual(
+			self.jobs["grove-host"]["file_sd_configs"][0]["files"], ["/etc/vmagent/targets_host.json"]
+		)
+		self.assertEqual(
+			self.jobs["grove-engine"]["file_sd_configs"][0]["files"], ["/etc/vmagent/targets_engine.json"]
+		)
+
+	def test_the_sd_token_never_reaches_a_box_that_cannot_use_it(self):
+		# file_sd fetches nothing, so shipping the shared secret here would spread it for free.
+		self.assertNotIn(self.BASE["monitoring_sd_token"], yaml.dump(self.config))
+
+	def test_the_intervals_are_the_same_either_way(self):
+		self.assertEqual(self.jobs["grove-engine"]["scrape_interval"], "5s")
+		self.assertEqual(self.config["global"]["scrape_interval"], "15s")
+
+	def test_the_lists_are_written_before_the_config_that_reads_them(self):
+		# file_sd pointing at a file that is not there yet is a job that starts up down.
+		tasks = yaml.safe_load((VMAGENT_ROLE / "tasks/targets.yml").read_text())
+		names = [task["name"] for task in tasks]
+		self.assertLess(names.index("Write the pushed target lists"), names.index("Write the scrape config"))
+
+	def test_the_lists_are_only_written_when_grove_is_pushing_them(self):
+		[write] = [task for task in yaml.safe_load((VMAGENT_ROLE / "tasks/targets.yml").read_text())
+			if task["name"] == "Write the pushed target lists"]
+		self.assertIn("monitoring_static_targets", write["when"])
+
+	def test_pushing_is_a_dev_site_fallback_and_nothing_else(self):
+		# The gate is developer_mode alone — no field to tick, and no way to end up pushing
+		# stale snapshots to a production fleet that can pull fresh ones for itself.
+		from grove.grove.doctype.monitoring_agent.monitoring_agent import is_pushing_targets
+
+		with unittest.mock.patch.object(frappe, "conf", {"developer_mode": 1}):
+			self.assertTrue(is_pushing_targets())
+		for off in ({"developer_mode": 0}, {}):
+			with unittest.mock.patch.object(frappe, "conf", off):
+				self.assertFalse(is_pushing_targets())
+
+	def test_a_pushed_list_is_the_same_payload_http_sd_would_have_served(self):
+		# The whole point: file_sd and http_sd read the identical shape, so switching how the
+		# list travels cannot change what the agent scrapes.
+		entries = build_host_targets([box("INF-1", has_gpu=True)])
+		written = json.loads(json.dumps(entries))
+		self.assertEqual(written, entries)
+		for entry in written:
+			self.assertEqual(set(entry), {"targets", "labels"})
 
 
 if __name__ == "__main__":

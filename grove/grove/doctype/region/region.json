@@ -7,7 +7,8 @@
  "engine": "InnoDB",
  "field_order": [
   "label",
-  "cloud_provider"
+  "cloud_provider",
+  "remote_write_url"
  ],
  "fields": [
   {
@@ -24,6 +25,12 @@
    "options": "\nrunpod\naws",
    "in_list_view": 1,
    "label": "Cloud Provider"
+  },
+  {
+   "description": "Ingestion endpoint for agents in this region, e.g. https://metrics.ap-south-1.example.com/v1/write. Keeps a region's samples off a cross-region hop. Blank = the fleet-wide URL in Grove Settings.",
+   "fieldname": "remote_write_url",
+   "fieldtype": "Data",
+   "label": "Remote Write URL"
   }
  ],
  "links": [

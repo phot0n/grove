@@ -1,28 +1,8 @@
 ---
-# Requirements are asserted in agent.yml's pre_tasks, before node_exporter installs — a check
-# here fails after the box is already half built.
-- name: Read the installed vmagent version
-  ansible.builtin.command: vmagent -version
-  register: vmagent_probe
-  changed_when: false
-  failed_when: false
-
-- name: Install vmagent {{ vmagent_version }}
-  when: vmagent_version not in (vmagent_probe.stdout | default('')) + (vmagent_probe.stderr | default(''))
-  block:
-    - name: Unpack vmutils into a staging dir
-      ansible.builtin.unarchive:
-        src: "https://github.com/VictoriaMetrics/VictoriaMetrics/releases/download/v{{ vmagent_version }}/vmutils-linux-{{ monitoring_arch }}-v{{ vmagent_version }}.tar.gz"
-        dest: /tmp
-        remote_src: true
-
-    - name: Install the binary
-      ansible.builtin.copy:
-        src: /tmp/vmagent-prod
-        dest: /usr/local/bin/vmagent
-        remote_src: true
-        mode: "0755"
-      notify: restart vmagent
+# Everything that makes an installed vmagent match its Monitoring Agent doc: where it pushes,
+# as whom, how often it scrapes, how much it buffers, and what it scrapes. Split out of
+# main.yml so config.yml can re-run just this much — changing a scrape interval should not
+# cost a binary download.
 
 - name: Create the config and buffer directories
   ansible.builtin.file:
@@ -50,13 +30,8 @@
     path: "{{ vmagent_config_dir }}/sd.token"
     state: absent
 
-- name: Write the scrape config
-  ansible.builtin.template:
-    src: scrape.yml.j2
-    dest: "{{ vmagent_config_dir }}/scrape.yml"
-    mode: "0600"
-  no_log: true
-  notify: restart vmagent
+- name: Write the scrape config and any pushed target lists
+  ansible.builtin.include_tasks: targets.yml
 
 - name: Write the vmagent unit
   ansible.builtin.template:

@@ -23,18 +23,28 @@
   # in pre_tasks because node_exporter installs first: checked inside the vmagent role, a
   # missing setting left node_exporter on a box that never got an agent.
   pre_tasks:
-    - name: Check where to push and where to ask what to scrape
+    - name: Check where to push
       ansible.builtin.assert:
         that:
           - monitoring_remote_write_url | length > 0
           - monitoring_remote_write_token | length > 0
-          - monitoring_sd_url | length > 0
-          - monitoring_sd_token | length > 0
           - monitoring_agent | length > 0
         fail_msg: >-
-          This agent has nowhere to push or nothing to fetch targets with. Grove does not run the
-          metrics backend — set Metrics Remote Write URL, Metrics Token and Service Discovery
-          Token in Grove Settings before installing an agent.
+          This agent has nowhere to push. Grove does not run the metrics backend — set a Remote
+          Write URL on this agent's Region (or the fleet-wide one in Grove Settings) and a
+          Metrics Token on the agent itself before installing it.
+
+    # Skipped when Grove pushes the lists instead: file_sd reads neither, and demanding an SD
+    # token would block the one case that exists because the box cannot reach Grove at all.
+    - name: Check where to ask what to scrape
+      when: not (monitoring_static_targets | bool)
+      ansible.builtin.assert:
+        that:
+          - monitoring_sd_url | length > 0
+          - monitoring_sd_token | length > 0
+        fail_msg: >-
+          This agent has nothing to fetch targets with. Set a Service Discovery Token in Grove
+          Settings, or tick Push Targets Manually on the agent to have Grove write the lists.
   roles:
     - node_exporter
     - vmagent

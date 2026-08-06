@@ -9,7 +9,6 @@
   "gateway_host",
   "section_monitoring",
   "metrics_remote_write_url",
-  "metrics_token",
   "column_break_monitoring",
   "sd_token",
   "monitoring_extra_labels"
@@ -18,8 +17,7 @@
   {"fieldname": "section_gateway", "fieldtype": "Section Break", "label": "Gateway"},
   {"fieldname": "gateway_host", "fieldtype": "Data", "label": "Gateway Host", "description": "Public host/IP clients hit; used to build the base_url returned by provision_endpoint."},
   {"fieldname": "section_monitoring", "fieldtype": "Section Break", "label": "Monitoring"},
-  {"fieldname": "metrics_remote_write_url", "fieldtype": "Data", "label": "Metrics Remote Write URL", "description": "Where every Monitoring Agent pushes, e.g. http://13.206.253.38:8000/v1/write. Prefer https — over plain http the token below crosses the network in cleartext on every push."},
-  {"fieldname": "metrics_token", "fieldtype": "Password", "label": "Metrics Token", "description": "Bearer token minted by the ingestion service. It carries the tenant and source, so nothing else identifies us to them."},
+  {"fieldname": "metrics_remote_write_url", "fieldtype": "Data", "label": "Metrics Remote Write URL", "description": "Where a Monitoring Agent pushes when its Region names no endpoint of its own, e.g. http://13.206.253.38:8000/v1/write. Prefer https — the agent's token crosses the network on every push. The token itself lives on each agent."},
   {"fieldname": "column_break_monitoring", "fieldtype": "Column Break"},
   {"fieldname": "sd_token", "fieldtype": "Password", "label": "Service Discovery Token", "description": "16+ characters of A-Z a-z 0-9 - _ . ~ — e.g. `openssl rand -hex 32`. Every Monitoring Agent sends it to fetch its target list, and it is the only thing guarding that list; unset, the endpoint refuses everyone. It travels in the query string, so it appears in this site's access log — rotate it here and hit Install on each agent."},
   {"fieldname": "monitoring_extra_labels", "fieldtype": "Small Text", "label": "Extra Labels", "description": "JSON stamped on every series pushed from every box, e.g. {\"env\": \"prod\", \"tenant\": \"grove\"}."}
