@@ -48,6 +48,19 @@ func TestPickRouteNoneHealthy(t *testing.T) {
 	}
 }
 
+func TestPickRouteSkipsEmptyEngineURL(t *testing.T) {
+	routes := []Route{
+		{EngineURL: "", Healthy: true, Load: 0.1}, // pushed without a derived engine_url
+		{EngineURL: "b", Healthy: true, Load: 0.9},
+	}
+	if r, ok := pickRoute(routes, ""); !ok || r.EngineURL != "b" {
+		t.Fatalf("want b despite higher load, got %q ok=%v", r.EngineURL, ok)
+	}
+	if _, ok := pickRoute(routes[:1], ""); ok {
+		t.Fatal("expected ok=false when the only route has no engine URL (→ 503, not 500)")
+	}
+}
+
 func TestPickRouteEmpty(t *testing.T) {
 	if _, ok := pickRoute(nil, "x"); ok {
 		t.Fatal("expected ok=false for empty routes")

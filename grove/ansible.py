@@ -9,12 +9,42 @@ import os
 import frappe
 
 from grove import ansible_runner
-from grove.utils import app_grove_root
+from grove.utils import ansible_project_dir, app_grove_root
+
+
+class AnsibleHost:
+	"""Mixin for a doc with a box behind it: every Machine, and every server doctype standing
+	on one. Gives them all one way to run a playbook against that box — callers name a
+	playbook, never a project path, a server type or a Machine."""
+
+	@property
+	def playbook_machine(self):
+		"""The Machine a playbook from this doc runs against — the box this doc links. A doc
+		that IS the box overrides this to name itself."""
+		if not self.machine:
+			frappe.throw(f"{self.doctype} {self.name} has no Machine to run a playbook against.")
+		return self.machine
+
+	def run_playbook(self, playbook, project=None, extravars=None, **kwargs):
+		"""Run one playbook against this doc's box, tracked as an Ansible Play.
+
+		The playbook comes from this doctype's own folder. `project` names another doctype's
+		when the play is shared — exporters.yml belongs to Monitoring Agent but runs against
+		Inference and Proxy Server boxes."""
+		ansible = Ansible(project_root=ansible_project_dir(project or self.doctype))
+		return ansible.run_playbook(
+			playbook_name=playbook,
+			server_type=self.doctype,
+			server_name=self.name,
+			machine_name=self.playbook_machine,
+			extravars=extravars,
+			**kwargs,
+		)
 
 
 class Ansible:
 	"""Wrapper around ansible_runner. Knows the default project directory
-	(deploy/ansible/) and provides clean API for running playbooks.
+	(playbooks/) and provides clean API for running playbooks.
 
 	Two usage styles:
 
@@ -35,7 +65,7 @@ class Ansible:
 
 		Args:
 			playbook: Playbook name for ad-hoc mode
-			project_root: Custom Ansible project root (defaults to deploy/ansible/)
+			project_root: Custom Ansible project root (defaults to playbooks/)
 			server: Server IP/hostname for ad-hoc mode
 			user: SSH user for ad-hoc mode (default: root)
 			port: SSH port for ad-hoc mode (default: 22)
@@ -50,7 +80,7 @@ class Ansible:
 		if project_root:
 			self.project_root = project_root
 		else:
-			self.project_root = os.path.join(app_grove_root(), "deploy", "ansible")
+			self.project_root = os.path.join(app_grove_root(), "playbooks")
 
 	def run(self):
 		"""Execute playbook in ad-hoc mode (direct server connection, no Frappe tracking).

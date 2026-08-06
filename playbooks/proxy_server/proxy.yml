@@ -1,0 +1,159 @@
+---
+# Provision a Grove Proxy Server (merged gateway+proxy): OpenResty + local Redis
+# (zero-loss persistence) + the Go agent. Idempotent. Codifies deploy.sh.
+# extra-vars: admin_token (control-plane admin API token), agent_source (path to
+# gateway_service source on control plane).
+- hosts: all
+  become: true
+  gather_facts: true
+  vars:
+    grove_dir: "{{ playbook_dir }}"
+    # Pinned to what the live gateway is verified on. Both come from upstream repos, not
+    # the distro, so "latest" moves under us on a rebuild — and both sit in the request
+    # path. The codename suffix is appended at install time so the pin stays portable.
+    openresty_version: "1.31.1.1"
+    lua_resty_http_version: "0.17.1"
+
+  roles:
+    - build_gateway_agent
+
+  tasks:
+    - name: check openresty present
+      ansible.builtin.command: which openresty
+      register: openresty_check
+      failed_when: false
+      changed_when: false
+
+    - name: install openresty (repo + package)
+      ansible.builtin.shell: |
+        set -e
+        export DEBIAN_FRONTEND=noninteractive
+        apt-get -y install --no-install-recommends wget gnupg ca-certificates lsb-release
+        wget -qO - https://openresty.org/package/pubkey.gpg | gpg --dearmor -o /usr/share/keyrings/openresty.gpg
+        echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/openresty.gpg] http://openresty.org/package/ubuntu $(lsb_release -sc) main" > /etc/apt/sources.list.d/openresty.list
+        apt-get update
+        apt-get -y install "openresty={{ openresty_version }}-1~$(lsb_release -sc)1"
+      when: openresty_check.rc != 0
+
+    - name: install redis-server
+      ansible.builtin.apt:
+        name: redis-server
+        state: present
+        update_cache: true
+
+    - name: install lua-resty-http (opm)
+      ansible.builtin.command:
+        cmd: /usr/local/openresty/bin/opm get ledgetech/lua-resty-http={{ lua_resty_http_version }}
+        creates: /usr/local/openresty/site/lualib/resty/http.lua
+
+    - name: redis zero-loss persistence
+      ansible.builtin.blockinfile:
+        path: /etc/redis/redis.conf
+        marker: "# {mark} grove gateway zero-loss"
+        block: |
+          appendonly yes
+          appendfsync always
+          maxmemory-policy noeviction
+      notify: restart redis
+
+    - name: grove lua dir
+      ansible.builtin.file:
+        path: /etc/grove-gateway/lua
+        state: directory
+        mode: "0755"
+
+    - name: openresty log dir
+      ansible.builtin.file:
+        path: /var/log/openresty
+        state: directory
+        mode: "0755"
+
+    - name: openresty logrotate
+      ansible.builtin.copy:
+        src: "{{ grove_dir }}/logrotate/openresty"
+        dest: /etc/logrotate.d/openresty
+        mode: "0644"
+
+    - name: agent binary
+      ansible.builtin.copy:
+        src: /tmp/grove-gateway
+        dest: /usr/local/bin/grove-gateway
+        mode: "0755"
+        remote_src: true
+      notify: restart grove-gateway
+
+    - name: lua files
+      ansible.builtin.copy:
+        src: "{{ grove_dir }}/lua/"
+        dest: /etc/grove-gateway/lua/
+        mode: "0644"
+      notify: reload openresty
+
+    - name: nginx.conf
+      ansible.builtin.copy:
+        src: "{{ grove_dir }}/nginx.conf"
+        dest: /usr/local/openresty/nginx/conf/nginx.conf
+        mode: "0644"
+      notify: reload openresty
+
+    - name: systemd unit
+      ansible.builtin.copy:
+        src: "{{ grove_dir }}/systemd/grove-gateway.service"
+        dest: /etc/systemd/system/grove-gateway.service
+        mode: "0644"
+      notify:
+        - reload systemd
+        - restart grove-gateway
+
+    - name: agent.env (admin token from the control plane)
+      ansible.builtin.copy:
+        dest: /etc/grove-gateway/agent.env
+        content: |
+          GROVE_ADMIN_TOKEN={{ admin_token }}
+          GROVE_GATEWAY_ID={{ gateway_id | default('') }}
+        mode: "0600"
+      notify: restart grove-gateway
+
+    - name: redis started
+      ansible.builtin.systemd:
+        name: redis-server
+        enabled: true
+        state: started
+
+    - name: nginx config test
+      ansible.builtin.command: /usr/local/openresty/bin/openresty -t
+      changed_when: false
+
+    - name: grove-gateway started
+      ansible.builtin.systemd:
+        name: grove-gateway
+        enabled: true
+        state: started
+        daemon_reload: true
+
+    - name: openresty started
+      ansible.builtin.systemd:
+        name: openresty
+        enabled: true
+        state: started
+
+  handlers:
+    - name: restart redis
+      ansible.builtin.systemd:
+        name: redis-server
+        state: restarted
+
+    - name: reload systemd
+      ansible.builtin.systemd:
+        daemon_reload: true
+
+    - name: restart grove-gateway
+      ansible.builtin.systemd:
+        name: grove-gateway
+        state: restarted
+        daemon_reload: true
+
+    - name: reload openresty
+      ansible.builtin.systemd:
+        name: openresty
+        state: reloaded

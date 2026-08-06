@@ -16,6 +16,7 @@ import requests
 
 import frappe
 
+from grove import log_relay
 from grove.cloud_provider.runpod import RunPodClient, RunPodError
 from grove.grove.doctype.ssh_key.ssh_key import injected_public_keys
 
@@ -27,6 +28,9 @@ ENGINE_POLL_INTERVAL = 15
 # Fallback mount for the pod's persistent volume disk (HF_HOME lives under it so weights
 # survive restart). A Pod can override via its volume_mount_path field.
 VOLUME_MOUNT = "/data"
+
+# How long to wait before reconnecting a dropped log stream (see pod_log_events).
+LOG_RECONNECT_DELAY = 2
 
 
 class PodProvisioner:
@@ -111,8 +115,8 @@ class PodProvisioner:
 	@property
 	def config_kwargs(self):
 		"""The pod settings RunPod accepts on BOTH create and update — so a restart applies
-		exactly what a spawn would. dockerStartCmd = the derived serve_command (Model set) else
-		the manual startup_command."""
+		exactly what a spawn would. args = the derived serve_command (Model set) else the manual
+		startup_command; RunPod appends it to the image's entrypoint."""
 		pod = self.pod
 		command = pod.serve_command if pod.model else (pod.startup_command or None)
 		return dict(
@@ -121,7 +125,7 @@ class PodProvisioner:
 			ports=[f"{int(p.internal_port)}/{p.protocol or 'tcp'}" for p in pod.ports],
 			env={"PUBLIC_KEY": self.public_keys, **self.env},
 			image_name=pod.resolved_image,
-			docker_start_cmd=command or None,
+			args=command or None,
 			container_registry_auth_id=self.registry_auth_id,
 			volume_mount_path=pod.volume_mount_path or VOLUME_MOUNT,
 			name=pod.name,
@@ -261,7 +265,7 @@ class PodProvisioner:
 			self.set_state({"pod_id": "", "status": "Terminated", "engine_url": ""})
 			self.sync_gateway()
 			return {"status": "Terminated"}
-		running = pod_api.get("desired_status") == "RUNNING" and bool(pod_api.get("public_ip"))
+		running = pod_api.get("status") == "RUNNING" and bool(pod_api.get("public_ip"))
 		self.apply_provider_state(pod_api, running)
 		self.sync_gateway()
 		return {"status": self.current_status}
@@ -339,7 +343,7 @@ class PodProvisioner:
 			"RunPod cannot move a pod's GPUs, so this needs an explicit Terminate, then "
 			"Spawn — which re-downloads the weights."
 		)
-		if live.get("desired_status") != "RUNNING":
+		if live.get("status") != "RUNNING":
 			return (
 				f"Pod {self.pod.name} is not running, and an update only resets a live "
 				"container. Start it first, then Restart to apply this config."
@@ -430,3 +434,34 @@ def start_pod(pod_name):
 
 def terminate_pod_doc(pod_name):
 	return _provisioner(pod_name).terminate()
+
+
+def pod_log_events(client, pod_id, tail=100):
+	"""The pod's log lines off the provider, reconnecting from the last event id each time the
+	stream drops — it ends on its own whenever the pod goes quiet. Yields None on a keep-alive
+	so the relay still ticks on a silent pod, and gives up after three instant empty
+	reconnects: that means the pod has stopped producing logs (terminated) entirely."""
+	last_id, dead_rounds = None, 0
+	while dead_rounds < 3:
+		opened_at, received = time.monotonic(), 0
+		try:
+			for event_id, event in client.stream_logs(pod_id, tail=tail, last_event_id=last_id):
+				if not event:
+					yield None
+					continue
+				last_id, received = event_id or last_id, received + 1
+				yield event.get("line", "")
+		except RunPodError as error:
+			yield f"— {error} —"  # surfaced in the log view rather than dying in a worker
+			return
+		dead_rounds = dead_rounds + 1 if not received and time.monotonic() - opened_at < 5 else 0
+		tail = 0  # backfill only on the first connect
+		time.sleep(LOG_RECONNECT_DELAY)
+		yield None  # tick, so a Stop pressed during a reconnect lands right away
+
+
+def stream_pod_logs(pod_name, tail=100):
+	"""Relay the provider's log stream to the Pod form until Stop (or the job times out)."""
+	pod = frappe.get_doc("Pod", pod_name)
+	client = PodProvisioner(pod).client
+	log_relay.relay(pod_log_events(client, pod.pod_id, tail), "Pod", pod_name)

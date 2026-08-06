@@ -7,22 +7,30 @@
  "engine": "InnoDB",
  "field_order": [
   "label",
-  "cloud_provider"
+  "cloud_provider",
+  "remote_write_url"
  ],
  "fields": [
   {
-   "description": "Human-friendly name, e.g. Singapore",
+   "description": "Human-friendly name, e.g. Singapore. The record's Name (e.g. ap-south-1) is the provider's own region code, and is what Grove sends to the API.",
    "fieldname": "label",
    "fieldtype": "Data",
    "in_list_view": 1,
    "label": "Label"
   },
   {
-   "description": "e.g. AWS, GCP, on-prem",
+   "description": "Blank = on-prem / no cloud provider.",
    "fieldname": "cloud_provider",
-   "fieldtype": "Data",
+   "fieldtype": "Select",
+   "options": "\nrunpod\naws",
    "in_list_view": 1,
    "label": "Cloud Provider"
+  },
+  {
+   "description": "Ingestion endpoint for agents in this region, e.g. https://metrics.ap-south-1.example.com/v1/write. Keeps a region's samples off a cross-region hop. Blank = the fleet-wide URL in Grove Settings.",
+   "fieldname": "remote_write_url",
+   "fieldtype": "Data",
+   "label": "Remote Write URL"
   }
  ],
  "links": [

@@ -1,0 +1,22 @@
+---
+# Exporters for one box: node metrics, and GPU metrics when it has cards. Run by
+# machine.install_exporters via ansible_runner against a single-host inventory (hosts: all).
+#
+# Nothing here pushes anywhere and nothing here knows about a Monitoring Agent — these two
+# just listen. The agent that scrapes them is named on the box's Inference Server / Proxy
+# Server, and the agent asks Grove for the address.
+#
+# SECURITY: both bind 0.0.0.0, because the agent scrapes them over the box's public IP (on
+# EC2 that address is NAT'd and never on the instance's NIC, so it cannot be bound directly).
+# The security group is therefore the only thing keeping 9100/9400 off the internet — allow
+# them from the Monitoring Agent's IP and nothing else.
+- name: Install the metrics exporters
+  hosts: all
+  become: true
+  gather_facts: true
+  vars:
+    monitoring_arch: "{{ 'arm64' if ansible_architecture == 'aarch64' else 'amd64' }}"
+  roles:
+    - node_exporter
+    - role: dcgm_exporter
+      when: monitoring_has_gpu | bool

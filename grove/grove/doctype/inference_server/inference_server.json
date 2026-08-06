@@ -8,8 +8,10 @@
  "field_order": [
   "machine",
   "machine_ip",
+  "is_static_ip",
   "region",
   "status",
+  "monitoring_agent",
   "is_provisioned",
   "data_path",
   "section_gpus",
@@ -33,6 +35,15 @@
    "read_only": 1
   },
   {
+   "default": "0",
+   "description": "Whether this box's address survives a stop. Owned by the Machine — set it there.",
+   "fetch_from": "machine.is_static_ip",
+   "fieldname": "is_static_ip",
+   "fieldtype": "Check",
+   "label": "Static IP",
+   "read_only": 1
+  },
+  {
    "fetch_from": "machine.region",
    "fieldname": "region",
    "fieldtype": "Link",
@@ -46,7 +57,14 @@
    "fieldtype": "Select",
    "in_list_view": 1,
    "label": "Status",
-   "options": "Pending\nInstalling\nActive\nBroken"
+   "options": "Pending\nInstalling\nActive\nBroken\nTerminated"
+  },
+  {
+   "description": "The agent that scrapes this box's exporters and every engine on it. Blank = not scraped.",
+   "fieldname": "monitoring_agent",
+   "fieldtype": "Link",
+   "label": "Monitoring Agent",
+   "options": "Monitoring Agent"
   },
   {
    "default": "0",
@@ -64,6 +82,7 @@
    "reqd": 1
   },
   {
+   "depends_on": "eval:doc.status == 'Active'",
    "fieldname": "section_gpus",
    "fieldtype": "Section Break",
    "label": "GPUs"

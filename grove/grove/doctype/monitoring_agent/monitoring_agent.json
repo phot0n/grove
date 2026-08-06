@@ -1,0 +1,129 @@
+{
+ "actions": [],
+ "allow_rename": 1,
+ "autoname": "prompt",
+ "creation": "2026-08-04 00:00:00",
+ "doctype": "DocType",
+ "engine": "InnoDB",
+ "field_order": [
+  "machine",
+  "public_ip",
+  "region",
+  "status",
+  "column_break_push",
+  "remote_write_url",
+  "metrics_token",
+  "section_scrape",
+  "scrape_interval",
+  "engine_scrape_interval",
+  "column_break_scrape",
+  "max_disk_usage"
+ ],
+ "fields": [
+  {
+   "fieldname": "machine",
+   "fieldtype": "Link",
+   "label": "Machine",
+   "options": "Machine",
+   "reqd": 1,
+   "in_list_view": 1,
+   "description": "The box vmagent runs on. It scrapes every Inference Server, Proxy Server and Pod that names this agent."
+  },
+  {
+   "fieldname": "public_ip",
+   "fieldtype": "Data",
+   "label": "Public IP",
+   "fetch_from": "machine.public_ip",
+   "read_only": 1,
+   "in_list_view": 1
+  },
+  {
+   "fieldname": "region",
+   "fieldtype": "Link",
+   "label": "Region",
+   "options": "Region",
+   "fetch_from": "machine.region",
+   "read_only": 1,
+   "in_list_view": 1,
+   "description": "Where this agent lives, from its Machine. Picks the ingestion endpoint: its Region's Remote Write URL, if that Region has one."
+  },
+  {
+   "fieldname": "status",
+   "fieldtype": "Select",
+   "label": "Status",
+   "options": "Pending\nInstalling\nActive\nBroken\nTerminated",
+   "default": "Pending",
+   "read_only": 1,
+   "hidden": 1
+  },
+  {
+   "fieldname": "column_break_push",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "remote_write_url",
+   "fieldtype": "Data",
+   "label": "Remote Write URL",
+   "read_only": 1,
+   "description": "Where this agent pushes, resolved when it is installed: its Region's own endpoint, else the fleet-wide one in Grove Settings."
+  },
+  {
+   "fieldname": "metrics_token",
+   "fieldtype": "Password",
+   "label": "Metrics Token",
+   "description": "Bearer token this agent pushes with, minted by the ingestion service — it carries the tenant and source. Per agent, since a regional endpoint issues its own. Use Rotate Token to change it: the new one has to reach the box, or the pushes start failing."
+  },
+  {
+   "fieldname": "section_scrape",
+   "fieldtype": "Section Break",
+   "label": "Scraping"
+  },
+  {
+   "fieldname": "scrape_interval",
+   "fieldtype": "Data",
+   "label": "Scrape Interval",
+   "default": "15s",
+   "description": "Node and GPU exporters."
+  },
+  {
+   "fieldname": "engine_scrape_interval",
+   "fieldtype": "Data",
+   "label": "Engine Scrape Interval",
+   "default": "5s",
+   "description": "vLLM engines and pods — kept tight because saturation is read off it."
+  },
+  {
+   "fieldname": "column_break_scrape",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "max_disk_usage",
+   "fieldtype": "Data",
+   "label": "Buffer Size",
+   "default": "4GiB",
+   "description": "On-disk queue while the remote is unreachable. Holds the whole fleet this agent scrapes, not one box."
+  }
+ ],
+ "links": [],
+ "modified": "2026-08-06 00:00:00",
+ "modified_by": "Administrator",
+ "module": "Grove",
+ "name": "Monitoring Agent",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "System Manager",
+   "share": 1,
+   "write": 1
+  }
+ ],
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": []
+}

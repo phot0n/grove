@@ -1,0 +1,26 @@
+---
+# Write one agent's scrape targets straight to its box, for a Grove it cannot reach — a local
+# dev site, where http_sd would resolve to a laptop the box has no route to. Run by
+# monitoring_agent.push_targets.
+#
+# Only the target files and the scrape config: vmagent itself is already installed by
+# agent.yml, and a fleet change should not cost a reinstall to show up.
+#
+# The lists are a snapshot. Nothing on the box re-fetches them, so a deploy or a new box is
+# invisible here until this runs again — unlike http_sd, which re-asks on its own.
+- name: Push scrape targets
+  hosts: all
+  become: true
+  gather_facts: false
+  pre_tasks:
+    - name: Check the targets were actually passed
+      ansible.builtin.assert:
+        that: monitoring_static_targets | bool
+        fail_msg: >-
+          This play only writes pushed target lists. Tick Push Targets Manually on the
+          Monitoring Agent, or install with agent.yml to fetch them over http_sd instead.
+  tasks:
+    - name: Write the scrape config and target lists
+      ansible.builtin.include_role:
+        name: vmagent
+        tasks_from: targets

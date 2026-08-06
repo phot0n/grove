@@ -1,0 +1,15 @@
+---
+# Pinned so a rebuild lands the same exporter. Bump deliberately; the metric names this
+# fleet's dashboards use are stable across these.
+node_exporter_version: "1.9.1"
+
+node_exporter_port: 9100
+
+# Every interface by default, because the Monitoring Agent scrapes this box over its public IP
+# from another machine — on EC2 that address is NAT'd and never on the NIC, so it cannot be
+# bound directly. The security group is then the only control: allow this port from the agent
+# and nothing else, since a reachable node_exporter is a free inventory of the box.
+#
+# The agent's own box overrides this to 127.0.0.1 (agent.yml): it scrapes itself, so there is
+# nothing to expose there.
+node_exporter_bind: 0.0.0.0

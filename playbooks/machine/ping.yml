@@ -1,0 +1,17 @@
+---
+# Connectivity check for any box — proves the Grove ansible runner + streaming works. Lives
+# under machine: every box is a Machine, whatever server doc stands on it.
+- hosts: all
+  gather_facts: false
+  tasks:
+    - name: ping the host
+      ansible.builtin.ping:
+
+    - name: whoami
+      ansible.builtin.command: whoami
+      register: who
+      changed_when: false
+
+    - name: report
+      ansible.builtin.debug:
+        msg: "grove connected to {{ inventory_hostname }} as {{ who.stdout }}"

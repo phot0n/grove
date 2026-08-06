@@ -1,0 +1,55 @@
+---
+# Grow the root partition and its filesystem onto a root volume the provider has already
+# enlarged. Run by machine.grow_root after the cloud client's resize returns — EBS growing the
+# volume is invisible to the OS until the partition table and the filesystem follow it. Online:
+# no reboot, no unmount, so a box that is serving keeps serving. Idempotent — re-running on an
+# already-grown disk changes nothing.
+- name: Grow the root filesystem
+  hosts: all
+  become: true
+  gather_facts: false
+  tasks:
+    # growpart ships in cloud-guest-utils, which Ubuntu cloud images already carry.
+    - name: Install growpart
+      ansible.builtin.apt:
+        name: cloud-guest-utils
+        state: present
+        update_cache: true
+        cache_valid_time: 3600
+
+    - name: Find the root partition
+      ansible.builtin.command: findmnt -no SOURCE /
+      register: root_partition
+      changed_when: false
+
+    - name: Find the disk the root partition lives on
+      ansible.builtin.command: "lsblk -no PKNAME {{ root_partition.stdout | trim }}"
+      register: root_disk
+      changed_when: false
+
+    # growpart takes the disk and the partition number as separate arguments, and exits 1 with
+    # NOCHANGE when the partition already fills the disk — which is the idempotent case, not a
+    # failure.
+    - name: Grow the root partition
+      ansible.builtin.command: >-
+        growpart /dev/{{ root_disk.stdout | trim }}
+        {{ root_partition.stdout | trim | regex_replace('^.*?([0-9]+)$', '\1') }}
+      register: growpart
+      changed_when: "'NOCHANGE' not in growpart.stdout"
+      failed_when: growpart.rc != 0 and 'NOCHANGE' not in growpart.stdout
+
+    # ponytail: ext4 only, which is what the Ubuntu AMIs this provisions from use. An xfs root
+    # (Amazon Linux) needs xfs_growfs — branch on `findmnt -no FSTYPE /` if one is ever used.
+    - name: Grow the root filesystem
+      ansible.builtin.command: "resize2fs {{ root_partition.stdout | trim }}"
+      register: resize
+      changed_when: "'Nothing to do' not in resize.stdout"
+
+    - name: Read the root filesystem back
+      ansible.builtin.command: df -h /
+      register: root_df
+      changed_when: false
+
+    - name: Root filesystem
+      ansible.builtin.debug:
+        var: root_df.stdout_lines

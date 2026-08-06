@@ -1,0 +1,26 @@
+---
+# Re-render an installed agent's vmagent config and restart it — intervals, buffer size, push
+# endpoint, token and target lists, straight off the Monitoring Agent doc. Run by
+# monitoring_agent.update_config and by Rotate Token.
+#
+# No install tasks: the binary is already on the box, and downloading it again to change a
+# scrape interval only makes the change slower to land. A box that has never been installed
+# has no unit to restart — Update Config is refused there.
+- name: Update the metrics agent config
+  hosts: all
+  become: true
+  gather_facts: false
+  pre_tasks:
+    - name: Check there is somewhere to push
+      ansible.builtin.assert:
+        that:
+          - monitoring_remote_write_url | length > 0
+          - monitoring_remote_write_token | length > 0
+        fail_msg: >-
+          This agent has nowhere to push. Set a Remote Write URL on its Region (or the
+          fleet-wide one in Grove Settings) and a Metrics Token on the agent itself.
+  tasks:
+    - name: Re-render the vmagent config
+      ansible.builtin.include_role:
+        name: vmagent
+        tasks_from: config

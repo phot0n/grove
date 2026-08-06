@@ -1,0 +1,27 @@
+---
+# NVIDIA driver to install (proprietary -server variant for datacenter GPUs like
+# the T4). Must be new enough for vLLM's torch CUDA build (cu13 → driver >= 580).
+nvidia_driver_pkg: nvidia-driver-580-server
+
+# Container runtime that gives `docker run --gpus` its GPU access. Pinned because it comes
+# from NVIDIA's own repo rather than the distro, so it moves independently of the Ubuntu
+# release, and a toolkit change breaks every container placement at once. NVIDIA publishes
+# one version string across distros, so this needs no codename suffix.
+nvidia_container_toolkit_version: "1.19.1-1"
+
+# Host GPU-monitoring / diagnostic tools installed once with the driver.
+gpu_host_monitor_packages:
+  - nvtop
+
+# Data volume: the large secondary disk that holds the engine images, weights and
+# caches.
+gpu_data_device: ""
+gpu_data_mount: /opt/vllm
+gpu_data_fstype: ext4
+
+# Disks that are wiped when the box stops — cloud ephemeral scratch, matched on the model
+# lsblk reports. Never picked automatically: weights are hundreds of GB and re-downloading
+# them on every start costs far more than the durable disk does. Pinning one in
+# gpu_data_device is still allowed, for a box that genuinely wants scratch there.
+gpu_ephemeral_disk_models:
+  - Amazon EC2 NVMe Instance Storage

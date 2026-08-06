@@ -1,0 +1,51 @@
+---
+# Probe before installing, so a re-run over a box that already has the pinned version is a
+# download-free no-op (same shape as the gpu_host driver task).
+- name: Read the installed node_exporter version
+  ansible.builtin.command: node_exporter --version
+  register: node_exporter_probe
+  changed_when: false
+  failed_when: false
+
+- name: Install node_exporter {{ node_exporter_version }}
+  when: node_exporter_version not in (node_exporter_probe.stdout | default('')) + (node_exporter_probe.stderr | default(''))
+  block:
+    - name: Unpack the release into a staging dir
+      ansible.builtin.unarchive:
+        src: "https://github.com/prometheus/node_exporter/releases/download/v{{ node_exporter_version }}/node_exporter-{{ node_exporter_version }}.linux-{{ monitoring_arch }}.tar.gz"
+        dest: /tmp
+        remote_src: true
+
+    - name: Install the binary
+      ansible.builtin.copy:
+        src: "/tmp/node_exporter-{{ node_exporter_version }}.linux-{{ monitoring_arch }}/node_exporter"
+        dest: /usr/local/bin/node_exporter
+        remote_src: true
+        mode: "0755"
+      notify: restart node_exporter
+
+- name: Write the node_exporter unit
+  ansible.builtin.template:
+    src: node_exporter.service.j2
+    dest: /etc/systemd/system/node_exporter.service
+    mode: "0644"
+  notify: restart node_exporter
+
+- name: Enable and start node_exporter
+  ansible.builtin.systemd:
+    name: node_exporter
+    state: started
+    enabled: true
+    daemon_reload: true
+
+- name: Flush handlers so the health check sees the new binary, not the old one
+  ansible.builtin.meta: flush_handlers
+
+- name: Check node_exporter answers
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ node_exporter_port }}/metrics"
+    return_content: false
+  retries: 5
+  delay: 2
+  register: node_exporter_health
+  until: node_exporter_health.status == 200

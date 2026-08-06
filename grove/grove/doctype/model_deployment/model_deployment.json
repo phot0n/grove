@@ -33,8 +33,11 @@
   "section_env",
   "env",
   "tab_logs",
-  "log_lines",
   "fetch_engine_logs",
+  "toggle_log_stream",
+  "column_break_ytzv",
+  "log_lines",
+  "section_break_aell",
   "engine_logs"
  ],
  "fields": [
@@ -73,7 +76,7 @@
    "read_only": 1
   },
   {
-   "description": "The image this deployment serves from — Docker owns its lifecycle (docker ps / docker logs vllm-<slug>). The tag owns the vLLM version and its whole toolchain; the box only supplies the driver. Frozen once deployed — to move to another image, make a new deployment.",
+   "description": "The image this deployment serves from \u2014 Docker owns its lifecycle (docker ps / docker logs vllm-{slug}). The tag owns the vLLM version and its whole toolchain; the box only supplies the driver. Frozen once deployed \u2014 to move to another image, make a new deployment.",
    "fieldname": "engine_image",
    "fieldtype": "Link",
    "label": "Engine Image",
@@ -223,13 +226,27 @@
    "label": "Fetch Engine Logs"
   },
   {
+   "description": "Follows this deployment's container log live (docker logs --follow over SSH). Streaming stops on its own after 30 minutes.",
+   "fieldname": "toggle_log_stream",
+   "fieldtype": "Button",
+   "label": "Start Streaming"
+  },
+  {
    "fieldname": "engine_logs",
    "fieldtype": "HTML",
    "label": "Engine Logs"
+  },
+  {
+   "fieldname": "column_break_ytzv",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "section_break_aell",
+   "fieldtype": "Section Break"
   }
  ],
  "links": [],
- "modified": "2026-07-27 14:04:41.125593",
+ "modified": "2026-08-03 17:00:00.000000",
  "modified_by": "Administrator",
  "module": "Grove",
  "name": "Model Deployment",

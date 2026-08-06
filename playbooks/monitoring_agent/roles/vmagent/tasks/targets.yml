@@ -1,0 +1,28 @@
+---
+# The scrape config, and — when Grove pushes the lists instead of serving them — the target
+# files it reads. Split out of main.yml so push_targets.yml can re-run just this much: a fleet
+# change then costs one file write and a reload, not a reinstall.
+
+# Written before the scrape config so file_sd never points at a file that is not there yet.
+# to_nice_json, not to_json: this is the one copy of the target list a human can read on the
+# box when a job shows up down.
+- name: Write the pushed target lists
+  when: monitoring_static_targets | bool
+  ansible.builtin.copy:
+    content: "{{ item.entries | to_nice_json }}\n"
+    dest: "{{ vmagent_config_dir }}/{{ item.name }}.json"
+    mode: "0644"
+  loop:
+    - {name: targets_host, entries: "{{ monitoring_host_targets }}"}
+    - {name: targets_engine, entries: "{{ monitoring_engine_targets }}"}
+  loop_control:
+    label: "{{ item.name }}"
+  notify: restart vmagent
+
+- name: Write the scrape config
+  ansible.builtin.template:
+    src: scrape.yml.j2
+    dest: "{{ vmagent_config_dir }}/scrape.yml"
+    mode: "0600"
+  no_log: true
+  notify: restart vmagent

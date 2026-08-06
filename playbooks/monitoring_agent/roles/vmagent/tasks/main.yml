@@ -1,0 +1,28 @@
+---
+# Install, then configure. Requirements are asserted in agent.yml's pre_tasks, before
+# node_exporter installs — a check here fails after the box is already half built.
+- name: Read the installed vmagent version
+  ansible.builtin.command: vmagent -version
+  register: vmagent_probe
+  changed_when: false
+  failed_when: false
+
+- name: Install vmagent {{ vmagent_version }}
+  when: vmagent_version not in (vmagent_probe.stdout | default('')) + (vmagent_probe.stderr | default(''))
+  block:
+    - name: Unpack vmutils into a staging dir
+      ansible.builtin.unarchive:
+        src: "https://github.com/VictoriaMetrics/VictoriaMetrics/releases/download/v{{ vmagent_version }}/vmutils-linux-{{ monitoring_arch }}-v{{ vmagent_version }}.tar.gz"
+        dest: /tmp
+        remote_src: true
+
+    - name: Install the binary
+      ansible.builtin.copy:
+        src: /tmp/vmagent-prod
+        dest: /usr/local/bin/vmagent
+        remote_src: true
+        mode: "0755"
+      notify: restart vmagent
+
+- name: Configure vmagent
+  ansible.builtin.include_tasks: config.yml

@@ -5,11 +5,11 @@
 import frappe
 from frappe.model.document import Document
 
-from grove.ansible import Ansible
-from grove.utils import ansible_project_dir
+from grove.ansible import AnsibleHost
+from grove.monitoring import run_exporters_play
 
 
-class InferenceServer(Document):
+class InferenceServer(AnsibleHost, Document):
 	# begin: auto-generated types
 	# This code is auto-generated. Do not modify anything in this block.
 
@@ -20,11 +20,43 @@ class InferenceServer(Document):
 
 		data_path: DF.Data
 		is_provisioned: DF.Check
+		is_static_ip: DF.Check
 		machine: DF.Link
 		machine_ip: DF.Data | None
 		region: DF.Link | None
-		status: DF.Literal["Pending", "Installing", "Active", "Broken"]
+		status: DF.Literal["Pending", "Installing", "Active", "Broken", "Terminated"]
 	# end: auto-generated types
+
+	# ── The box ───────────────────────────────────────────────────────────────
+	# Everything that reaches the hardware goes through here: a Model Deployment talks to
+	# its Inference Server, and the Server is the only side that knows about a Machine.
+
+	@property
+	def machine_doc(self):
+		"""The box this server runs on."""
+		if not self.machine:
+			frappe.throw(f"Inference Server {self.name} has no Machine to reach.")
+		return frappe.get_doc("Machine", self.machine)
+
+	@property
+	def gpus(self):
+		"""The cards on this box (Machine GPU rows), in CUDA index order."""
+		if not self.machine:
+			return []
+		return frappe.get_all(
+			"Machine GPU",
+			filters={"parent": self.machine, "parenttype": "Machine"},
+			fields=["gpu_index", "gpu_model", "vram_gb"],
+			order_by="gpu_index",
+		)
+
+	def run_command(self, command, timeout=60):
+		"""Run one argv on this server's box over SSH and return what it printed."""
+		return self.machine_doc.run_command(command, timeout=timeout)
+
+	def stream_command(self, command):
+		"""Follow one argv on this server's box, yielding its output line by line."""
+		return self.machine_doc.stream_command(command)
 
 	@frappe.whitelist()
 	def get_gpu_allocation(self):
@@ -34,14 +66,7 @@ class InferenceServer(Document):
 
 		Two deployments naming the same CUDA index is not prevented anywhere — the row
 		reports every claimant so the clash is visible rather than silently halving VRAM."""
-		if not self.machine:
-			return []
-		gpus = frappe.get_all(
-			"Machine GPU",
-			filters={"parent": self.machine, "parenttype": "Machine"},
-			fields=["gpu_index", "gpu_model", "vram_gb"],
-			order_by="gpu_index",
-		)
+		gpus = self.gpus
 		claims = {}
 		for deployment in frappe.get_all(
 			"Model Deployment",
@@ -61,6 +86,21 @@ class InferenceServer(Document):
 		return gpus
 
 	@frappe.whitelist()
+	def install_exporters(self):
+		"""Button: install this box's metrics exporters — node, and DCGM since it has GPUs
+		(long job — it SSHes to the box). They only listen; the Monitoring Agent named on
+		this doc is what scrapes them."""
+		if not self.machine:
+			frappe.throw("Set a Machine before installing exporters.")
+		frappe.enqueue_doc(
+			self.doctype, self.name, "provision_exporters", queue="long", timeout=1800
+		)
+		frappe.msgprint(f"Installing the metrics exporters on {self.name} — watch its Ansible Plays.")
+
+	def provision_exporters(self):
+		return run_exporters_play(self)
+
+	@frappe.whitelist()
 	def setup(self):
 		"""Button: one-time host bootstrap (NVIDIA driver + data volume) via the
 		gpu_host role. Run once per box before deploying models onto it — Model
@@ -78,20 +118,20 @@ class InferenceServer(Document):
 
 	def provision(self):
 		"""One-time host bootstrap for an Inference Server: NVIDIA driver + data
-		volume + Docker (the gpu_host role via provision.yml). Runs once per box — model
-		serves (deploy_model) assume an already-provisioned host and gate on
-		is_provisioned. Mirrors deploy_agent on the proxy side."""
+		volume + Docker (the gpu_host role), then its metrics exporters (node_exporter,
+		dcgm_exporter if the Machine has GPUs) — all in the one provision.yml play, so Setup
+		is a single Ansible run. Runs once per box — model serves (deploy_model) assume an
+		already-provisioned host and gate on is_provisioned. Mirrors deploy_agent on the
+		proxy side."""
 		frappe.db.set_value("Inference Server", self.name, "status", "Installing")
 		frappe.db.commit()
 
-		project_dir = ansible_project_dir("vllm")
-		ansible = Ansible(project_root=project_dir)
-		play_name, rc = ansible.run_playbook(
-			playbook_name="provision.yml",
-			server_type="Inference Server",
-			server_name=self.name,
-			machine_name=self.machine,
-			extravars={"gpu_data_mount": self.data_path},
+		play_name, rc = self.run_playbook(
+			"provision.yml",
+			extravars={
+				"gpu_data_mount": self.data_path,
+				"monitoring_has_gpu": bool(self.gpus),
+			},
 		)
 
 		ok = rc == 0

@@ -17,7 +17,7 @@
   {"fieldname": "play", "fieldtype": "Link", "label": "Play", "options": "Ansible Play", "read_only": 1, "in_list_view": 1},
   {"fieldname": "task_name", "fieldtype": "Data", "label": "Task", "read_only": 1, "in_list_view": 1},
   {"fieldname": "host", "fieldtype": "Data", "label": "Host", "read_only": 1, "in_list_view": 1},
-  {"fieldname": "status", "fieldtype": "Select", "label": "Status", "options": "ok\nchanged\nfailed\nskipped\nunreachable", "read_only": 1, "in_list_view": 1},
+  {"fieldname": "status", "fieldtype": "Select", "label": "Status", "options": "Pending\nRunning\nSuccess\nFailure\nUnreachable\nSkipped", "default": "Pending", "read_only": 1, "in_list_view": 1},
   {"fieldname": "duration", "fieldtype": "Float", "label": "Duration (s)", "read_only": 1},
   {"fieldname": "section_output", "fieldtype": "Section Break", "label": "Output"},
   {"fieldname": "output", "fieldtype": "Code", "label": "Output", "read_only": 1, "options": "JSON"}
@@ -33,5 +33,12 @@
  ],
  "sort_field": "creation",
  "sort_order": "DESC",
- "states": []
+ "states": [
+  {"title": "Pending", "color": "Gray"},
+  {"title": "Running", "color": "Blue"},
+  {"title": "Success", "color": "Green"},
+  {"title": "Failure", "color": "Red"},
+  {"title": "Unreachable", "color": "Orange"},
+  {"title": "Skipped", "color": "Gray"}
+ ]
 }

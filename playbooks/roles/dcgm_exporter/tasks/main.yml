@@ -1,0 +1,41 @@
+---
+# Only runs on a box with GPUs (exporters.yml gates the role). Needs the NVIDIA driver, which
+# the gpu_host role installs — DCGM talks to it directly, with no container runtime involved.
+- name: Verify an NVIDIA driver is present and working
+  ansible.builtin.command: nvidia-smi
+  register: dcgm_nvidia_smi
+  changed_when: false
+  failed_when: dcgm_nvidia_smi.rc != 0
+  # Fails when the box has no working driver: run the Inference Server's Setup (gpu_host)
+  # first — that is what installs one.
+
+- name: Add NVIDIA's CUDA repository
+  ansible.builtin.apt:
+    deb: "{{ dcgm_cuda_keyring_url }}"
+
+- name: Install DCGM and its exporter
+  ansible.builtin.apt:
+    name: "{{ dcgm_packages }}"
+    state: present
+    update_cache: true
+
+# Both units ship with the packages. The exporter's own unit already declares
+# Wants=/After=nvidia-dcgm.service and listens on :9400, so there is nothing here to template.
+- name: Enable and start DCGM and its exporter
+  ansible.builtin.systemd:
+    name: "{{ item }}"
+    state: started
+    enabled: true
+    daemon_reload: true
+  loop:
+    - nvidia-dcgm
+    - nvidia-dcgm-exporter
+
+- name: Check the DCGM exporter answers
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ dcgm_exporter_port }}/metrics"
+    return_content: false
+  retries: 10
+  delay: 3
+  register: dcgm_health
+  until: dcgm_health.status == 200

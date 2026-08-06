@@ -1,0 +1,47 @@
+{#
+  Rendered by the vmagent role — do not edit on the box. Edit the Monitoring Agent (or Grove
+  Settings) and hit Install.
+
+  Two ways to learn what to scrape, chosen by the agent's Push Targets Manually box:
+
+  http_sd (default) — both jobs ask Grove directly and re-ask on the refresh interval, so a
+  deploy or a new box lands here with nothing to re-run.
+
+  file_sd — Grove writes the lists to this box instead, for a Grove the box cannot reach (a
+  developer's laptop). Same entries, same labels; the difference is that they are a snapshot
+  and go stale until Push Targets is pressed again.
+
+  Either way the labels (machine, region, server, and `engine` verbatim) arrive with each
+  target, so nothing on this box has to be kept in step with the fleet by hand.
+
+  The SD token rides in the query string, not an Authorization header: Frappe's validate_auth
+  rejects any header it cannot resolve to a user before the endpoint runs, so a bare shared
+  secret cannot be sent that way. That puts a live credential in this file — hence its 0600 —
+  and in Grove's own access log on every fetch.
+
+  How often the lists are re-fetched is NOT here: vmagent rejects Prometheus's per-config
+  `refresh_interval` on an http_sd_config and takes -promscrape.httpSDCheckInterval instead,
+  set in the unit. Both jobs therefore share one interval.
+#}
+global:
+  scrape_interval: {{ monitoring_scrape_interval }}
+
+scrape_configs:
+  - job_name: grove-host
+{% if monitoring_static_targets %}
+    file_sd_configs:
+      - files: ["{{ vmagent_config_dir }}/targets_host.json"]
+{% else %}
+    http_sd_configs:
+      - url: "{{ monitoring_sd_url }}?agent={{ monitoring_agent | urlencode }}&kind=host&token={{ monitoring_sd_token | urlencode }}"
+{% endif %}
+
+  - job_name: grove-engine
+    scrape_interval: {{ monitoring_engine_scrape_interval }}
+{% if monitoring_static_targets %}
+    file_sd_configs:
+      - files: ["{{ vmagent_config_dir }}/targets_engine.json"]
+{% else %}
+    http_sd_configs:
+      - url: "{{ monitoring_sd_url }}?agent={{ monitoring_agent | urlencode }}&kind=engine&token={{ monitoring_sd_token | urlencode }}"
+{% endif %}
