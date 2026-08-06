@@ -1,0 +1,20 @@
+{#
+  Rendered by the vllm role — one file per Model Deployment, included by the engine proxy's
+  server block. A bare location, never a server{}: conf.d holds the server, this holds a route
+  into it.
+
+  World-readable (0644, unlike the 0600 env file) because nginx reads it — so nothing secret
+  belongs here. The engine's API key is not in this file; the gateway sends it per request.
+#}
+location /e/{{ vllm_instance }}/ {
+	# The trailing slash is what strips the prefix: /e/{{ vllm_instance }}/v1/chat/completions
+	# reaches the engine as /v1/chat/completions.
+	proxy_pass http://127.0.0.1:{{ vllm_port }}/;
+	proxy_http_version 1.1;
+	proxy_set_header Connection "";
+	# Stream SSE straight through, and let a long generation finish — the same two settings the
+	# gateway uses on its own /v1/ location.
+	proxy_buffering off;
+	proxy_read_timeout 600s;
+	proxy_send_timeout 600s;
+}

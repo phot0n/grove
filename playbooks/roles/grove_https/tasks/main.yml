@@ -1,0 +1,40 @@
+---
+- name: Create the TLS and nginx config directories
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    mode: "0755"
+  loop:
+    - "{{ grove_tls_dir }}"
+    - "{{ grove_metrics_htpasswd | dirname }}"
+
+# creates: — one certificate per box, kept across re-runs. Reissuing on every play would hand out
+# a new key for free and leave the old one trusted by nothing, while changing no behaviour: no
+# consumer verifies this certificate.
+- name: Generate the self-signed certificate
+  ansible.builtin.command: >-
+    openssl req -x509 -newkey rsa:2048 -nodes -days {{ grove_tls_days }}
+    -subj "{{ grove_tls_subject }}"
+    -keyout {{ grove_tls_key }} -out {{ grove_tls_cert }}
+  args:
+    creates: "{{ grove_tls_cert }}"
+
+- name: Restrict the private key
+  ansible.builtin.file:
+    path: "{{ grove_tls_key }}"
+    mode: "0600"
+
+# 0644 because the unprivileged nginx worker reads it on every /metrics request — nginx does not
+# cache this file, so a changed hash takes effect with no reload. It holds a hash, not a password.
+#
+# Skipped when no hash was passed, rather than writing a line nothing can match: deploy_openresty
+# is run by hand, and a play invoked without the Grove Settings vars would otherwise replace a
+# working file with one that locks the agent out of a box nobody is looking at. A box that has
+# never been given a hash has no file at all, so nginx refuses /metrics outright — still shut,
+# just not silently.
+- name: Write the metrics htpasswd file
+  ansible.builtin.template:
+    src: metrics.htpasswd.j2
+    dest: "{{ grove_metrics_htpasswd }}"
+    mode: "0644"
+  when: scrape_password_hash | length > 0

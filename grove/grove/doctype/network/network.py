@@ -14,9 +14,14 @@ PROXY_INGRESS_RULES = [
 	{"protocol": "tcp", "from_port": 80, "to_port": 80, "cidr": "0.0.0.0/0"},
 	{"protocol": "tcp", "from_port": 443, "to_port": 443, "cidr": "0.0.0.0/0"},
 ]
+# 443 and nothing else for the workload: the box's engine proxy (nginx) fronts every vLLM
+# instance under /e/<slug>/ and re-publishes the exporters under /metrics/*, so a box that serves
+# ten models opens no more than one that serves one. The old 8080-8085 range was a guess that
+# _assign_engine_port could outgrow — the seventh deployment on a box provisioned green and was
+# unreachable — and it left 9100/9400 to be opened by hand.
 INFERENCE_INGRESS_RULES = [
 	{"protocol": "tcp", "from_port": 22, "to_port": 22, "cidr": "0.0.0.0/0"},
-	{"protocol": "tcp", "from_port": (8080, 8085), "to_port": (8080, 8085), "cidr": "0.0.0.0/0"},
+	{"protocol": "tcp", "from_port": 443, "to_port": 443, "cidr": "0.0.0.0/0"},
 ]
 
 # Pool auto-assigned CIDR blocks are carved from — /16s never collide with each other, so any
@@ -134,9 +139,12 @@ class Network(Document):
 	def create_security_groups(self):
 		"""Button: create this Network's Proxy and Inference security groups on AWS, with their
 		fixed ingress rules, and record the ids. Skips a role whose field is already set, so
-		re-clicking after one is filled in by hand never creates a duplicate. The Inference
-		group's engine-port rule sources from the Proxy group, so Proxy is created first when
-		both are missing. Also runs as the second half of Create Network."""
+		re-clicking after one is filled in by hand never creates a duplicate. Also runs as the
+		second half of Create Network.
+
+		Only ever creates. There is no revoke path here, so a Network whose groups already exist
+		keeps whatever rules they hold — a fleet built before the engine proxy has to have 443
+		added and the old engine range removed by hand."""
 		if not self.vpc_id:
 			frappe.throw(f"Set a VPC ID on Network {self.name} before creating security groups.")
 
@@ -149,7 +157,7 @@ class Network(Document):
 
 		if not self.inference_security_group_ids:
 			inference_sg_id = self.cloud_client.create_security_group(
-				f"{self.name}-inference", "Grove-managed: SSH + engine ports (8080-8085)", self.vpc_id
+				f"{self.name}-inference", "Grove-managed: SSH + engine proxy (443)", self.vpc_id
 			)
 			self.cloud_client.authorize_ingress(inference_sg_id, INFERENCE_INGRESS_RULES)
 			self.db_set("inference_security_group_ids", inference_sg_id)

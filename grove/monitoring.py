@@ -18,6 +18,14 @@ DCGM_EXPORTER_PORT = 9400
 # vmagent's own /metrics — its -httpListenAddr in the vmagent role.
 VMAGENT_PORT = 8429
 
+# Every box now answers on one TLS port, and the exporters are re-published as paths behind it
+# (the engine_proxy role on an inference box, OpenResty on a proxy box) — so a box needs nothing
+# open but 22 and this. The exporters still listen on their own ports; they are simply no longer
+# reachable from outside.
+BOX_HTTPS_PORT = 443
+NODE_METRICS_PATH = "/metrics/node"
+GPU_METRICS_PATH = "/metrics/gpu"
+
 
 def run_exporters_play(server):
 	"""Install the metrics exporters on a server's box: node, and DCGM when the Machine has
@@ -91,14 +99,18 @@ def agent_targets(agent):
 	itself, before anyone notices a gap in a dashboard.
 
 	Scraped over localhost, since this is the box doing the scraping — nothing here has to be
-	reachable from outside, and no security group rule is needed for it."""
+	reachable from outside, and no security group rule is needed for it.
+
+	Not through a TLS front like the fleet's, and so not built by exporter_entry: this box
+	carries no Inference or Proxy Server doc, so nothing ever installs nginx on it. Plain http,
+	the default /metrics, and an address that is already unique per port."""
 	box = frappe.db.get_value("Monitoring Agent", agent, ["machine", "region"], as_dict=True)
 	if not box:
 		return []
 	labels = {"machine": box.machine or "", "region": box.region or "", "server": agent}
 	return [
-		exporter_entry("127.0.0.1", NODE_EXPORTER_PORT, labels),
-		exporter_entry("127.0.0.1", VMAGENT_PORT, labels),
+		{"targets": [f"127.0.0.1:{port}"], "labels": dict(labels)}
+		for port in (NODE_EXPORTER_PORT, VMAGENT_PORT)
 	]
 
 
@@ -180,19 +192,38 @@ def build_host_targets(boxes):
 			"region": box.get("region") or "",
 			"server": box["name"],
 		}
-		entries.append(exporter_entry(box["ip"], NODE_EXPORTER_PORT, labels))
+		entries.append(exporter_entry(box["ip"], NODE_EXPORTER_PORT, NODE_METRICS_PATH, labels))
 		if box.get("has_gpu"):
-			entries.append(exporter_entry(box["ip"], DCGM_EXPORTER_PORT, labels))
+			entries.append(exporter_entry(box["ip"], DCGM_EXPORTER_PORT, GPU_METRICS_PATH, labels))
 	return entries
 
 
-def exporter_entry(ip, port, labels):
-	return {"targets": [f"{ip}:{port}"], "labels": dict(labels)}
+def exporter_entry(ip, port, metrics_path, labels):
+	"""One exporter, scraped through its box's TLS front rather than on its own port.
+
+	`instance` is set here instead of being left to default from the address, which is now
+	`<ip>:443` for every exporter on the box: node and DCGM would otherwise collapse into one
+	series name that means nothing. The value keeps the exporter's own port, so it is byte
+	identical to what these targets reported before they moved behind the front."""
+	return {
+		"targets": [f"{ip}:{BOX_HTTPS_PORT}"],
+		"labels": {
+			"__scheme__": "https",
+			"__metrics_path__": metrics_path,
+			"instance": f"{ip}:{port}",
+			**labels,
+		},
+	}
 
 
 def engine_entry(engine_url, labels):
 	"""One entry for an engine, addressed exactly where the gateway routes it. None when
-	there is no URL yet — a deployment mid-provision, or a pod still loading."""
+	there is no URL yet — a deployment mid-provision, or a pod still loading.
+
+	Derived from the URL rather than branched on what kind of engine it is, because the two
+	kinds no longer share a shape: a deployment sits behind its box's front at
+	`https://<ip>/e/<slug>`, while a pod — which has no box, no Ansible and no front — keeps
+	`http://<host>:<port>`. Both fall out of the same two lines."""
 	parsed = urlparse(engine_url or "")
 	if not parsed.hostname:
 		return None
@@ -204,6 +235,10 @@ def engine_entry(engine_url, labels):
 			# Reformatted, the series can no longer be joined to the route it describes.
 			"engine": engine_url,
 			"__scheme__": parsed.scheme or "http",
+			"__metrics_path__": f"{parsed.path.rstrip('/')}/metrics",
+			# Unique by construction. Every engine on a box shares one address now, so the
+			# default would name the box and merge them.
+			"instance": engine_url,
 			**{key: value or "" for key, value in labels.items()},
 		},
 	}

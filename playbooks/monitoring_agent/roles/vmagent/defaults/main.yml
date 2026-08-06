@@ -36,3 +36,10 @@ monitoring_engine_targets: []
 # ── Scraping ────────────────────────────────────────────────────────────────
 monitoring_scrape_interval: 15s
 monitoring_engine_scrape_interval: 5s
+
+# Basic auth for the host job: every box's /metrics/* is behind it, since an exporter answers
+# whoever reaches it. The username is a constant that must equal scrape_username in the
+# grove_https role, which writes the htpasswd the boxes check against; only the password is
+# fleet-wide config, from Grove Settings.
+monitoring_scrape_username: grove
+monitoring_scrape_password: ""

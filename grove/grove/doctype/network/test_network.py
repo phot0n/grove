@@ -7,7 +7,36 @@ import unittest
 import frappe
 from frappe.tests import IntegrationTestCase
 
-from grove.grove.doctype.network.network import parse_security_group_ids
+from grove.grove.doctype.network.network import (
+	INFERENCE_INGRESS_RULES,
+	PROXY_INGRESS_RULES,
+	parse_security_group_ids,
+)
+
+
+class TestIngressRules(unittest.TestCase):
+	"""What Grove opens to 0.0.0.0/0 on a box it builds. Nothing at runtime notices a rule that
+	is wider than it needs to be — a widened group is invisible until somebody scans the box."""
+
+	def ports(self, rules):
+		return {(rule["from_port"], rule["to_port"]) for rule in rules}
+
+	def test_an_inference_box_opens_only_ssh_and_its_engine_proxy(self):
+		# Every vLLM instance is behind nginx under /e/<slug>/, and the exporters under
+		# /metrics/* — so a box serving ten models opens no more than one serving a single model.
+		# No 80: the front is TLS-only and nothing on the box listens in the clear.
+		self.assertEqual(self.ports(INFERENCE_INGRESS_RULES), {(22, 22), (443, 443)})
+
+	def test_no_engine_port_is_reachable_from_outside(self):
+		# The old rule was the fixed range 8080-8085, written as a tuple, which _assign_engine_port
+		# could outgrow: the seventh deployment on a box provisioned green and was unreachable.
+		for rule in INFERENCE_INGRESS_RULES:
+			with self.subTest(rule["from_port"]):
+				self.assertIsInstance(rule["from_port"], int)
+				self.assertFalse(rule["from_port"] <= 8080 <= rule["to_port"])
+
+	def test_a_proxy_box_still_serves_the_client_api(self):
+		self.assertEqual(self.ports(PROXY_INGRESS_RULES), {(22, 22), (80, 80), (443, 443)})
 
 
 class TestParseSecurityGroupIds(unittest.TestCase):

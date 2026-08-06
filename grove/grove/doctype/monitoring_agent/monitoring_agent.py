@@ -76,6 +76,14 @@ class MonitoringAgent(AnsibleHost, Document):
 		if not self.get_password("metrics_token", raise_exception=False):
 			problems.append("Metrics Token is empty — the ingestion service would reject the push.")
 
+		# Every box's /metrics/* is behind basic auth. Without this the agent installs happily and
+		# is refused by every host target it scrapes, which reads as a fleet that is simply down.
+		if not variables["monitoring_scrape_password"]:
+			problems.append(
+				"Grove Settings → Metrics Scrape Password is empty — every box would refuse this "
+				"agent's host scrapes."
+			)
+
 		# Only worth checking when the box will do the fetching. Grove reads the same docs either
 		# way, so a pushed list has nothing here that could be wrong — and on the dev site this
 		# check is exactly the one that cannot pass.

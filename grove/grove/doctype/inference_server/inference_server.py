@@ -146,6 +146,9 @@ class InferenceServer(AnsibleHost, Document):
 				"monitoring_has_gpu": bool(self.gpus),
 				# The driver reboot outlasts Ansible's default on a bare metal box.
 				"gpu_reboot_timeout": 1800 if is_bare_metal else 600,
+				# The engine proxy's htpasswd: this play and serve.yml both write it, from the
+				# one source, so whichever runs last cannot disagree with the other.
+				**frappe.get_single("Grove Settings").scrape_auth_variables,
 			},
 		)
 

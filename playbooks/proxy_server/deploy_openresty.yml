@@ -11,6 +11,12 @@
   vars:
     grove_dir: "{{ playbook_dir }}"
 
+  # Roles run before tasks, which is what this needs: nginx.conf declares a `listen 443 ssl`
+  # metrics server, and OpenResty will not start with no certificate on disk. Re-running it is
+  # also how a rotated scrape password reaches this box.
+  roles:
+    - grove_https
+
   tasks:
     - name: grove lua dir
       ansible.builtin.file:

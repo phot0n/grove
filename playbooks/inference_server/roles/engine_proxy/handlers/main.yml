@@ -1,0 +1,13 @@
+---
+# Validate before reloading, and rely on Ansible running handlers in DEFINITION order rather than
+# notify order. A reload alone would not be enough: `-s reload` only sends SIGHUP, so on a bad
+# config the master logs, keeps serving the old one, and the caller still exits 0 — a silent
+# no-op that detonates hours later at the next restart, taking every engine on the box with it.
+- name: check engine proxy config
+  ansible.builtin.command: /usr/local/openresty/bin/openresty -t
+  changed_when: false
+
+- name: reload engine proxy
+  ansible.builtin.systemd:
+    name: openresty
+    state: reloaded

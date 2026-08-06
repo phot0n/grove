@@ -207,23 +207,30 @@ class ModelDeployment(Document):
 			port += 1
 		self.engine_port = port
 
-	def _derive_engine_url(self):
-		"""engine_url is where the gateway forwards — this deployment's OWN vLLM
-		instance, i.e. http://<machine public ip>:<engine_port>. No LiteLLM front:
-		vLLM 0.24+ serves /v1/messages natively + reports the prefix cache. Derived
-		(read-only) from the box IP + the auto-allocated engine_port, never hand-typed.
-		Runs AFTER _assign_engine_port and before the mandatory check, so both the
-		port and this reqd field are satisfied here."""
-		if not self.inference_server:
-			return  # no box yet → let the reqd check flag engine_url
+	@property
+	def derived_engine_url(self):
+		"""Where the gateway forwards: this deployment's location on its box's engine proxy,
+		https://<machine public ip>/e/<slug>. No LiteLLM front — vLLM 0.24+ serves /v1/messages
+		natively and reports the prefix cache — but nginx does front it, so a box exposes one
+		TLS port however many models it serves, and engine_port stops being public.
+
+		Derived, never hand-typed, and the one owner of the formula: deploy_model and
+		reconfigure_deployment persist it after a successful play, which is how an existing
+		deployment migrates without its URL moving before its box has the route."""
 		machine_ip = frappe.db.get_value("Inference Server", self.inference_server, "machine_ip")
 		if not machine_ip:
 			frappe.throw(
 				f"Inference Server {self.inference_server} has no machine IP "
 				"(set its Machine's public IP) — cannot derive Engine URL."
 			)
-		port = self.engine_port or ENGINE_PORT_BASE
-		self.engine_url = f"http://{machine_ip}:{port}"
+		return f"https://{machine_ip}/e/{_instance_slug(self.name)}"
+
+	def _derive_engine_url(self):
+		"""Runs AFTER _assign_engine_port and before the mandatory check, so both the port and
+		this reqd field are satisfied here."""
+		if not self.inference_server:
+			return  # no box yet → let the reqd check flag engine_url
+		self.engine_url = self.derived_engine_url
 
 	def on_update(self):
 		# A model is "published" only while it has a live deployment — keep the
@@ -429,6 +436,9 @@ def _vllm_extravars(md, m, inf, key):
 		# What the role checks the box's free space against, before either download starts.
 		# 0 means the figure was never fetched, which the role reads as "cannot check".
 		"vllm_weights_gb": serve.weights_gb,
+		# serve.yml runs grove_https and engine_proxy ahead of the vllm role, so this play
+		# writes the box's htpasswd too — from the same source provision.yml reads.
+		**frappe.get_single("Grove Settings").scrape_auth_variables,
 	}
 	# The image is what the box serves from: the role pulls it and Docker owns the container.
 	# Credentials only exist for a private registry; a public pull skips the login task.
@@ -486,7 +496,7 @@ def deploy_model(model_deployment):
 		reference_docname=md.name,
 	)
 
-	frappe.db.set_value("Model Deployment", md.name, "status", "Active" if rc == 0 else "Broken")
+	frappe.db.set_value("Model Deployment", md.name, _post_play_state(md, rc))
 	# db.set_value skips the controller on_update — recompute the model's
 	# published flag (Active deployment → publishable, Broken → maybe unpublish).
 	from grove.grove.doctype.model.model import sync_published
@@ -537,9 +547,24 @@ def reconfigure_deployment(model_deployment):
 		reference_docname=md.name,
 	)
 
-	frappe.db.set_value("Model Deployment", md.name, "status", "Active" if rc == 0 else "Broken")
+	frappe.db.set_value("Model Deployment", md.name, _post_play_state(md, rc))
 	frappe.db.commit()
 	return play_name, rc
+
+
+def _post_play_state(md, rc):
+	"""What a finished serve play leaves on the doc. engine_url moves only on success: a failed
+	play may not have written the box's nginx location, and the gateway would then forward to a
+	route that is not there.
+
+	This is also the migration. A deployment served before the engine proxy existed keeps its
+	old http://<ip>:<port> until its next Deploy or Update Engine Config — the same run that puts
+	the location on the box — so the URL never moves ahead of the route it names. Not md.save():
+	a full validate can throw on drift unrelated to this deploy (a sibling that claimed a GPU)
+	after the play already succeeded."""
+	if rc != 0:
+		return {"status": "Broken"}
+	return {"status": "Active", "engine_url": md.derived_engine_url}
 
 
 def teardown_deployment(model_deployment):

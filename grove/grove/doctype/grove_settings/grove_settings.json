@@ -11,6 +11,8 @@
   "metrics_remote_write_url",
   "column_break_monitoring",
   "sd_token",
+  "scrape_password",
+  "scrape_password_hash",
   "monitoring_extra_labels"
  ],
  "fields": [
@@ -20,6 +22,8 @@
   {"fieldname": "metrics_remote_write_url", "fieldtype": "Data", "label": "Metrics Remote Write URL", "description": "Where a Monitoring Agent pushes when its Region names no endpoint of its own, e.g. http://13.206.253.38:8000/v1/write. Prefer https — the agent's token crosses the network on every push. The token itself lives on each agent."},
   {"fieldname": "column_break_monitoring", "fieldtype": "Column Break"},
   {"fieldname": "sd_token", "fieldtype": "Password", "label": "Service Discovery Token", "description": "16+ characters of A-Z a-z 0-9 - _ . ~ — e.g. `openssl rand -hex 32`. Every Monitoring Agent sends it to fetch its target list, and it is the only thing guarding that list; unset, the endpoint refuses everyone. It travels in the query string, so it appears in this site's access log — rotate it here and hit Install on each agent."},
+  {"fieldname": "scrape_password", "fieldtype": "Password", "label": "Metrics Scrape Password", "description": "Guards /metrics/node and /metrics/gpu on every box — e.g. `openssl rand -hex 32`. Boxes get its hash, the agent gets the password. Unset, a box writes no htpasswd at all and nginx refuses the endpoint. Rotating it means re-running each box's play (Setup, Update Engine Config, deploy_openresty.yml) and Install on each agent."},
+  {"fieldname": "scrape_password_hash", "fieldtype": "Data", "label": "Metrics Scrape Password Hash", "read_only": 1, "description": "Derived from the password above and written to each box's htpasswd file. Recomputed only when the password changes, so re-running a play does not rewrite the file."},
   {"fieldname": "monitoring_extra_labels", "fieldtype": "Small Text", "label": "Extra Labels", "description": "JSON stamped on every series pushed from every box, e.g. {\"env\": \"prod\", \"tenant\": \"grove\"}."}
  ],
  "links": [],

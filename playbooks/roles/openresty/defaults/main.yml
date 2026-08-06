@@ -1,0 +1,17 @@
+---
+# One OpenResty version for the whole fleet. Both the gateway's data path and every inference
+# box's engine proxy run this build, so a box's nginx behaviour never depends on which Ubuntu
+# release it happened to be provisioned from.
+#
+# Pinned deliberately: it sits in the request path on every box. The cost of pinning is that
+# security fixes do NOT arrive with the distro's unattended-upgrades — bumping this is a job
+# somebody has to do, fleet-wide, and it is the reason to keep the number in exactly one place.
+openresty_version: "1.31.1.1"
+
+# Upstream repo, not the distro: OpenResty is not packaged by Ubuntu.
+openresty_keyring: /usr/share/keyrings/openresty.gpg
+openresty_list: /etc/apt/sources.list.d/openresty.list
+
+# Log directory the config's error_log/access_log point at. Created here because the package
+# does not, and OpenResty refuses to start when it cannot open its error log.
+openresty_log_dir: /var/log/openresty

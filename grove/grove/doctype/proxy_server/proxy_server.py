@@ -121,6 +121,9 @@ class ProxyServer(AnsibleHost, Document):
 				"admin_token": self.get_password("admin_token"),
 				"agent_source": gateway_service_source(),
 				"gateway_id": self.name,
+				# nginx.conf declares a metrics server on :443 — grove_https puts the certificate
+				# and the htpasswd it reads on the box before OpenResty is asked to start.
+				**frappe.get_single("Grove Settings").scrape_auth_variables,
 			},
 		)
 

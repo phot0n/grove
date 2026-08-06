@@ -1,0 +1,28 @@
+---
+# The single public port on an inference box. Engines answer under /e/<instance>/ and the
+# exporters are re-published under /metrics/*, so the security group needs 22 and this and
+# nothing else — vLLM's own port, node_exporter and dcgm_exporter stay box-local.
+engine_proxy_port: 443
+
+# Overwrites the packaged config, the way the gateway's nginx.conf does. Not a conf.d snippet:
+# OpenResty ships neither conf.d nor sites-enabled, and owning the whole file removes the
+# distro's default site and the `default_server` collision it used to cause.
+engine_proxy_conf: /usr/local/openresty/nginx/conf/nginx.conf
+
+# One file per Model Deployment, written by the vllm role and included by the server block.
+# Nothing else writes here, so a file with no deployment behind it is a teardown that was missed.
+engine_proxy_engines_dir: /etc/grove/nginx/engines
+
+# Where the exporters are re-published. Grove hands these exact paths to the Monitoring Agent as
+# __metrics_path__ (grove/monitoring.py) — a mismatch scrapes a 404, which reads as a box that is
+# simply down. TestExporterPortsAgree asserts the pair.
+engine_proxy_node_metrics_path: /metrics/node
+engine_proxy_gpu_metrics_path: /metrics/gpu
+
+# Restated here rather than read from the exporter roles: serve.yml runs this role without them,
+# so their defaults are not in scope. Restated, therefore asserted in the tests.
+engine_proxy_node_upstream: 127.0.0.1:9100
+engine_proxy_gpu_upstream: 127.0.0.1:9400
+
+# The gateway accepts and forwards bodies up to this size (playbooks/proxy_server/nginx.conf).
+engine_proxy_max_body_size: 32m

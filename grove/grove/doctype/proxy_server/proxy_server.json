@@ -9,39 +9,116 @@
   "machine",
   "public_ip",
   "is_static_ip",
-  "listen_port",
-  "region",
   "status",
-  "monitoring_agent",
   "column_break_admin",
+  "region",
+  "monitoring_agent",
   "admin_url",
   "admin_token",
   "section_redis",
   "redis_appendfsync"
  ],
  "fields": [
-  {"fieldname": "machine", "fieldtype": "Link", "label": "Machine", "options": "Machine", "reqd": 1, "in_list_view": 1},
-  {"fieldname": "public_ip", "fieldtype": "Data", "label": "Public IP", "fetch_from": "machine.public_ip", "read_only": 1, "in_list_view": 1},
-  {"fieldname": "is_static_ip", "fieldtype": "Check", "label": "Static IP", "fetch_from": "machine.is_static_ip", "read_only": 1, "description": "Whether this box's address survives a stop. Owned by the Machine — set it there."},
-  {"fieldname": "listen_port", "fieldtype": "Int", "label": "Listen Port", "default": "80"},
-  {"fieldname": "region", "fieldtype": "Link", "label": "Region", "options": "Region", "fetch_from": "machine.region", "read_only": 1, "in_list_view": 1},
-  {"fieldname": "status", "fieldtype": "Select", "label": "Status", "options": "Pending\nInstalling\nActive\nBroken\nTerminated", "default": "Pending", "in_list_view": 1},
-  {"fieldname": "monitoring_agent", "fieldtype": "Link", "label": "Monitoring Agent", "options": "Monitoring Agent", "description": "The agent that scrapes this box. Blank = not scraped."},
-  {"fieldname": "column_break_admin", "fieldtype": "Column Break"},
-  {"fieldname": "admin_url", "fieldtype": "Data", "label": "Admin URL", "description": "e.g. http://<ip>/grove-admin"},
-  {"fieldname": "admin_token", "fieldtype": "Password", "label": "Admin Token"},
-  {"fieldname": "section_redis", "fieldtype": "Section Break", "label": "Redis"},
-  {"fieldname": "redis_appendfsync", "fieldtype": "Select", "label": "Redis appendfsync", "options": "always\neverysec", "default": "always"}
+  {
+   "fieldname": "machine",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "Machine",
+   "options": "Machine",
+   "reqd": 1
+  },
+  {
+   "fetch_from": "machine.public_ip",
+   "fieldname": "public_ip",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Public IP",
+   "read_only": 1
+  },
+  {
+   "default": "0",
+   "description": "Whether this box's address survives a stop. Owned by the Machine \u2014 set it there.",
+   "fetch_from": "machine.is_static_ip",
+   "fieldname": "is_static_ip",
+   "fieldtype": "Check",
+   "label": "Static IP",
+   "read_only": 1
+  },
+  {
+   "fetch_from": "machine.region",
+   "fieldname": "region",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "Region",
+   "options": "Region",
+   "read_only": 1
+  },
+  {
+   "default": "Pending",
+   "fieldname": "status",
+   "fieldtype": "Select",
+   "hidden": 1,
+   "in_list_view": 1,
+   "label": "Status",
+   "options": "Pending\nInstalling\nActive\nBroken\nTerminated",
+   "read_only": 1
+  },
+  {
+   "description": "The agent that scrapes this box. Blank = not scraped.",
+   "fieldname": "monitoring_agent",
+   "fieldtype": "Link",
+   "label": "Monitoring Agent",
+   "options": "Monitoring Agent"
+  },
+  {
+   "fieldname": "column_break_admin",
+   "fieldtype": "Column Break"
+  },
+  {
+   "description": "e.g. http:///grove-admin",
+   "fieldname": "admin_url",
+   "fieldtype": "Data",
+   "label": "Admin URL"
+  },
+  {
+   "fieldname": "admin_token",
+   "fieldtype": "Password",
+   "label": "Admin Token"
+  },
+  {
+   "fieldname": "section_redis",
+   "fieldtype": "Section Break",
+   "label": "Redis"
+  },
+  {
+   "default": "always",
+   "fieldname": "redis_appendfsync",
+   "fieldtype": "Select",
+   "label": "Redis appendfsync",
+   "options": "always\neverysec"
+  }
  ],
  "links": [],
- "modified": "2026-07-01 00:01:00",
+ "modified": "2026-08-07 03:06:24.243965",
  "modified_by": "Administrator",
  "module": "Grove",
  "name": "Proxy Server",
+ "naming_rule": "Set by user",
  "owner": "Administrator",
  "permissions": [
-  {"create": 1, "delete": 1, "email": 1, "print": 1, "read": 1, "report": 1, "role": "System Manager", "share": 1, "write": 1}
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "System Manager",
+   "share": 1,
+   "write": 1
+  }
  ],
+ "row_format": "Dynamic",
  "sort_field": "modified",
  "sort_order": "DESC",
  "states": []

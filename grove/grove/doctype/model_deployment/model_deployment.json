@@ -1,6 +1,6 @@
 {
  "actions": [],
- "allow_rename": 1,
+ "allow_rename": 0,
  "autoname": "format:MD-{#####}",
  "creation": "2026-07-01 00:00:00",
  "doctype": "DocType",
@@ -69,7 +69,7 @@
    "fieldtype": "Column Break"
   },
   {
-   "description": "Auto-allocated (read-only): lowest free port from 8080 up, scoped to this Inference Server (\u2192 --port / vllm_port). Multi-tenant box \u2192 one port per deployment; freed on teardown and reused.",
+   "description": "Auto-allocated (read-only): lowest free port from 8080 up, scoped to this Inference Server (\u2192 --port / vllm_port). Multi-tenant box \u2192 one port per deployment; freed on teardown and reused. Box-local only \u2014 the engine proxy is what is reachable from outside.",
    "fieldname": "engine_port",
    "fieldtype": "Int",
    "label": "Engine Port",
@@ -84,7 +84,7 @@
    "reqd": 1
   },
   {
-   "description": "Auto-derived (read-only): http://: \u2014 this deployment's own vLLM instance. The gateway forwards straight here (no LiteLLM); vLLM serves /v1/messages natively.",
+   "description": "Auto-derived (read-only): https://<box ip>/e/<slug> \u2014 this deployment's location on its box's engine proxy, which forwards to its own vLLM instance. The gateway forwards straight here (no LiteLLM); vLLM serves /v1/messages natively.",
    "fieldname": "engine_url",
    "fieldtype": "Data",
    "label": "Engine URL",

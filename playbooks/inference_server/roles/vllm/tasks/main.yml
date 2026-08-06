@@ -175,6 +175,18 @@
   poll: 15
   tags: heavy
 
+# Ahead of the container config below, so the route into this instance exists before any replace
+# that follows. The engine proxy owns the only public port; vllm_port is reachable from the box
+# and nowhere else.
+- name: Write the engine proxy location for this instance
+  ansible.builtin.template:
+    src: engine-location.conf.j2
+    dest: "{{ engine_proxy_engines_dir }}/{{ vllm_instance }}.conf"
+    mode: "0644"
+  notify:
+    - check engine proxy config
+    - reload engine proxy
+
 # No unit wraps `docker run`. --restart unless-stopped already survives a crash, a reboot and
 # a dockerd restart, so a unit would only be a second owner of the same restart state. These
 # two files ARE the config: either one changing is what triggers a replace.

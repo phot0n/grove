@@ -17,12 +17,16 @@ from urllib.parse import parse_qs, quote, urlparse
 import frappe
 import yaml
 from jinja2 import Environment, FileSystemLoader, StrictUndefined
+from passlib.hash import sha256_crypt
 
 from grove import monitoring
 from grove.grove.doctype.grove_settings.grove_settings import SD_TOKEN_PATTERN
 from grove.monitoring import (
+	BOX_HTTPS_PORT,
 	DCGM_EXPORTER_PORT,
+	GPU_METRICS_PATH,
 	NODE_EXPORTER_PORT,
+	NODE_METRICS_PATH,
 	VMAGENT_PORT,
 	build_host_targets,
 	engine_entry,
@@ -30,16 +34,20 @@ from grove.monitoring import (
 
 PLAYBOOKS = Path(__file__).parent.parent.parent / "playbooks"
 AGENT = PLAYBOOKS / "monitoring_agent"
+INFERENCE = PLAYBOOKS / "inference_server"
 # The exporters go on every box whoever owns it, so they live in the shared roles folder
 # rather than any one doctype's.
 SHARED_ROLES = PLAYBOOKS / "roles"
 
 
 def role_dir(name):
-	"""Where a role lives — the shared folder, else the agent's own. The two places Ansible
-	itself looks, in that order."""
-	shared = SHARED_ROLES / name
-	return shared if shared.is_dir() else AGENT / "roles" / name
+	"""Where a role lives — the shared folder, else the play's own. The places Ansible itself
+	looks. engine_proxy is inference-only (a proxy box already serves :80 from OpenResty), so it
+	is not shared, but what it publishes is half of what the agent is told to scrape."""
+	for candidate in (SHARED_ROLES / name, AGENT / "roles" / name, INFERENCE / "roles" / name):
+		if candidate.is_dir():
+			return candidate
+	raise AssertionError(f"no role named {name}")
 
 
 VMAGENT_ROLE = role_dir("vmagent")
@@ -58,12 +66,34 @@ def box(name, ip="10.0.0.5", machine="MACHINE-1", region="ap-south-1", has_gpu=F
 class TestHostTargets(unittest.TestCase):
 	def test_every_box_exports_node_metrics(self):
 		[entry] = build_host_targets([box("PROXY-1")])
-		self.assertEqual(entry["targets"], ["10.0.0.5:9100"])
-		self.assertEqual(entry["labels"], {"machine": "MACHINE-1", "region": "ap-south-1", "server": "PROXY-1"})
+		self.assertEqual(entry["targets"], ["10.0.0.5:443"])
+		self.assertEqual(entry["labels"]["__metrics_path__"], NODE_METRICS_PATH)
+		self.assertEqual(entry["labels"]["machine"], "MACHINE-1")
+		self.assertEqual(entry["labels"]["region"], "ap-south-1")
+		self.assertEqual(entry["labels"]["server"], "PROXY-1")
+
+	def test_a_box_is_scraped_through_its_tls_front_not_the_exporter_port(self):
+		# The exporters still listen on 9100/9400; they are simply no longer reachable from
+		# outside, so a target naming those ports could only ever be down.
+		[entry] = build_host_targets([box("PROXY-1")])
+		self.assertEqual(entry["labels"]["__scheme__"], "https")
+		self.assertNotIn(str(NODE_EXPORTER_PORT), entry["targets"][0])
 
 	def test_a_gpu_box_also_exports_dcgm(self):
 		entries = build_host_targets([box("INF-1", has_gpu=True)])
-		self.assertEqual([e["targets"][0] for e in entries], ["10.0.0.5:9100", "10.0.0.5:9400"])
+		self.assertEqual([e["targets"][0] for e in entries], ["10.0.0.5:443", "10.0.0.5:443"])
+		self.assertEqual(
+			[e["labels"]["__metrics_path__"] for e in entries], [NODE_METRICS_PATH, GPU_METRICS_PATH]
+		)
+
+	def test_each_exporter_on_a_box_keeps_its_own_instance(self):
+		# Both now resolve to the same address, so left to default they would collapse into one
+		# `instance` and any `by (instance)` query would silently merge node with GPU. The value
+		# keeps the exporter's own port, which is what these targets reported before they moved.
+		entries = build_host_targets([box("INF-1", has_gpu=True)])
+		self.assertEqual(
+			[e["labels"]["instance"] for e in entries], ["10.0.0.5:9100", "10.0.0.5:9400"]
+		)
 
 	def test_a_box_without_gpus_has_no_dcgm_target(self):
 		# DCGM is only installed on GPU boxes — a target for it elsewhere could only be down.
@@ -84,11 +114,28 @@ class TestEngineTargets(unittest.TestCase):
 		"region": "ap-south-1",
 	}
 
-	def test_an_engine_is_scraped_where_the_gateway_routes_it(self):
+	def test_a_deployment_is_scraped_through_its_boxs_engine_proxy(self):
+		entry = engine_entry("https://10.0.0.9/e/md-00007", self.LABELS)
+		self.assertEqual(entry["targets"], ["10.0.0.9:443"])
+		self.assertEqual(entry["labels"]["__metrics_path__"], "/e/md-00007/metrics")
+		self.assertEqual(entry["labels"]["engine"], "https://10.0.0.9/e/md-00007")
+		self.assertEqual(entry["labels"]["deployment"], "MD-00007")
+
+	def test_a_pod_is_still_scraped_on_its_own_port(self):
+		# A pod IS the vLLM container — no box, no Ansible, nothing to put a front in front of.
+		# One derivation has to serve both shapes, which is why nothing here hardcodes :443.
 		entry = engine_entry("http://10.0.0.9:8081", self.LABELS)
 		self.assertEqual(entry["targets"], ["10.0.0.9:8081"])
+		self.assertEqual(entry["labels"]["__metrics_path__"], "/metrics")
 		self.assertEqual(entry["labels"]["engine"], "http://10.0.0.9:8081")
-		self.assertEqual(entry["labels"]["deployment"], "MD-00007")
+
+	def test_every_engine_on_a_box_keeps_its_own_instance(self):
+		# Two deployments on one box share an address now; the default `instance` would name the
+		# box and merge them.
+		first = engine_entry("https://10.0.0.9/e/md-00007", self.LABELS)
+		second = engine_entry("https://10.0.0.9/e/md-00008", self.LABELS)
+		self.assertEqual(first["targets"], second["targets"])
+		self.assertNotEqual(first["labels"]["instance"], second["labels"]["instance"])
 
 	def test_an_engine_without_a_url_is_not_a_target(self):
 		# Mid-provision deployments and still-loading pods hold "" — the same filter
@@ -100,6 +147,8 @@ class TestEngineTargets(unittest.TestCase):
 		entry = engine_entry("https://pod.example.net/", {"model": "m", "deployment": "POD-1"})
 		self.assertEqual(entry["targets"], ["pod.example.net:443"])
 		self.assertEqual(entry["labels"]["__scheme__"], "https")
+		# A trailing slash must not become //metrics — the path is built by concatenation.
+		self.assertEqual(entry["labels"]["__metrics_path__"], "/metrics")
 
 	def test_a_pod_carries_no_box_labels(self):
 		# A pod is not on a box we own — machine/region here would name the scraper's host.
@@ -138,6 +187,40 @@ class TestExporterPortsAgree(unittest.TestCase):
 		# Nothing else installs one there: the agent box carries no Inference/Proxy Server doc.
 		play = yaml.safe_load((AGENT / "agent.yml").read_text())[0]
 		self.assertIn("node_exporter", play["roles"])
+
+	def test_the_exporters_are_republished_where_grove_says_they_are(self):
+		# The port stopped being the address: a box answers on 443 and the path is what picks the
+		# exporter. Same failure the port pair guards — a mismatch scrapes a 404, which reads
+		# exactly like a box that is down.
+		self.assertEqual(
+			self.role_default("engine_proxy", "engine_proxy_node_metrics_path"), NODE_METRICS_PATH
+		)
+		self.assertEqual(
+			self.role_default("engine_proxy", "engine_proxy_gpu_metrics_path"), GPU_METRICS_PATH
+		)
+
+	def test_the_front_forwards_to_the_ports_the_exporters_listen_on(self):
+		# engine_proxy restates the two ports because serve.yml runs it without the exporter
+		# roles, so their defaults are not in scope. Restated, therefore asserted.
+		for key, port in (
+			("engine_proxy_node_upstream", NODE_EXPORTER_PORT),
+			("engine_proxy_gpu_upstream", DCGM_EXPORTER_PORT),
+		):
+			with self.subTest(key):
+				self.assertEqual(self.role_default("engine_proxy", key), f"127.0.0.1:{port}")
+
+	def test_the_front_listens_where_grove_addresses_the_box(self):
+		self.assertEqual(self.role_default("engine_proxy", "engine_proxy_port"), BOX_HTTPS_PORT)
+
+	def test_the_agent_authenticates_as_the_user_the_boxes_hash(self):
+		# The username is a constant in two roles rather than a Grove Settings field, because a
+		# settable one only added a way for the two ends to disagree — and it did: the Single doc
+		# predated the field, so its default never applied and the htpasswd rendered with a blank
+		# user. Constants can still drift apart, so they are pinned to each other here.
+		self.assertEqual(
+			self.role_default("grove_https", "scrape_username"),
+			self.role_default("vmagent", "monitoring_scrape_username"),
+		)
 
 
 class TestServiceDiscoveryAuth(unittest.TestCase):
@@ -198,6 +281,47 @@ class TestServiceDiscoveryAuth(unittest.TestCase):
 				self.authenticate(supplied, None)
 
 
+class TestScrapePasswordHash(unittest.TestCase):
+	"""What each box's htpasswd file carries. Derived in the control plane so the password never
+	reaches a box and never lands in an Ansible argv — press runs `htpasswd -Bbc` on the box
+	instead, which /proc and the Ansible Task doc both record."""
+
+	def hash_for(self, password, stored=""):
+		from grove.grove.doctype.grove_settings.grove_settings import GroveSettings
+
+		settings = unittest.mock.Mock(spec=["get_password", "scrape_password_hash"])
+		settings.get_password.return_value = password
+		settings.scrape_password_hash = stored
+		GroveSettings.set_scrape_password_hash(settings)
+		return settings.scrape_password_hash
+
+	def test_nginx_can_verify_what_grove_wrote(self):
+		hashed = self.hash_for("sc4ape")
+		self.assertTrue(sha256_crypt.verify("sc4ape", hashed))
+		self.assertFalse(sha256_crypt.verify("guess", hashed))
+
+	def test_the_password_itself_is_never_in_it(self):
+		self.assertNotIn("sc4ape", self.hash_for("sc4ape"))
+
+	def test_an_unchanged_password_keeps_the_same_hash(self):
+		# The whole reason the hash is stored rather than computed per play: sha256_crypt salts
+		# randomly, so re-hashing on every save would rewrite the file on every box in the fleet.
+		first = self.hash_for("sc4ape")
+		self.assertEqual(self.hash_for("sc4ape", stored=first), first)
+
+	def test_a_changed_password_replaces_it(self):
+		first = self.hash_for("sc4ape")
+		self.assertNotEqual(self.hash_for("different", stored=first), first)
+
+	def test_a_corrupt_hash_is_replaced_rather_than_raised_on(self):
+		# The field is read-only, so anything unparseable in it came from an edit that should not
+		# survive the next save — and passlib raises rather than returning False.
+		self.assertTrue(sha256_crypt.verify("sc4ape", self.hash_for("sc4ape", stored="nonsense")))
+
+	def test_clearing_the_password_clears_the_hash(self):
+		self.assertEqual(self.hash_for("", stored=self.hash_for("sc4ape")), "")
+
+
 class TestTheAgentPlayChecksBeforeItInstalls(unittest.TestCase):
 	"""agent.yml installs node_exporter before vmagent. A requirement checked inside the vmagent
 	role therefore fails with node_exporter already on the box — a half-built machine and a play
@@ -213,6 +337,9 @@ class TestTheAgentPlayChecksBeforeItInstalls(unittest.TestCase):
 			"monitoring_sd_url",
 			"monitoring_sd_token",
 			"monitoring_agent",
+			# Without this the agent installs happily and is refused by every host target,
+			# which reads as a fleet that is simply down.
+			"monitoring_scrape_password",
 		):
 			with self.subTest(variable):
 				self.assertIn(variable, asserted)
@@ -236,15 +363,26 @@ class TestEveryTemplateVariableHasADefault(unittest.TestCase):
 	override names `defaults/main.yml` already declares."""
 
 	def test_each_role_defaults_every_variable_its_templates_use(self):
-		monitoring_roles = [*SHARED_ROLES.iterdir(), *(AGENT / "roles").iterdir()]
-		for role in sorted(path.name for path in monitoring_roles if (path / "templates").is_dir()):
+		# engine_proxy joins the monitoring roles here because it is what publishes them, and it
+		# is configured the same way — by its defaults, with Grove overriding names they already
+		# declare. The vllm role beside it is not: it is driven entirely by extra-vars assembled
+		# from the doctypes, and test_engine_templates.py renders it against those instead.
+		roles = [*SHARED_ROLES.iterdir(), *(AGENT / "roles").iterdir(), INFERENCE / "roles/engine_proxy"]
+		# engine_proxy's config names paths that grove_https (certificate, htpasswd) and openresty
+		# (log directory) own, and both always run ahead of it in every play that uses it.
+		# Rendering it against its own defaults alone would demand a second copy of those paths,
+		# which is the drift this test exists to prevent.
+		shared = {}
+		for owner in ("grove_https", "openresty"):
+			shared.update(yaml.safe_load((SHARED_ROLES / owner / "defaults/main.yml").read_text()) or {})
+		for role in sorted(path.name for path in roles if (path / "templates").is_dir()):
 			defaults = yaml.safe_load((role_dir(role) / "defaults/main.yml").read_text()) or {}
 			environment = Environment(
 				loader=FileSystemLoader(role_dir(role) / "templates"), undefined=StrictUndefined
 			)
 			for template in environment.list_templates():
 				with self.subTest(f"{role}/{template}"):
-					environment.get_template(template).render(**defaults)
+					environment.get_template(template).render(**{**shared, **defaults})
 
 
 class TestScrapeConfig(unittest.TestCase):
@@ -259,11 +397,43 @@ class TestScrapeConfig(unittest.TestCase):
 		"monitoring_sd_token": "0f3a-b21c_9d.e~4a7b",
 		"vmagent_config_dir": "/etc/vmagent",
 		"monitoring_static_targets": False,
+		"monitoring_scrape_username": "grove",
+		"monitoring_scrape_password": "sc4ape",
 	}
 
 	def setUp(self):
 		self.config = yaml.safe_load(TEMPLATES.get_template("scrape.yml.j2").render(**self.BASE))
 		self.jobs = {job["job_name"]: job for job in self.config["scrape_configs"]}
+
+	def test_every_target_is_reached_over_tls_it_cannot_verify(self):
+		# Each box fronts itself with a self-signed certificate, so a verifying scrape would fail
+		# on every target. This encrypts the hop; it authenticates nothing.
+		for job in self.jobs.values():
+			self.assertTrue(job["tls_config"]["insecure_skip_verify"])
+
+	def test_only_the_host_job_authenticates(self):
+		# /metrics/node and /metrics/gpu are behind basic auth because an exporter answers whoever
+		# reaches it. An engine's /metrics is inside its own /e/<slug>/ location, guarded by
+		# nothing — exactly as it was when the engine port itself was open.
+		self.assertEqual(self.jobs["grove-host"]["basic_auth"]["username"], "grove")
+		self.assertNotIn("basic_auth", self.jobs["grove-engine"])
+
+	def test_the_scrape_password_is_read_from_a_file_not_the_config(self):
+		# /proc/<pid>/cmdline is world-readable and Ansible records its argv on the Ansible Task
+		# doc — the same reason the remote-write token is a file.
+		auth = self.jobs["grove-host"]["basic_auth"]
+		self.assertEqual(auth["password_file"], "/etc/vmagent/scrape.password")
+		self.assertNotIn("password", auth)
+		self.assertNotIn(self.BASE["monitoring_scrape_password"], yaml.dump(self.config))
+
+	def test_the_password_file_is_not_world_readable(self):
+		tasks = yaml.safe_load((VMAGENT_ROLE / "tasks/config.yml").read_text())
+		[write] = [
+			task for task in tasks
+			if task.get("ansible.builtin.copy", {}).get("dest", "").endswith("scrape.password")
+		]
+		self.assertEqual(write["ansible.builtin.copy"]["mode"], "0600")
+		self.assertTrue(write["no_log"])
 
 	def test_both_jobs_discover_from_grove_and_hold_no_targets(self):
 		self.assertEqual(set(self.jobs), {"grove-host", "grove-engine"})

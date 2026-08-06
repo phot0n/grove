@@ -8,33 +8,20 @@
   gather_facts: true
   vars:
     grove_dir: "{{ playbook_dir }}"
-    # Pinned to what the live gateway is verified on. Both come from upstream repos, not
-    # the distro, so "latest" moves under us on a rebuild — and both sit in the request
-    # path. The codename suffix is appended at install time so the pin stays portable.
-    openresty_version: "1.31.1.1"
+    # Pinned to what the live gateway is verified on: from an upstream repo, not the distro, so
+    # "latest" would move under us on a rebuild — and it sits in the request path.
     lua_resty_http_version: "0.17.1"
 
+  # openresty first (it removes any distro nginx holding :443), then grove_https — nginx.conf
+  # below declares a `listen 443 ssl` metrics server and OpenResty will not start without a
+  # certificate on disk. The version pin lives in the openresty role, shared with every
+  # inference box's engine proxy so the whole fleet runs one build.
   roles:
+    - openresty
+    - grove_https
     - build_gateway_agent
 
   tasks:
-    - name: check openresty present
-      ansible.builtin.command: which openresty
-      register: openresty_check
-      failed_when: false
-      changed_when: false
-
-    - name: install openresty (repo + package)
-      ansible.builtin.shell: |
-        set -e
-        export DEBIAN_FRONTEND=noninteractive
-        apt-get -y install --no-install-recommends wget gnupg ca-certificates lsb-release
-        wget -qO - https://openresty.org/package/pubkey.gpg | gpg --dearmor -o /usr/share/keyrings/openresty.gpg
-        echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/openresty.gpg] http://openresty.org/package/ubuntu $(lsb_release -sc) main" > /etc/apt/sources.list.d/openresty.list
-        apt-get update
-        apt-get -y install "openresty={{ openresty_version }}-1~$(lsb_release -sc)1"
-      when: openresty_check.rc != 0
-
     - name: install redis-server
       ansible.builtin.apt:
         name: redis-server
@@ -62,12 +49,8 @@
         state: directory
         mode: "0755"
 
-    - name: openresty log dir
-      ansible.builtin.file:
-        path: /var/log/openresty
-        state: directory
-        mode: "0755"
-
+    # The log directory is created by the openresty role above, which every box that runs
+    # OpenResty needs it for.
     - name: openresty logrotate
       ansible.builtin.copy:
         src: "{{ grove_dir }}/logrotate/openresty"

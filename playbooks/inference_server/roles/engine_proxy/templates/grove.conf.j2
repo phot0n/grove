@@ -1,0 +1,59 @@
+{#
+  The inference box's engine proxy — the whole OpenResty config, not a conf.d snippet, because
+  it overwrites the packaged nginx.conf the way the gateway's does. Rendered by the engine_proxy
+  role; do not edit on the box.
+
+  The certificate and the htpasswd file come from grove_https, which runs first in every play
+  that uses either.
+
+  TLS only. There is deliberately no `listen 80` and no redirect from it: the security group does
+  not open 80, and a box with no socket on the port refuses harder than any block that answers on
+  it could. engine_url is https, so nothing aims there in the first place.
+
+  No Lua here. The gateway is where auth, metering and routing live; this box only terminates TLS
+  and forwards to a local port. It runs OpenResty anyway so the fleet has one pinned web server
+  rather than whatever nginx each box's release happened to ship.
+#}
+worker_processes auto;
+error_log {{ openresty_log_dir }}/error.log warn;
+
+events {
+	worker_connections 4096;
+}
+
+http {
+	default_type application/json;
+	access_log {{ openresty_log_dir }}/access.log;
+
+	# nginx defaults to 1m; the gateway accepts and forwards up to this, so a larger body would
+	# 413 here and read as the engine refusing it.
+	client_max_body_size {{ engine_proxy_max_body_size }};
+
+	server {
+		listen {{ engine_proxy_port }} ssl default_server;
+		server_name _;
+
+		ssl_certificate     {{ grove_tls_cert }};
+		ssl_certificate_key {{ grove_tls_key }};
+
+		# The exporters bind 0.0.0.0 (the agent used to scrape them over the public IP) but are
+		# no longer reachable from outside once the security group is 22 + 443. Basic auth rather
+		# than an IP allow-list: an exporter answers unauthenticated, and this stays right when
+		# the agent moves.
+		location = {{ engine_proxy_node_metrics_path }} {
+			auth_basic "grove metrics";
+			auth_basic_user_file {{ grove_metrics_htpasswd }};
+			proxy_pass http://{{ engine_proxy_node_upstream }}/metrics;
+		}
+
+		location = {{ engine_proxy_gpu_metrics_path }} {
+			auth_basic "grove metrics";
+			auth_basic_user_file {{ grove_metrics_htpasswd }};
+			proxy_pass http://{{ engine_proxy_gpu_upstream }}/metrics;
+		}
+
+		# One `location /e/<instance>/` per Model Deployment, written by the vllm role. A glob
+		# that matches nothing is not an error, so a box with nothing deployed still starts.
+		include {{ engine_proxy_engines_dir }}/*.conf;
+	}
+}
