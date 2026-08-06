@@ -7,10 +7,39 @@ from frappe.model.document import Document
 from grove import gateway_sync
 from grove.ansible import AnsibleHost
 from grove.monitoring import run_exporters_play
-from grove.utils import gateway_service_source
+from grove.utils import gateway_service_source, validate_id_safe_name
 
 
 class ProxyServer(AnsibleHost, Document):
+	# begin: auto-generated types
+	# This code is auto-generated. Do not modify anything in this block.
+
+	from typing import TYPE_CHECKING
+
+	if TYPE_CHECKING:
+		from frappe.types import DF
+
+		admin_token: DF.Password | None
+		admin_url: DF.Data | None
+		is_static_ip: DF.Check
+		machine: DF.Link
+		monitoring_agent: DF.Link | None
+		public_ip: DF.Data | None
+		redis_appendfsync: DF.Literal["always", "everysec"]
+		region: DF.Link | None
+		status: DF.Literal["Pending", "Installing", "Active", "Broken", "Terminated"]
+	# end: auto-generated types
+
+	def before_insert(self):
+		# This name is the gateway's own id (GROVE_GATEWAY_ID, set from proxy.yml) and so the
+		# FIRST part of every request id this proxy stamps. Typed by an operator
+		# (autoname: prompt), so it is checked here and on rename — the only two moments it can
+		# be chosen.
+		validate_id_safe_name(self.doctype, self.name)
+
+	def before_rename(self, old_name, new_name, merge=False):
+		validate_id_safe_name(self.doctype, new_name)
+
 	def on_update(self):
 		# A newly-Active proxy needs the full current state now — the background
 		# job only pushes dirty deltas, so full-sync this one immediately.

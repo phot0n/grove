@@ -7,6 +7,7 @@ from frappe.model.document import Document
 
 from grove.ansible import AnsibleHost
 from grove.monitoring import run_exporters_play
+from grove.utils import validate_id_safe_name
 
 
 class InferenceServer(AnsibleHost, Document):
@@ -23,9 +24,19 @@ class InferenceServer(AnsibleHost, Document):
 		is_static_ip: DF.Check
 		machine: DF.Link
 		machine_ip: DF.Data | None
+		monitoring_agent: DF.Link | None
 		region: DF.Link | None
 		status: DF.Literal["Pending", "Installing", "Active", "Broken", "Terminated"]
 	# end: auto-generated types
+
+	def before_insert(self):
+		# This name reaches the gateway on every route as `server`, and a request id when a route
+		# predates the deployment field. Typed by an operator (autoname: prompt), so it is checked
+		# here and on rename — the only two moments it can be chosen.
+		validate_id_safe_name(self.doctype, self.name)
+
+	def before_rename(self, old_name, new_name, merge=False):
+		validate_id_safe_name(self.doctype, new_name)
 
 	# ── The box ───────────────────────────────────────────────────────────────
 	# Everything that reaches the hardware goes through here: a Model Deployment talks to
