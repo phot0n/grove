@@ -9,24 +9,52 @@ import subprocess
 import frappe
 from frappe.model.document import Document
 
-from grove.ansible import Ansible
+from grove.ansible import AnsibleHost
 from grove.cloud_provider.base import CloudClientError, build_cloud_client
 from grove.grove.doctype.ssh_key.ssh_key import injected_public_keys
-from grove.utils import ansible_project_dir, vram_gb_from_mib
+from grove.utils import vram_gb_from_mib
 
 # Task name in scan_gpus.yml whose output carries the nvidia-smi CSV.
 SCAN_TASK = "query nvidia-smi"
 
 
-class Machine(Document):
+class Machine(AnsibleHost, Document):
 	"""An on-prem / baremetal / VM box that Inference Servers are provisioned on. Cloud GPU
 	pods are a separate, standalone Pod doctype — not backed by a Machine."""
+
+	@property
+	def playbook_machine(self):
+		"""This doc IS the box — a server doc links one, a Machine names itself."""
+		return self.name
 
 	def validate(self):
 		if self.network:
 			region = frappe.db.get_value("Network", self.network, "region")
 			if region:
 				self.region = region
+		self.validate_launch_locked_fields()
+
+	def validate_launch_locked_fields(self):
+		"""The SSH keys go in via user-data at launch, so editing the key afterwards would only
+		make this doc disagree with the box."""
+		if self.is_new() or not self.instance_id:
+			return
+		if self.has_value_changed("ssh_key"):
+			frappe.throw(
+				f"SSH Key cannot change once {self.name} is launched (instance "
+				f"{self.instance_id}). Terminate and relaunch to change it."
+			)
+
+	def on_update(self):
+		if self.has_value_changed("is_static_ip"):
+			self.sync_static_ip()
+
+	def sync_static_ip(self):
+		"""Mirror the static-IP flag onto the servers on this box. The Machine owns the address,
+		so the flag is set here and the servers only report it."""
+		for doctype in ("Proxy Server", "Inference Server"):
+			for name in frappe.get_all(doctype, filters={"machine": self.name}, pluck="name"):
+				frappe.db.set_value(doctype, name, "is_static_ip", self.is_static_ip)
 
 	@frappe.whitelist()
 	def scan_gpus(self):
@@ -148,7 +176,38 @@ class Machine(Document):
 			"private_ip": ready["private_ip"],
 			"status": ready["status"],
 		}, commit=True)
+		if self.is_static_ip:
+			self.attach_static_ip()
 		self.sync_instance_type(client)
+
+	@frappe.whitelist()
+	def attach_static_ip(self):
+		"""Button: swap this box's address for an Elastic IP, which survives a Stop. Runs at
+		launch when the box asked for one, and on a running box whenever an operator wants a
+		stable address. Recorded with its allocation id — that, not the address, is what hands
+		it back later."""
+		self.require_instance()
+		if self.static_ip_allocation_id:
+			frappe.throw(f"{self.name} already holds Elastic IP {self.public_ip}.")
+		address = self.cloud_client.allocate_static_ip(self.instance_id)
+		self.db_set({
+			"public_ip": address["public_ip"],
+			"static_ip_allocation_id": address["allocation_id"],
+			"is_static_ip": 1,
+		}, commit=True)
+		self.sync_static_ip()
+
+	@frappe.whitelist()
+	def release_static_ip(self):
+		"""Button: hand the Elastic IP back — it is billed for as long as it is held. AWS gives a
+		running box a fresh dynamic address the moment the Elastic IP comes off, so the address
+		is re-read off the instance rather than guessed at."""
+		if not self.static_ip_allocation_id:
+			frappe.throw(f"{self.name} has no Elastic IP to release.")
+		self.cloud_client.release_static_ip(self.static_ip_allocation_id)
+		self.db_set({"static_ip_allocation_id": "", "is_static_ip": 0}, commit=True)
+		self.sync_static_ip()
+		self.sync()
 
 	@frappe.whitelist()
 	def sync(self):
@@ -214,10 +273,11 @@ class Machine(Document):
 
 	@frappe.whitelist()
 	def stop(self):
-		"""Button: stop the instance. The root volume (images and weights) survives."""
+		"""Button: stop the instance. The root volume (images and weights) survives, and so does
+		the address when it's an Elastic IP — a dynamic one is gone the moment it stops."""
 		self.require_instance()
 		self.cloud_client.stop_instance(self.instance_id)
-		self.db_set({"status": "Draining", "public_ip": ""})
+		self.db_set({"status": "Draining", "public_ip": self.public_ip if self.is_static_ip else ""})
 		self.sync_dependent_servers()
 		frappe.msgprint(f"Stopping {self.name} — Sync once it settles.")
 
@@ -242,10 +302,46 @@ class Machine(Document):
 		}, commit=True)
 
 	@frappe.whitelist()
+	def resize_root_volume(self, size_gb: int):
+		"""Button: grow the only disk this box has. The root volume holds the OS, the engine
+		images and every weight, so a box provisioned too small cannot serve at all — and
+		relaunching it to fix that throws away everything already downloaded."""
+		self.require_instance()
+		if size_gb <= (self.root_volume_gb or 0):
+			frappe.throw(
+				f"{self.name}'s root volume is already {self.root_volume_gb} GB. "
+				"A volume can only be grown, never shrunk."
+			)
+		self.cloud_client
+		frappe.enqueue_doc(
+			self.doctype, self.name, "grow_root", queue="long", timeout=1800, size_gb=size_gb
+		)
+		frappe.msgprint(f"Growing {self.name}'s root volume to {size_gb} GB — watch its Ansible Plays.")
+
+	def grow_root(self, size_gb):
+		"""Job: enlarge the volume at the provider, then grow the partition and filesystem on
+		the box. root_volume_gb is written only once the box reports the space, so the field
+		never claims a size the filesystem does not have."""
+		self.cloud_client.resize_root_volume(self.instance_id, size_gb)
+		play_name, rc = self.run_playbook("grow_root.yml")
+		if rc != 0:
+			frappe.throw(
+				f"{self.name}'s root volume is now {size_gb} GB at AWS, but growing the "
+				f"filesystem onto it failed (Ansible Play {play_name})."
+			)
+		self.db_set("root_volume_gb", size_gb, commit=True)
+
+	@frappe.whitelist()
 	def terminate(self):
 		"""Button: destroy the instance. The root volume goes with it — weights and all."""
 		self.require_instance()
-		self.cloud_client.terminate_instance(self.instance_id)
+		client = self.cloud_client
+		if self.static_ip_allocation_id:
+			# Handed back first: an Elastic IP is billed while allocated, and once the instance
+			# is gone this doc is the only record of which address to release.
+			client.release_static_ip(self.static_ip_allocation_id)
+			self.db_set("static_ip_allocation_id", "")
+		client.terminate_instance(self.instance_id)
 		self.db_set({"status": "Terminated", "instance_id": "", "public_ip": "", "private_ip": ""})
 		self.sync_dependent_servers()
 		frappe.msgprint(f"Terminated {self.name}.")
@@ -318,13 +414,7 @@ def scan_machine_gpus(machine_name):
 	Machine's GPU rows with what the box actually reports. nvidia-smi is the truth here — the
 	rows are rewritten rather than merged, so a swapped or removed card can't linger."""
 	machine = frappe.get_doc("Machine", machine_name)
-	ansible = Ansible(project_root=ansible_project_dir("machine"))
-	play_name, rc = ansible.run_playbook(
-		playbook_name="scan_gpus.yml",
-		server_type="Machine",
-		server_name=machine.name,
-		machine_name=machine.name,
-	)
+	play_name, rc = machine.run_playbook("scan_gpus.yml")
 	result = _scan_result(play_name)
 	if rc != 0:
 		frappe.throw(

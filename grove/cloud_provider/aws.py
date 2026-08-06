@@ -198,10 +198,39 @@ class EC2Client(CloudClient):
 			time.sleep(poll_interval_sec)
 		raise AWSError(f"Instance {instance_id} was not reachable within {timeout_sec}s")
 
-	def create_network(self, name, cidr_block, subnet_cidr_block, availability_zone):
+	def allocate_static_ip(self, instance_id):
+		"""Allocate an Elastic IP and put it on the instance. Returns {public_ip, allocation_id}
+		— releasing one needs the allocation id, never the address."""
+		address = self._call(
+			self.ec2.allocate_address,
+			Domain="vpc",
+			TagSpecifications=[self._tags("elastic-ip", instance_id)],
+		)
+		self._call(
+			self.ec2.associate_address,
+			AllocationId=address["AllocationId"],
+			InstanceId=instance_id,
+		)
+		return {"public_ip": address["PublicIp"], "allocation_id": address["AllocationId"]}
+
+	def release_static_ip(self, allocation_id):
+		"""Hand an Elastic IP back. Disassociated first — AWS refuses to release one that is
+		still attached, and an address left allocated is billed by the hour."""
+		addresses = self._call(
+			self.ec2.describe_addresses, AllocationIds=[allocation_id]
+		).get("Addresses") or []
+		for address in addresses:
+			if address.get("AssociationId"):
+				self._call(self.ec2.disassociate_address, AssociationId=address["AssociationId"])
+		self._call(self.ec2.release_address, AllocationId=allocation_id)
+		return True
+
+	def create_network(self, name, cidr_block, subnet_cidr_block, availability_zone=""):
 		"""Create a VPC with one public subnet: a route to an Internet Gateway and
 		auto-assigned public IPs, so a launched instance is reachable over SSH. Uses the VPC's
-		own default route table — Grove doesn't need a private subnet today."""
+		own default route table — Grove doesn't need a private subnet today. No AZ given → the
+		region's first available one, returned so the caller can record what it got."""
+		availability_zone = availability_zone or self.get_first_availability_zone()
 		vpc_id = self._call(
 			self.ec2.create_vpc, CidrBlock=cidr_block, TagSpecifications=[self._tags("vpc", name)]
 		)["Vpc"]["VpcId"]
@@ -233,7 +262,19 @@ class EC2Client(CloudClient):
 		return {
 			"vpc_id": vpc_id, "subnet_id": subnet_id,
 			"internet_gateway_id": gateway_id, "route_table_id": route_table_id,
+			"availability_zone": availability_zone,
 		}
+
+	def get_first_availability_zone(self):
+		"""An available AZ in this region. Any one will do — Grove launches a single public
+		subnet, and which letter it lands in is not a choice worth asking an operator to make."""
+		zones = self._call(
+			self.ec2.describe_availability_zones,
+			Filters=[{"Name": "state", "Values": ["available"]}],
+		).get("AvailabilityZones") or []
+		if not zones:
+			raise AWSError(f"No availability zone is available in {self.region}")
+		return zones[0]["ZoneName"]
 
 	def create_security_group(self, name, description, vpc_id):
 		"""Create a security group in this VPC, tagged so it's identifiable as Grove-managed.
@@ -254,6 +295,46 @@ class EC2Client(CloudClient):
 			GroupId=security_group_id,
 			IpPermissions=[build_ip_permission(rule) for rule in rules],
 		)
+
+	def resize_root_volume(self, instance_id, size_gb, timeout_sec=600, poll_interval_sec=10):
+		"""Grow the instance's root volume, waiting until the new size is visible to the OS.
+
+		EBS reports `optimizing` once the size is already usable — the rebalancing behind it can
+		run for hours and must not be waited out, so that state ends the poll the same as
+		`completed`. AWS refuses a second modification of the same volume for about six hours
+		after one; that arrives as a provider error code rather than a guard here."""
+		volume_id = self._root_volume_id(instance_id)
+		self._call(self.ec2.modify_volume, VolumeId=volume_id, Size=int(size_gb))
+		start = time.time()
+		while time.time() - start < timeout_sec:
+			modifications = self._call(
+				self.ec2.describe_volumes_modifications, VolumeIds=[volume_id]
+			).get("VolumesModifications") or []
+			# Empty right after modify_volume — the record is eventually consistent, so an
+			# absent one means "not started yet", not "done".
+			state = modifications[0].get("ModificationState") if modifications else "modifying"
+			if state in ("optimizing", "completed"):
+				return int(size_gb)
+			if state == "failed":
+				raise AWSError(
+					f"EBS failed to resize {volume_id} to {size_gb} GB "
+					f"({modifications[0].get('StatusMessage') or 'no reason given'})"
+				)
+			time.sleep(poll_interval_sec)
+		raise AWSError(f"Volume {volume_id} was still resizing after {timeout_sec}s")
+
+	def _root_volume_id(self, instance_id):
+		"""The instance's root EBS volume, off its own BlockDeviceMappings. get_instance returns
+		the parsed shape, which does not carry them, so this reads the raw instance."""
+		reservations = self._call(
+			self.ec2.describe_instances, InstanceIds=[instance_id]
+		).get("Reservations") or []
+		for reservation in reservations:
+			for instance in reservation.get("Instances") or []:
+				if volume_id := root_volume_id(instance):
+					return volume_id
+				raise AWSError(f"Instance {instance_id} has no EBS root volume to resize")
+		raise AWSError(f"Instance {instance_id} not found")
 
 	def stop_instance(self, instance_id):
 		self._call(self.ec2.stop_instances, InstanceIds=[instance_id])

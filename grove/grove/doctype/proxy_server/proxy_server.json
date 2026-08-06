@@ -8,6 +8,7 @@
  "field_order": [
   "machine",
   "public_ip",
+  "is_static_ip",
   "listen_port",
   "region",
   "status",
@@ -21,6 +22,7 @@
  "fields": [
   {"fieldname": "machine", "fieldtype": "Link", "label": "Machine", "options": "Machine", "reqd": 1, "in_list_view": 1},
   {"fieldname": "public_ip", "fieldtype": "Data", "label": "Public IP", "fetch_from": "machine.public_ip", "read_only": 1, "in_list_view": 1},
+  {"fieldname": "is_static_ip", "fieldtype": "Check", "label": "Static IP", "fetch_from": "machine.is_static_ip", "read_only": 1, "description": "Whether this box's address survives a stop. Owned by the Machine — set it there."},
   {"fieldname": "listen_port", "fieldtype": "Int", "label": "Listen Port", "default": "80"},
   {"fieldname": "region", "fieldtype": "Link", "label": "Region", "options": "Region", "fetch_from": "machine.region", "read_only": 1, "in_list_view": 1},
   {"fieldname": "status", "fieldtype": "Select", "label": "Status", "options": "Pending\nInstalling\nActive\nBroken\nTerminated", "default": "Pending", "in_list_view": 1},

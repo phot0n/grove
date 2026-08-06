@@ -47,6 +47,12 @@ class CloudClient(ABC):
 		"""Poll until the instance is running and reachable."""
 
 	@abstractmethod
+	def resize_root_volume(self, instance_id, size_gb, timeout_sec=600, poll_interval_sec=10):
+		"""Grow the instance's root volume to size_gb, returning once the new size is visible to
+		the OS. Growing only — no provider shrinks a volume in place. The filesystem on top is
+		not touched: that is the box's job, via the grow_root playbook."""
+
+	@abstractmethod
 	def stop_instance(self, instance_id):
 		"""Stop the instance. Its durable storage survives; ephemeral local storage does not."""
 
@@ -59,9 +65,20 @@ class CloudClient(ABC):
 		"""Destroy the instance and its durable storage."""
 
 	@abstractmethod
-	def create_network(self, name, cidr_block, subnet_cidr_block, availability_zone):
+	def allocate_static_ip(self, instance_id):
+		"""Give the instance an address that survives a stop. Returns {public_ip,
+		allocation_id} — the id is what releases it later."""
+
+	@abstractmethod
+	def release_static_ip(self, allocation_id):
+		"""Hand a static IP back, detaching it first if it is still attached. Providers bill for
+		one while it is allocated, so this runs before the instance it belongs to is destroyed."""
+
+	@abstractmethod
+	def create_network(self, name, cidr_block, subnet_cidr_block, availability_zone=""):
 		"""Create a VPC with one public subnet — its own Internet Gateway and a route to it.
-		Returns {vpc_id, subnet_id, internet_gateway_id, route_table_id}."""
+		A blank availability_zone lets the provider pick one. Returns {vpc_id, subnet_id,
+		internet_gateway_id, route_table_id, availability_zone}."""
 
 	@abstractmethod
 	def create_security_group(self, name, description, vpc_id):

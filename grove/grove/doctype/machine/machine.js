@@ -2,7 +2,9 @@ frappe.ui.form.on('Machine', {
 	refresh(frm) {
 		if (frm.is_new()) return;
 
-		if (frm.doc.public_ip) {
+		// Bare-metal only: on a cloud box the provider's instance type is the source of truth and
+		// the GPU table is seeded from it at provision.
+		if (frm.doc.public_ip && !frm.doc.cloud_provider) {
 			// nvidia-smi is the truth for what's in the box — these rows drive CUDA pinning, the
 			// VRAM fit check and the Inference Server's GPU view, so don't hand-type them.
 			frm.add_custom_button(__('Scan GPUs'), () => {
@@ -46,6 +48,40 @@ frappe.ui.form.on('Machine', {
 		for (const action of ['Sync', 'Stop', 'Start']) {
 			frm.add_custom_button(__(action), () => frm.call(action.toLowerCase()), __('AWS'));
 		}
+		// Either way the box's address changes, so both confirm: an Elastic IP replaces the
+		// dynamic one, and releasing it has AWS hand out a fresh dynamic one.
+		if (frm.doc.static_ip_allocation_id) {
+			frm.add_custom_button(__('Release Static IP'), () => {
+				frappe.confirm(
+					__('Hand Elastic IP {0} back? {1} gets a new address, and anything pointing at this one — gateway routes, SSH config, DNS — stops reaching it.', [frm.doc.public_ip, frm.doc.name]),
+					() => frm.call('release_static_ip').then(() => frm.reload_doc()),
+				);
+			}, __('AWS'));
+		} else {
+			frm.add_custom_button(__('Attach Static IP'), () => {
+				frappe.confirm(
+					__('Give {0} an Elastic IP? Its current address {1} is dropped, and the new one is billed for as long as the box holds it.', [frm.doc.name, frm.doc.public_ip]),
+					() => frm.call('attach_static_ip').then(() => frm.reload_doc()),
+				);
+			}, __('AWS'));
+		}
+		frm.add_custom_button(__('Resize Root Volume'), () => {
+			frappe.prompt(
+				{
+					fieldname: 'size_gb',
+					fieldtype: 'Int',
+					label: __('New size (GB)'),
+					default: Math.max((frm.doc.root_volume_gb || 0) * 2, 100),
+					reqd: 1,
+					description: __(
+						'Currently {0} GB. A volume can only grow, and AWS refuses another resize of the same volume for about six hours after one — so pick a size that covers every model this box will serve.',
+						[frm.doc.root_volume_gb || 0],
+					),
+				},
+				({size_gb}) => frm.call('resize_root_volume', {size_gb}),
+				__('Resize Root Volume'),
+			);
+		}, __('AWS'));
 		frm.add_custom_button(__('Terminate'), () => {
 			frappe.confirm(
 				__('Destroy instance {0}? Its root volume goes with it — the engine images and every model weight on this box are lost.', [frm.doc.instance_id]),

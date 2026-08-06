@@ -8,6 +8,7 @@
  "field_order": [
   "machine",
   "machine_ip",
+  "is_static_ip",
   "region",
   "status",
   "monitoring_agent",
@@ -31,6 +32,15 @@
    "fieldtype": "Data",
    "in_list_view": 1,
    "label": "Machine IP",
+   "read_only": 1
+  },
+  {
+   "default": "0",
+   "description": "Whether this box's address survives a stop. Owned by the Machine — set it there.",
+   "fetch_from": "machine.is_static_ip",
+   "fieldname": "is_static_ip",
+   "fieldtype": "Check",
+   "label": "Static IP",
    "read_only": 1
   },
   {

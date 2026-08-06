@@ -3,11 +3,14 @@
 """nvidia-smi parsing and the EC2 instance-type parsers. Pure — no site, box or AWS call."""
 
 import unittest
+from types import SimpleNamespace
 
 import frappe
 from frappe.tests import IntegrationTestCase
 
 from grove.cloud_provider.aws import (
+	AWSError,
+	EC2Client,
 	build_ip_permission,
 	cloud_config,
 	machine_status,
@@ -193,6 +196,106 @@ class TestCloudConfig(unittest.TestCase):
 		self.assertEqual(cloud_config(""), "")
 
 
+class TestResizeRootVolume(unittest.TestCase):
+	"""A box's root volume holds the OS, the engine images and every weight, so growing it is
+	the alternative to relaunching and re-downloading all of it. EBS reports `optimizing` once
+	the new size is already usable, with rebalancing that can run for hours behind it — waiting
+	for `completed` would block the job on work the filesystem does not need."""
+
+	def client(self, states):
+		"""An EC2Client whose volume modification reports `states` in order, one per poll."""
+		reported = iter(states)
+		client = EC2Client.__new__(EC2Client)  # no boto3, no credentials
+		client.region = "ap-south-1"
+		client.calls = []
+		client.ec2 = SimpleNamespace(
+			describe_instances=lambda **kw: {"Reservations": [{"Instances": [{
+				"RootDeviceName": "/dev/sda1",
+				"BlockDeviceMappings": [{"DeviceName": "/dev/sda1", "Ebs": {"VolumeId": "vol-1"}}],
+			}]}]},
+			modify_volume=lambda **kw: client.calls.append(kw) or {},
+			describe_volumes_modifications=lambda **kw: {
+				"VolumesModifications": [dict(next(reported), VolumeId="vol-1")]
+			},
+		)
+		return client
+
+	def resize(self, client, size_gb=150):
+		return client.resize_root_volume("i-1", size_gb, poll_interval_sec=0)
+
+	def test_optimizing_is_done_enough(self):
+		client = self.client([{"ModificationState": "modifying"}, {"ModificationState": "optimizing"}])
+		self.assertEqual(self.resize(client), 150)
+		self.assertEqual(client.calls, [{"VolumeId": "vol-1", "Size": 150}])
+
+	def test_completed_ends_the_poll_too(self):
+		self.assertEqual(self.resize(self.client([{"ModificationState": "completed"}])), 150)
+
+	def test_a_failed_modification_raises_with_the_reason(self):
+		client = self.client([{"ModificationState": "failed", "StatusMessage": "quota exceeded"}])
+		with self.assertRaises(AWSError) as caught:
+			self.resize(client)
+		self.assertIn("quota exceeded", str(caught.exception))
+
+	def test_it_gives_up_rather_than_polling_forever(self):
+		client = self.client([{"ModificationState": "modifying"}] * 50)
+		with self.assertRaises(AWSError):
+			client.resize_root_volume("i-1", 150, timeout_sec=0, poll_interval_sec=0)
+
+	def test_an_instance_with_no_ebs_root_is_refused(self):
+		client = self.client([{"ModificationState": "completed"}])
+		client.ec2.describe_instances = lambda **kw: {"Reservations": [{"Instances": [{
+			"RootDeviceName": "/dev/sda1", "BlockDeviceMappings": [],
+		}]}]}
+		with self.assertRaises(AWSError):
+			self.resize(client)
+		self.assertEqual(client.calls, [], "nothing is modified when there is no root volume")
+
+
+class TestStaticIp(unittest.TestCase):
+	"""An Elastic IP is what makes an address survive a Stop — AWS re-issues a different one on
+	every Start otherwise, stranding every route pointing at the old address. It is billed while
+	allocated, and AWS refuses to release one that is still attached."""
+
+	def client(self, addresses):
+		"""An EC2Client whose describe_addresses reports `addresses`, recording every call."""
+		client = EC2Client.__new__(EC2Client)  # no boto3, no credentials
+		client.region = "ap-south-1"
+		client.calls = []
+		record = lambda name: lambda **kw: client.calls.append((name, kw)) or {}
+		client.ec2 = SimpleNamespace(
+			allocate_address=lambda **kw: client.calls.append(("allocate_address", kw))
+			or {"PublicIp": "13.1.1.1", "AllocationId": "eipalloc-1"},
+			associate_address=record("associate_address"),
+			describe_addresses=lambda **kw: {"Addresses": addresses},
+			disassociate_address=record("disassociate_address"),
+			release_address=record("release_address"),
+		)
+		return client
+
+	def test_allocate_puts_the_address_on_the_instance(self):
+		client = self.client([])
+		self.assertEqual(
+			client.allocate_static_ip("i-1"),
+			{"public_ip": "13.1.1.1", "allocation_id": "eipalloc-1"},
+		)
+		self.assertIn(
+			("associate_address", {"AllocationId": "eipalloc-1", "InstanceId": "i-1"}), client.calls
+		)
+
+	def test_an_attached_address_is_detached_before_release(self):
+		client = self.client([{"AllocationId": "eipalloc-1", "AssociationId": "eipassoc-1"}])
+		client.release_static_ip("eipalloc-1")
+		self.assertEqual(
+			[name for name, _ in client.calls], ["disassociate_address", "release_address"]
+		)
+
+	def test_a_free_address_is_released_straight_away(self):
+		client = self.client([{"AllocationId": "eipalloc-1"}])
+		client.release_static_ip("eipalloc-1")
+		self.assertEqual([name for name, _ in client.calls], ["release_address"])
+
+
 class TestLaunchResetsStatusOnFailure(IntegrationTestCase):
 	"""A launch() failure must not strand a Machine at Provisioning forever — nothing in the
 	UI or provision()'s own guard offers a way out of that state once instance_id is blank
@@ -203,6 +306,9 @@ class TestLaunchResetsStatusOnFailure(IntegrationTestCase):
 			"doctype": "Machine", "machine_name": "test-launch-failure",
 			"instance_type": "g6.12xlarge", "root_volume_gb": 100,
 		}).insert(ignore_permissions=True)
+		# launch() commits, which ends the test's transaction — so the row outlives the rollback
+		# and the cleanup delete has to be committed too, or the next run hits a duplicate.
+		self.addCleanup(frappe.db.commit)
 		self.addCleanup(machine.delete, ignore_permissions=True)
 
 		# No cloud_provider set — self.cloud_client throws before instance_id is ever touched,
@@ -239,9 +345,11 @@ class TestBaremetalMachine(IntegrationTestCase):
 		}).insert(ignore_permissions=True)
 		self.addCleanup(region.delete, ignore_permissions=True)
 
+		# Region is mandatory on Network now, so a blank one only exists as a row predating that
+		# — which is exactly the row this guard is here for.
 		dummy_network = frappe.get_doc({
 			"doctype": "Network", "name": "test-baremetal-dummy-network",
-		}).insert(ignore_permissions=True)
+		}).insert(ignore_permissions=True, ignore_mandatory=True)
 		self.addCleanup(dummy_network.delete, ignore_permissions=True)
 
 		machine = frappe.get_doc({
@@ -250,6 +358,44 @@ class TestBaremetalMachine(IntegrationTestCase):
 		}).insert(ignore_permissions=True)
 		self.addCleanup(machine.delete, ignore_permissions=True)
 		self.assertEqual(machine.region, region.name, "a region-less Network must not clear it")
+
+
+class TestLaunchLockedFields(IntegrationTestCase):
+	"""The SSH keys go in via user-data at launch, so editing the key afterwards would only make
+	the doc disagree with the box. A static IP is not locked like that — it can be attached to a
+	running box at any time, by button."""
+
+	def setUp(self):
+		self.key = frappe.get_doc({
+			"doctype": "SSH Key", "key_name": "test-launch-locked-key",
+			"public_key": "ssh-ed25519 AAAA test@grove",
+		}).insert(ignore_permissions=True)
+		self.addCleanup(self.key.delete, ignore_permissions=True)
+
+	def machine(self, name, **fields):
+		machine = frappe.get_doc({
+			"doctype": "Machine", "machine_name": name, **fields,
+		}).insert(ignore_permissions=True)
+		self.addCleanup(machine.delete, ignore_permissions=True)
+		return machine
+
+	def test_ssh_key_cannot_change_on_a_launched_box(self):
+		machine = self.machine("test-launch-locked", instance_id="i-123", ssh_key=self.key.name)
+		machine.ssh_key = ""
+		with self.assertRaises(frappe.ValidationError):
+			machine.save(ignore_permissions=True)
+
+	def test_ssh_key_is_free_to_change_before_launch(self):
+		machine = self.machine("test-launch-unlocked", ssh_key=self.key.name)
+		machine.ssh_key = ""
+		machine.save(ignore_permissions=True)
+		self.assertFalse(frappe.db.get_value("Machine", machine.name, "ssh_key"))
+
+	def test_static_ip_is_not_launch_locked(self):
+		machine = self.machine("test-static-ip-unlocked", instance_id="i-456")
+		machine.is_static_ip = 1
+		machine.save(ignore_permissions=True)
+		self.assertTrue(frappe.db.get_value("Machine", machine.name, "is_static_ip"))
 
 
 class TestSyncDependentServers(IntegrationTestCase):
