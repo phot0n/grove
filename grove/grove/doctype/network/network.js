@@ -1,4 +1,14 @@
 frappe.ui.form.on('Network', {
+	setup(frm) {
+		// Region names are provider region codes, so only this account's provider has any that
+		// mean anything here. No provider yet → the on-prem Regions, which belong to no account.
+		frm.set_query('region', () => ({
+			filters: frm.doc.provider_type
+				? {cloud_provider: frm.doc.provider_type}
+				: {cloud_provider: ['is', 'not set']},
+		}));
+	},
+
 	refresh(frm) {
 		if (frm.is_new()) return;
 

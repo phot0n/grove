@@ -14,13 +14,17 @@ PROXY_INGRESS_RULES = [
 	{"protocol": "tcp", "from_port": 80, "to_port": 80, "cidr": "0.0.0.0/0"},
 	{"protocol": "tcp", "from_port": 443, "to_port": 443, "cidr": "0.0.0.0/0"},
 ]
-INFERENCE_SSH_RULE = {"protocol": "tcp", "from_port": 22, "to_port": 22, "cidr": "0.0.0.0/0"}
-INFERENCE_ENGINE_PORT_RANGE = (8080, 8085)
+INFERENCE_INGRESS_RULES = [
+	{"protocol": "tcp", "from_port": 22, "to_port": 22, "cidr": "0.0.0.0/0"},
+	{"protocol": "tcp", "from_port": (8080, 8085), "to_port": (8080, 8085), "cidr": "0.0.0.0/0"},
+]
 
 # Pool auto-assigned CIDR blocks are carved from — /16s never collide with each other, so any
 # two Networks can be peered later without an overlap.
 CIDR_POOL = ipaddress.ip_network("10.0.0.0/8")
 CIDR_PREFIX = 16
+# One public subnet per Network, carved off the front of its /16.
+SUBNET_PREFIX = 24
 
 
 class Network(Document):
@@ -38,8 +42,9 @@ class Network(Document):
 		inference_security_group_ids: DF.Data | None
 		internet_gateway_id: DF.Data | None
 		machine_image: DF.Data | None
+		provider_type: DF.Data | None
 		proxy_security_group_ids: DF.Data | None
-		region: DF.Link | None
+		region: DF.Link
 		route_table_id: DF.Data | None
 		subnet_cidr_block: DF.Data | None
 		subnet_id: DF.Data | None
@@ -47,8 +52,15 @@ class Network(Document):
 	# end: auto-generated types
 
 	def validate(self):
-		if self.cloud_provider and not self.cidr_block:
+		"""The whole address plan is derived: an operator picks a provider and a region, and
+		Grove carves the ranges out. Nothing here is asked for, so every field below is
+		read-only on the form."""
+		if not self.cloud_provider:
+			return
+		if not self.cidr_block:
 			self.cidr_block = self.next_available_cidr_block
+		if not self.subnet_cidr_block:
+			self.subnet_cidr_block = self.first_subnet_cidr_block
 
 	@property
 	def next_available_cidr_block(self):
@@ -59,6 +71,16 @@ class Network(Document):
 			if str(block) not in used:
 				return str(block)
 		frappe.throw(f"No /16 CIDR block available within {CIDR_POOL}.")
+
+	@property
+	def first_subnet_cidr_block(self):
+		"""First /24 of this Network's VPC CIDR — the rest of the /16 is left for subnets Grove
+		does not create today."""
+		try:
+			block = ipaddress.ip_network(self.cidr_block)
+		except ValueError as e:
+			frappe.throw(f"CIDR Block '{self.cidr_block}' on Network {self.name} is not valid: {e}")
+		return str(next(block.subnets(new_prefix=SUBNET_PREFIX)))
 
 	@property
 	def proxy_security_group_id_list(self):
@@ -94,11 +116,6 @@ class Network(Document):
 		then its security groups too, so one click gets a Network fully ready for a Machine."""
 		if self.vpc_id:
 			frappe.throw(f"Network {self.name} already has a VPC ID set.")
-		if not (self.cidr_block and self.subnet_cidr_block and self.availability_zone):
-			frappe.throw(
-				f"Set CIDR Block, Subnet CIDR Block and Availability Zone on Network {self.name} "
-				f"before creating a VPC."
-			)
 
 		network = self.cloud_client.create_network(
 			self.name, self.cidr_block, self.subnet_cidr_block, self.availability_zone
@@ -108,6 +125,7 @@ class Network(Document):
 			"subnet_id": network["subnet_id"],
 			"internet_gateway_id": network["internet_gateway_id"],
 			"route_table_id": network["route_table_id"],
+			"availability_zone": network["availability_zone"],
 		})
 		frappe.msgprint(f"VPC and subnet created for {self.name}.")
 		self.create_security_groups()
@@ -130,15 +148,10 @@ class Network(Document):
 			self.db_set("proxy_security_group_ids", proxy_sg_id)
 
 		if not self.inference_security_group_ids:
-			from_port, to_port = INFERENCE_ENGINE_PORT_RANGE
-			engine_port_rule = {
-				"protocol": "tcp", "from_port": from_port, "to_port": to_port,
-				"source_group_id": self.proxy_security_group_id_list[0],
-			}
 			inference_sg_id = self.cloud_client.create_security_group(
 				f"{self.name}-inference", "Grove-managed: SSH + engine ports (8080-8085)", self.vpc_id
 			)
-			self.cloud_client.authorize_ingress(inference_sg_id, [INFERENCE_SSH_RULE, engine_port_rule])
+			self.cloud_client.authorize_ingress(inference_sg_id, INFERENCE_INGRESS_RULES)
 			self.db_set("inference_security_group_ids", inference_sg_id)
 
 		frappe.msgprint(f"Security groups created for {self.name}.")

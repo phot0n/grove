@@ -27,6 +27,9 @@ class TestParseSecurityGroupIds(unittest.TestCase):
 
 
 class TestCidrBlockAutoAssignment(IntegrationTestCase):
+	"""The address plan is derived, not typed: an operator picks a provider and a region and
+	Grove carves out the VPC range and the subnet inside it."""
+
 	def setUp(self):
 		self.provider = frappe.get_doc({
 			"doctype": "Cloud Provider", "name": "test-network-cidr-provider", "provider_type": "aws",
@@ -34,9 +37,15 @@ class TestCidrBlockAutoAssignment(IntegrationTestCase):
 		}).insert(ignore_permissions=True)
 		self.addCleanup(self.provider.delete, ignore_permissions=True)
 
+		self.region = frappe.get_doc({
+			"doctype": "Region", "name": "test-network-cidr-region", "label": "CIDR test",
+			"cloud_provider": "aws",
+		}).insert(ignore_permissions=True)
+		self.addCleanup(self.region.delete, ignore_permissions=True)
+
 	def make_network(self, name, cidr_block=None):
 		network = frappe.get_doc({
-			"doctype": "Network", "name": name,
+			"doctype": "Network", "name": name, "region": self.region.name,
 			"cloud_provider": self.provider.name, "cidr_block": cidr_block,
 		}).insert(ignore_permissions=True)
 		self.addCleanup(network.delete, ignore_permissions=True)
@@ -57,12 +66,24 @@ class TestCidrBlockAutoAssignment(IntegrationTestCase):
 		network = self.make_network("test-cidr-manual", cidr_block="10.5.0.0/16")
 		self.assertEqual(network.cidr_block, "10.5.0.0/16")
 
+	def test_subnet_is_the_first_slash_24_of_the_vpc(self):
+		network = self.make_network("test-cidr-subnet", cidr_block="10.5.0.0/16")
+		self.assertEqual(network.subnet_cidr_block, "10.5.0.0/24")
+
 	def test_bare_metal_placeholder_stays_blank(self):
+		# No Cloud Provider → nothing is carved out, but a Region is still named: it is what a
+		# Machine on this Network inherits.
+		region = frappe.get_doc({
+			"doctype": "Region", "name": "test-cidr-onprem-region", "label": "On-prem",
+		}).insert(ignore_permissions=True)
+		self.addCleanup(region.delete, ignore_permissions=True)
+
 		network = frappe.get_doc({
-			"doctype": "Network", "name": "test-cidr-placeholder",
+			"doctype": "Network", "name": "test-cidr-placeholder", "region": region.name,
 		}).insert(ignore_permissions=True)
 		self.addCleanup(network.delete, ignore_permissions=True)
 		self.assertFalse(network.cidr_block)
+		self.assertFalse(network.subnet_cidr_block)
 
 
 if __name__ == "__main__":

@@ -7,6 +7,7 @@
  "engine": "InnoDB",
  "field_order": [
   "cloud_provider",
+  "provider_type",
   "region",
   "availability_zone",
   "machine_image",
@@ -23,21 +24,22 @@
   "inference_security_group_ids"
  ],
  "fields": [
-  {"fieldname": "cloud_provider", "fieldtype": "Link", "label": "Cloud Provider", "options": "Cloud Provider", "in_list_view": 1, "description": "AWS account this network belongs to. Blank for a bare-metal placeholder."},
-  {"fieldname": "region", "fieldtype": "Link", "label": "Region", "options": "Region", "in_list_view": 1, "description": "A VPC cannot span regions. Blank for a bare-metal placeholder — a linked Machine's own Region is left alone."},
-  {"fieldname": "availability_zone", "fieldtype": "Data", "label": "Availability Zone", "description": "e.g. ap-south-1a. The subnet's AZ. Required for Create Network."},
-  {"fieldname": "machine_image", "fieldtype": "Data", "label": "Machine Image", "description": "Default AMI id for Machines launched into this Network, e.g. ami-0abc123. AMI ids are region-scoped, so this lives here rather than on Cloud Provider — one per region, not one per account. A Machine's own Machine Image overrides this."},
-  {"fieldname": "column_break_1", "fieldtype": "Column Break"},
-  {"fieldname": "cidr_block", "fieldtype": "Data", "label": "CIDR Block", "description": "VPC CIDR, e.g. 10.0.0.0/16. Auto-assigned to the next unused /16 in 10.0.0.0/8 on save when a Cloud Provider is set and this is left blank — every Network gets a distinct range, so VPCs can be peered later without an overlap. Required for Create Network."},
-  {"fieldname": "subnet_cidr_block", "fieldtype": "Data", "label": "Subnet CIDR Block", "description": "Subnet CIDR within the VPC, e.g. 10.0.0.0/24. Required for Create Network."},
-  {"fieldname": "column_break_2", "fieldtype": "Column Break"},
-  {"fieldname": "vpc_id", "fieldtype": "Data", "label": "VPC ID", "description": "AWS VPC id. Blank + CIDR Block/Subnet CIDR Block/Availability Zone set = Create Network can make one for you. Otherwise paste an existing VPC's id here."},
-  {"fieldname": "subnet_id", "fieldtype": "Data", "label": "Subnet ID", "description": "The subnet Machines in this group launch into. Filled in by Create Network, or paste an existing subnet's id."},
-  {"fieldname": "internet_gateway_id", "fieldtype": "Data", "label": "Internet Gateway ID", "description": "Filled in by Create Network. Informational."},
-  {"fieldname": "route_table_id", "fieldtype": "Data", "label": "Route Table ID", "description": "Filled in by Create Network. Informational — the VPC's own default route table, given a 0.0.0.0/0 route to the Internet Gateway."},
-  {"fieldname": "column_break_3", "fieldtype": "Column Break"},
-  {"fieldname": "proxy_security_group_ids", "fieldtype": "Data", "label": "Proxy Security Group IDs", "description": "Comma-separated, e.g. sg-abc,sg-def. For a Proxy Server box: 22, 80 and 443 open to 0.0.0.0/0. Blank + a VPC ID = Create Security Groups can make one for you."},
-  {"fieldname": "inference_security_group_ids", "fieldtype": "Data", "label": "Inference Security Group IDs", "description": "Comma-separated, e.g. sg-abc,sg-def. For an Inference Server box: 22 open to 0.0.0.0/0, 8080-8085 (engine ports) open only to the Proxy security group — 6 ports, so at most 6 concurrent Model Deployments per box. Blank + a VPC ID = Create Security Groups can make one for you."}
+  {"fieldname": "cloud_provider", "fieldtype": "Link", "label": "Cloud Provider", "options": "Cloud Provider", "in_list_view": 1, "set_only_once": 1, "description": "Account this network belongs to. Blank for a bare-metal placeholder. Set once — every id below belongs to this account."},
+  {"fieldname": "provider_type", "fieldtype": "Data", "label": "Provider Type", "fetch_from": "cloud_provider.provider_type", "read_only": 1, "hidden": 1},
+  {"fieldname": "region", "fieldtype": "Link", "label": "Region", "options": "Region", "in_list_view": 1, "reqd": 1, "set_only_once": 1, "description": "A VPC cannot span regions, so this is set once. Machines linked to this Network inherit it. Bare-metal placeholder: pick a Region with no Cloud Provider."},
+  {"fieldname": "availability_zone", "fieldtype": "Data", "label": "Availability Zone", "read_only": 1, "depends_on": "eval:doc.cloud_provider", "description": "The subnet's AZ, e.g. ap-south-1a. Create Network picks the region's first available one and records it here."},
+  {"fieldname": "machine_image", "fieldtype": "Data", "label": "Machine Image", "depends_on": "eval:doc.cloud_provider", "description": "Default AMI id for Machines launched into this Network, e.g. ami-0abc123. AMI ids are region-scoped, so this lives here rather than on Cloud Provider — one per region, not one per account. A Machine's own Machine Image overrides this."},
+  {"fieldname": "column_break_1", "fieldtype": "Column Break", "depends_on": "eval:doc.cloud_provider"},
+  {"fieldname": "cidr_block", "fieldtype": "Data", "label": "CIDR Block", "read_only": 1, "depends_on": "eval:doc.cloud_provider", "description": "VPC CIDR. Assigned on save to the next unused /16 in 10.0.0.0/8 — every Network gets a distinct range, so VPCs can be peered later without an overlap."},
+  {"fieldname": "subnet_cidr_block", "fieldtype": "Data", "label": "Subnet CIDR Block", "read_only": 1, "depends_on": "eval:doc.cloud_provider", "description": "The one public subnet Grove launches into: the first /24 of the VPC CIDR, assigned on save."},
+  {"fieldname": "column_break_2", "fieldtype": "Column Break", "depends_on": "eval:doc.cloud_provider"},
+  {"fieldname": "vpc_id", "fieldtype": "Data", "label": "VPC ID", "read_only": 1, "depends_on": "eval:doc.cloud_provider", "description": "Filled in by Create Network."},
+  {"fieldname": "subnet_id", "fieldtype": "Data", "label": "Subnet ID", "read_only": 1, "depends_on": "eval:doc.cloud_provider", "description": "The subnet Machines in this Network launch into. Filled in by Create Network."},
+  {"fieldname": "internet_gateway_id", "fieldtype": "Data", "label": "Internet Gateway ID", "read_only": 1, "depends_on": "eval:doc.cloud_provider", "description": "Filled in by Create Network. Informational."},
+  {"fieldname": "route_table_id", "fieldtype": "Data", "label": "Route Table ID", "read_only": 1, "depends_on": "eval:doc.cloud_provider", "description": "Filled in by Create Network. Informational — the VPC's own default route table, given a 0.0.0.0/0 route to the Internet Gateway."},
+  {"fieldname": "column_break_3", "fieldtype": "Column Break", "depends_on": "eval:doc.cloud_provider"},
+  {"fieldname": "proxy_security_group_ids", "fieldtype": "Data", "label": "Proxy Security Group IDs", "read_only": 1, "depends_on": "eval:doc.cloud_provider", "description": "For a Proxy Server box: 22, 80 and 443 open to 0.0.0.0/0. Filled in by Create Security Groups."},
+  {"fieldname": "inference_security_group_ids", "fieldtype": "Data", "label": "Inference Security Group IDs", "read_only": 1, "depends_on": "eval:doc.cloud_provider", "description": "For an Inference Server box: 22 open to 0.0.0.0/0, 8080-8085 (engine ports) open only to the Proxy security group — 6 ports, so at most 6 concurrent Model Deployments per box. Filled in by Create Security Groups."}
  ],
  "links": [
   {"group": "Infrastructure", "link_doctype": "Machine", "link_fieldname": "network"}
