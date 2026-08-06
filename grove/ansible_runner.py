@@ -23,6 +23,18 @@ from ansible.vars.manager import VariableManager
 
 import frappe
 
+from grove.utils import shared_roles_dir
+
+# Ansible's per-task result → the Ansible Task status. Ansible's own vocabulary is finer than
+# what an operator reading a play needs: ok and changed both mean the task did its job.
+TASK_STATUS = {
+	"ok": "Success",
+	"changed": "Success",
+	"failed": "Failure",
+	"unreachable": "Unreachable",
+	"skipped": "Skipped",
+}
+
 
 def _set_global_cli_args(remote_user, tags=None, skip_tags=None):
 	# PlaybookExecutor/TaskQueueManager read a broad set of CLI args from this
@@ -64,6 +76,10 @@ def _set_global_cli_args(remote_user, tags=None, skip_tags=None):
 		timeout=30,
 	)
 	C.HOST_KEY_CHECKING = False
+	# Searched after the playbook's own roles/ dir, so a role two doctypes share lives once in
+	# playbooks/roles and is named from either — no copy, and no symlink to repoint every time
+	# a folder moves.
+	C.DEFAULT_ROLES_PATH = [shared_roles_dir()]
 	# Required (ansible-core >= 2.15) before the in-process API can resolve
 	# collections/modules like ansible.builtin.*.
 	init_plugin_loader()
@@ -211,19 +227,21 @@ class Ansible:
 		frappe.db.commit()
 
 	def add_task(self, task_name):
+		"""The doc for a task Ansible has just started — Running until it reports back, so a
+		play being watched live shows where it actually is."""
 		doc = frappe.get_doc({
 			"doctype": "Ansible Task",
 			"play": self.play_name,
 			"task_name": task_name,
 			"host": self.host,
-			"status": "ok",
+			"status": "Running",
 		}).insert(ignore_permissions=True)
 		frappe.db.commit()
 		return doc.name
 
 	def finish_task(self, task_doc_name, status, result):
 		doc = frappe.get_doc("Ansible Task", task_doc_name)
-		doc.status = status
+		doc.status = TASK_STATUS.get(status, "Failure")
 		try:
 			doc.output = json.dumps(result, default=str, indent=2)[:100000]
 		except Exception:
