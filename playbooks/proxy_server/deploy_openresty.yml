@@ -12,10 +12,15 @@
     grove_dir: "{{ playbook_dir }}"
 
   # Roles run before tasks, which is what this needs: nginx.conf declares a `listen 443 ssl`
-  # metrics server, and OpenResty will not start with no certificate on disk. Re-running it is
-  # also how a rotated scrape password reaches this box.
+  # server, and OpenResty will not start with no certificate on disk. Re-running it is also how a
+  # rotated scrape password reaches this box.
+  #
+  # fleet_tls must be given the same vars Grove passes on provision (Grove Settings.tls_variables
+  # plus proxy_hostname). Run by hand without them, this play renders the plaintext config and
+  # downgrades a live box — which is why the nginx.conf task below asserts before it writes.
   roles:
     - grove_https
+    - fleet_tls
 
   tasks:
     - name: grove lua dir
@@ -31,9 +36,27 @@
         mode: "0644"
       notify: reload openresty
 
+    # Refuse to render the plaintext config over a box that is already serving TLS: the play is
+    # hand-run, the vars come from the command line, and forgetting them would take /v1 and
+    # /grove-admin back onto port 80 with nothing to say it had happened.
+    - name: look for a certificate this box is already serving
+      ansible.builtin.stat:
+        path: "{{ fleet_tls_cert_path }}"
+      register: existing_fleet_cert
+
+    - name: refuse to downgrade a box that already has a certificate
+      ansible.builtin.assert:
+        that: gateway_host | length > 0 and proxy_hostname | length > 0
+        fail_msg: >-
+          {{ fleet_tls_cert_path }} exists, so this box serves TLS, but no gateway_host or
+          proxy_hostname was passed — rendering now would put /v1 and /grove-admin back on
+          plaintext :80. Re-run from the Proxy Server's Provision button, or pass the same
+          extra-vars it does.
+      when: existing_fleet_cert.stat.exists
+
     - name: nginx.conf
-      ansible.builtin.copy:
-        src: "{{ grove_dir }}/nginx.conf"
+      ansible.builtin.template:
+        src: "{{ grove_dir }}/nginx.conf.j2"
         dest: /usr/local/openresty/nginx/conf/nginx.conf
         mode: "0644"
       notify: reload openresty

@@ -76,7 +76,7 @@
    "fieldtype": "Column Break"
   },
   {
-   "description": "e.g. http:///grove-admin",
+   "description": "Where the control plane reaches this box's agent. Derived from this box's name inside the Proxy Zone once one is set (https, /grove-admin), else from its public IP over plain http.",
    "fieldname": "admin_url",
    "fieldtype": "Data",
    "label": "Admin URL",

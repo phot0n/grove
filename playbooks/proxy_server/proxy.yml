@@ -13,12 +13,17 @@
     lua_resty_http_version: "0.17.1"
 
   # openresty first (it removes any distro nginx holding :443), then grove_https — nginx.conf
-  # below declares a `listen 443 ssl` metrics server and OpenResty will not start without a
-  # certificate on disk. The version pin lives in the openresty role, shared with every
-  # inference box's engine proxy so the whole fleet runs one build.
+  # below declares a `listen 443 ssl` server and OpenResty will not start without a certificate on
+  # disk. The version pin lives in the openresty role, shared with every inference box's engine
+  # proxy so the whole fleet runs one build.
+  #
+  # fleet_tls after grove_https and before the nginx.conf task: with a Proxy Zone set the config
+  # names the wildcard's paths, so the files have to be there before `openresty -t` reads it. With
+  # no zone it writes nothing and the config falls back to grove_https's self-signed box.crt.
   roles:
     - openresty
     - grove_https
+    - fleet_tls
     - build_gateway_agent
 
   tasks:
@@ -73,8 +78,8 @@
       notify: reload openresty
 
     - name: nginx.conf
-      ansible.builtin.copy:
-        src: "{{ grove_dir }}/nginx.conf"
+      ansible.builtin.template:
+        src: "{{ grove_dir }}/nginx.conf.j2"
         dest: /usr/local/openresty/nginx/conf/nginx.conf
         mode: "0644"
       notify: reload openresty

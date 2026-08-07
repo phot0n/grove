@@ -50,8 +50,10 @@ def provision_key(name: str, email: str, token_limit: int=None, allowed_models: 
 	if not host:
 		frappe.throw("Gateway Host is not found")
 
+	# With a scheme, because the host alone is not a base URL an SDK can take. https always: a
+	# proxy with a certificate 301s port 80, and one without has no business handing out keys.
 	return {
-		"gateway_url": host,
+		"gateway_url": f"https://{host}",
 		"api_key": key.get_password("api_secret"),
 	}
 
