@@ -89,7 +89,30 @@ def authenticate(token):
 
 def host_targets(agent):
 	"""Exporter targets for every box this agent owns, including its own."""
-	return build_host_targets(inference_boxes(agent) + proxy_boxes(agent)) + agent_targets(agent)
+	network = agent_network(agent)
+	boxes = inference_boxes(agent) + proxy_boxes(agent)
+	return build_host_targets(boxes, network) + agent_targets(agent)
+
+
+def agent_network(agent):
+	"""The Network this agent's own box sits in, or "" when it has none.
+
+	A Network is one VPC, one subnet, one availability zone, so two boxes that share one can
+	reach each other privately; anything else has no route between the addresses and must be
+	scraped over the public internet."""
+	machine = frappe.db.get_value("Monitoring Agent", agent, "machine")
+	return (machine and frappe.db.get_value("Machine", machine, "network")) or ""
+
+
+def scrape_ip(box, agent_network):
+	"""Where to actually reach a box: its private address when it shares the agent's Network,
+	its public one otherwise.
+
+	Public is the answer for a pod (no Machine and no Network at all), for a colo or bare metal
+	box that has no private address, and for an agent whose own box is in no Network."""
+	if agent_network and box.get("network") == agent_network and box.get("private_ip"):
+		return box["private_ip"]
+	return box.get("ip")
 
 
 def agent_targets(agent):
@@ -118,6 +141,7 @@ def engine_targets(agent):
 	"""Engines this agent scrapes: every Active deployment on its boxes, and every Running
 	pod that names it. Both are reached at their engine_url — the address the gateway
 	already routes to."""
+	network = agent_network(agent)
 	boxes = {box["name"]: box for box in inference_boxes(agent)}
 	deployments = (
 		frappe.get_all(
@@ -138,6 +162,7 @@ def engine_targets(agent):
 				"machine": boxes[deployment.inference_server]["machine"],
 				"region": boxes[deployment.inference_server]["region"],
 			},
+			address=scrape_ip(boxes[deployment.inference_server], network),
 		)
 		for deployment in deployments
 	]
@@ -167,7 +192,7 @@ def inference_boxes(agent):
 		filters={"monitoring_agent": agent, "status": ("!=", _GONE_STATUS)},
 		fields=["name", "machine", "machine_ip as ip", "region"],
 	)
-	return _with_gpu_flag(servers)
+	return _with_gpu_flag(_with_machine_address(servers))
 
 
 def proxy_boxes(agent):
@@ -177,7 +202,7 @@ def proxy_boxes(agent):
 		filters={"monitoring_agent": agent, "status": ("!=", _GONE_STATUS)},
 		fields=["name", "machine", "public_ip as ip", "region"],
 	)
-	return [{**server, "has_gpu": False} for server in servers]
+	return [{**server, "has_gpu": False} for server in _with_machine_address(servers)]
 
 
 def _with_gpu_flag(servers):
@@ -187,56 +212,98 @@ def _with_gpu_flag(servers):
 	return [{**server, "has_gpu": server["machine"] in gpu_machines} for server in servers]
 
 
-def build_host_targets(boxes):
+def _with_machine_address(servers):
+	"""Each box's private address and Network, read live off its Machine.
+
+	Not mirrored onto the server doc with a fetch_from: that copy is only as fresh as the last
+	save of the server, and a stale scrape address is a target that can only ever be down —
+	indistinguishable from a box that just died."""
+	machines = [server["machine"] for server in servers if server.get("machine")]
+	addresses = (
+		{
+			machine["name"]: machine
+			for machine in frappe.get_all(
+				"Machine",
+				filters={"name": ("in", machines)},
+				fields=["name", "private_ip", "network"],
+			)
+		}
+		if machines
+		else {}
+	)
+	return [
+		{
+			**server,
+			"private_ip": addresses.get(server.get("machine"), {}).get("private_ip") or "",
+			"network": addresses.get(server.get("machine"), {}).get("network") or "",
+		}
+		for server in servers
+	]
+
+
+def build_host_targets(boxes, agent_network=""):
 	"""Boxes → exporter entries. A box with no address cannot be scraped — it is skipped
 	rather than emitted as a target that can only ever be down."""
 	entries = []
 	for box in boxes:
 		if not box.get("ip"):
 			continue
+		address = scrape_ip(box, agent_network)
 		labels = {
 			"machine": box.get("machine") or "",
 			"region": box.get("region") or "",
 			"server": box["name"],
 		}
-		entries.append(exporter_entry(box["ip"], NODE_EXPORTER_PORT, NODE_METRICS_PATH, labels))
+		entries.append(
+			exporter_entry(address, NODE_EXPORTER_PORT, NODE_METRICS_PATH, labels, box["ip"])
+		)
 		if box.get("has_gpu"):
-			entries.append(exporter_entry(box["ip"], DCGM_EXPORTER_PORT, GPU_METRICS_PATH, labels))
+			entries.append(
+				exporter_entry(address, DCGM_EXPORTER_PORT, GPU_METRICS_PATH, labels, box["ip"])
+			)
 	return entries
 
 
-def exporter_entry(ip, port, metrics_path, labels):
+def exporter_entry(address, port, metrics_path, labels, instance_ip=None):
 	"""One exporter, scraped through its box's TLS front rather than on its own port.
 
 	`instance` is set here instead of being left to default from the address, which is now
 	`<ip>:443` for every exporter on the box: node and DCGM would otherwise collapse into one
 	series name that means nothing. The value keeps the exporter's own port, so it is byte
-	identical to what these targets reported before they moved behind the front."""
+	identical to what these targets reported before they moved behind the front.
+
+	It also keeps the box's PUBLIC address even when the box is scraped privately. The address
+	is where to connect; `instance` is which exporter this is, and a box that gains a private
+	IP must not rename every series it has ever reported."""
 	return {
-		"targets": [f"{ip}:{BOX_HTTPS_PORT}"],
+		"targets": [f"{address}:{BOX_HTTPS_PORT}"],
 		"labels": {
 			"__scheme__": "https",
 			"__metrics_path__": metrics_path,
-			"instance": f"{ip}:{port}",
+			"instance": f"{instance_ip or address}:{port}",
 			**labels,
 		},
 	}
 
 
-def engine_entry(engine_url, labels):
-	"""One entry for an engine, addressed exactly where the gateway routes it. None when
-	there is no URL yet — a deployment mid-provision, or a pod still loading.
+def engine_entry(engine_url, labels, address=None):
+	"""One entry for an engine, addressed where the gateway routes it unless `address` says to
+	reach the same engine privately. None when there is no URL yet — a deployment mid-provision,
+	or a pod still loading.
 
 	Derived from the URL rather than branched on what kind of engine it is, because the two
 	kinds no longer share a shape: a deployment sits behind its box's front at
 	`https://<ip>/e/<slug>`, while a pod — which has no box, no Ansible and no front — keeps
-	`http://<host>:<port>`. Both fall out of the same two lines."""
+	`http://<host>:<port>`. Both fall out of the same two lines.
+
+	Only the address moves. `engine` and `instance` stay the public URL: the first is the join
+	back to the route it describes, and the second is what tells two engines on one box apart."""
 	parsed = urlparse(engine_url or "")
 	if not parsed.hostname:
 		return None
 	port = parsed.port or (443 if parsed.scheme == "https" else 80)
 	return {
-		"targets": [f"{parsed.hostname}:{port}"],
+		"targets": [f"{address or parsed.hostname}:{port}"],
 		"labels": {
 			# Verbatim: the exact string gateway_sync pushes as this engine's route target.
 			# Reformatted, the series can no longer be joined to the route it describes.

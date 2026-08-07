@@ -59,8 +59,24 @@ TEMPLATES = Environment(
 )
 
 
-def box(name, ip="10.0.0.5", machine="MACHINE-1", region="ap-south-1", has_gpu=False):
-	return {"name": name, "ip": ip, "machine": machine, "region": region, "has_gpu": has_gpu}
+def box(
+	name,
+	ip="10.0.0.5",
+	machine="MACHINE-1",
+	region="ap-south-1",
+	has_gpu=False,
+	private_ip="",
+	network="",
+):
+	return {
+		"name": name,
+		"ip": ip,
+		"machine": machine,
+		"region": region,
+		"has_gpu": has_gpu,
+		"private_ip": private_ip,
+		"network": network,
+	}
 
 
 class TestHostTargets(unittest.TestCase):
@@ -103,6 +119,72 @@ class TestHostTargets(unittest.TestCase):
 	def test_a_box_with_no_address_is_skipped(self):
 		# A Machine that has not been provisioned yet has no IP to scrape.
 		self.assertEqual(build_host_targets([box("INF-1", ip="")]), [])
+
+
+class TestBoxesAreScrapedPrivatelyWhereTheyCanBe(unittest.TestCase):
+	"""A collector is local to its region, so a public-IP scrape leaves the VPC and comes back,
+	and is billed for it. The private address is used when it routes — which is a question about
+	the Network (one VPC, one subnet, one AZ), not the region: two boxes in one region but
+	different Networks have no route between their private addresses, and a target that cannot be
+	reached reads exactly like a box that just died."""
+
+	SAME = box("INF-1", private_ip="172.31.0.9", network="NET-mumbai")
+
+	def test_a_box_in_the_agents_network_is_scraped_privately(self):
+		[entry] = build_host_targets([self.SAME], "NET-mumbai")
+		self.assertEqual(entry["targets"], ["172.31.0.9:443"])
+
+	def test_a_box_in_another_network_is_scraped_publicly(self):
+		# Same region is not enough — a different Network is a different VPC, and the private
+		# address has no route from here.
+		[entry] = build_host_targets([self.SAME], "NET-singapore")
+		self.assertEqual(entry["targets"], ["10.0.0.5:443"])
+
+	def test_a_box_with_no_private_address_is_scraped_publicly(self):
+		# Colo and bare metal — the blackwell box has no private address to be reached by.
+		colo = box("INF-colo", network="NET-mumbai")
+		[entry] = build_host_targets([colo], "NET-mumbai")
+		self.assertEqual(entry["targets"], ["10.0.0.5:443"])
+
+	def test_an_agent_in_no_network_scrapes_everything_publicly(self):
+		[entry] = build_host_targets([self.SAME], "")
+		self.assertEqual(entry["targets"], ["10.0.0.5:443"])
+
+	def test_the_address_moves_but_the_series_does_not(self):
+		# `instance` is which exporter this is, not where it was reached. A box that gains a
+		# private IP would otherwise rename every series it has ever reported, and history would
+		# stop joining to the present.
+		public = build_host_targets([self.SAME], "")
+		private = build_host_targets([self.SAME], "NET-mumbai")
+		self.assertNotEqual(public[0]["targets"], private[0]["targets"])
+		self.assertEqual(public[0]["labels"], private[0]["labels"])
+		self.assertEqual(private[0]["labels"]["instance"], "10.0.0.5:9100")
+
+	def test_both_exporters_on_a_box_move_together(self):
+		entries = build_host_targets(
+			[box("INF-1", has_gpu=True, private_ip="172.31.0.9", network="NET-mumbai")], "NET-mumbai"
+		)
+		self.assertEqual([e["targets"][0] for e in entries], ["172.31.0.9:443", "172.31.0.9:443"])
+		self.assertEqual(
+			[e["labels"]["instance"] for e in entries], ["10.0.0.5:9100", "10.0.0.5:9400"]
+		)
+
+	def test_an_engine_on_a_private_box_keeps_its_public_identity(self):
+		# The `engine` label is the join back to the route gateway_sync pushes, and `instance` is
+		# what tells two engines on one box apart. Neither may follow the address.
+		entry = engine_entry(
+			"https://10.0.0.5/e/md-00007", {"deployment": "MD-00007"}, address="172.31.0.9"
+		)
+		self.assertEqual(entry["targets"], ["172.31.0.9:443"])
+		self.assertEqual(entry["labels"]["engine"], "https://10.0.0.5/e/md-00007")
+		self.assertEqual(entry["labels"]["instance"], "https://10.0.0.5/e/md-00007")
+		self.assertEqual(entry["labels"]["__metrics_path__"], "/e/md-00007/metrics")
+
+	def test_a_pod_is_never_scraped_privately(self):
+		# A pod has no Machine and no Network — there is no private address to prefer, and
+		# engine_targets passes none.
+		entry = engine_entry("http://1.2.3.4:8081", {"deployment": "POD-1"})
+		self.assertEqual(entry["targets"], ["1.2.3.4:8081"])
 
 
 class TestWhichBoxesAreScraped(unittest.TestCase):
