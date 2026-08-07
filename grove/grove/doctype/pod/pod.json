@@ -39,7 +39,7 @@
   "serve_port",
   "api_key",
   "column_break_serve",
-  "dtype",
+  "kv_cache_dtype",
   "gpu_memory_utilization",
   "attention_backend",
   "max_model_len",
@@ -257,10 +257,11 @@
   },
   {
    "default": "auto",
-   "fieldname": "dtype",
+   "description": "\u2192 --kv-cache-dtype. fp8 halves the KV cache, which buys context on a card short of VRAM, at some accuracy. auto = the weights' own dtype.",
+   "fieldname": "kv_cache_dtype",
    "fieldtype": "Select",
-   "label": "dtype",
-   "options": "auto\nbfloat16\nfloat16\nfloat32"
+   "label": "KV Cache Dtype",
+   "options": "auto\nfp8\nfp8_e4m3\nfp8_e5m2"
   },
   {
    "default": "0.9",
@@ -353,7 +354,7 @@
   }
  ],
  "links": [],
- "modified": "2026-08-03 12:00:00.000000",
+ "modified": "2026-08-07 12:00:00.000000",
  "modified_by": "Administrator",
  "module": "Grove",
  "name": "Pod",

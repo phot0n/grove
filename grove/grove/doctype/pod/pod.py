@@ -31,7 +31,6 @@ class Pod(Document):
 		attention_backend: DF.Literal["auto", "FLASH_ATTN", "XFORMERS", "FLASHINFER"]
 		cloud_provider: DF.Link
 		container_disk_gb: DF.Int
-		dtype: DF.Literal["auto", "bfloat16", "float16", "float32"]
 		engine_image: DF.Link | None
 		engine_url: DF.Data | None
 		env: DF.Table[PodEnv]
@@ -40,6 +39,7 @@ class Pod(Document):
 		gpu_memory_utilization: DF.Float
 		gpu_type_id: DF.Data | None
 		image_name: DF.Data | None
+		kv_cache_dtype: DF.Literal["auto", "fp8", "fp8_e4m3", "fp8_e5m2"]
 		max_model_len: DF.Int
 		model: DF.Link | None
 		pipeline_parallel_size: DF.Int

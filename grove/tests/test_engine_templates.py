@@ -176,6 +176,30 @@ class TestEngineProxyConfig(unittest.TestCase):
 		self.assertIn("client_max_body_size 32m;", self.config)
 
 
+class TestReconfigureRunsTheConfigTasksOnly(unittest.TestCase):
+	"""Update Engine Config has its own play. It exists to be fast enough to run against a deploy
+	that is still on its health gate, so anything that downloads, pulls or checks disk belongs in
+	main.yml — never in the shared config subset."""
+
+	def test_the_config_subset_is_imported_by_the_full_serve_not_copied(self):
+		main = (INFERENCE_ROLES / "vllm/tasks/main.yml").read_text()
+		self.assertIn("config.yml", main)
+
+	def test_nothing_heavy_reaches_the_config_subset(self):
+		config = (INFERENCE_ROLES / "vllm/tasks/config.yml").read_text()
+		for absent in ("docker pull", "hf download", "df --output", "docker image inspect"):
+			with self.subTest(absent):
+				self.assertNotIn(absent, config)
+
+	def test_the_play_runs_that_subset_and_no_roles_around_it(self):
+		[play] = yaml.safe_load((PLAYBOOKS / "inference_server/reconfigure.yml").read_text())
+		self.assertFalse(play.get("roles"))
+		[task] = play["tasks"]
+		self.assertEqual(
+			task["ansible.builtin.import_role"], {"name": "vllm", "tasks_from": "config.yml"}
+		)
+
+
 class TestCertificateLifetime(unittest.TestCase):
 	def test_a_box_certificate_is_short_lived(self):
 		# Nothing renews it and nothing verifies it, so this number is only ever read by a human

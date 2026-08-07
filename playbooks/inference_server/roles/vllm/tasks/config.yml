@@ -1,0 +1,66 @@
+---
+# The engine's config and nothing else: the two files that ARE the container's config, the
+# replace they trigger, and the health gate. Imported at the end of main.yml (a full serve) and
+# run on its own by reconfigure.yml (Update Engine Config) — which is why nothing here downloads,
+# pulls or checks disk. The engine proxy location is deliberately not written here: it names the
+# instance and its port, and neither can move without a fresh deploy.
+- name: Resolve effective API key
+  ansible.builtin.set_fact:
+    vllm_effective_api_key: >-
+      {{ vllm_api_key if (vllm_api_key | length > 0)
+         else (vllm_api_key_slurp.content | b64decode | trim) }}
+
+# No unit wraps `docker run`. --restart unless-stopped already survives a crash, a reboot and
+# a dockerd restart, so a unit would only be a second owner of the same restart state. These
+# two files ARE the config: either one changing is what triggers a replace.
+- name: Write the container environment file
+  ansible.builtin.template:
+    src: vllm-container.env.j2
+    dest: "{{ vllm_container_env_file }}"
+    # Contains VLLM_API_KEY and any operator env (HF/S3 tokens) in cleartext.
+    mode: "0600"
+  notify: recreate vllm container
+
+- name: Write the container run script
+  ansible.builtin.template:
+    src: vllm-container-run.sh.j2
+    dest: "{{ vllm_container_script }}"
+    mode: "0700"
+  notify: recreate vllm container
+
+# Before the running check below, not after it: otherwise a config change would have the
+# check start the container off the new script and the handler immediately replace it again.
+- name: Flush handlers so a changed config is applied before the health check
+  ansible.builtin.meta: flush_handlers
+
+- name: Check whether the engine container is running
+  ansible.builtin.command: "docker ps --quiet --filter name=^{{ vllm_unit }}$ --filter status=running"
+  register: vllm_container_ps
+  changed_when: false
+
+# Covers the first deploy and an operator's manual `docker stop`; a config change already
+# recreated it in the handler above, so this is a no-op then.
+- name: Start the engine container
+  ansible.builtin.command: "{{ vllm_container_script }}"
+  when: (vllm_container_ps.stdout | default('')) | length == 0
+
+- name: Wait for the vLLM API to become healthy
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ vllm_port }}/v1/models"
+    headers:
+      Authorization: "Bearer {{ vllm_effective_api_key }}"
+    status_code: 200
+  register: vllm_health
+  until: vllm_health.status == 200
+  retries: 90
+  delay: 10
+  changed_when: false
+  when: vllm_wait_for_healthy | bool
+
+- name: Show endpoint summary
+  ansible.builtin.debug:
+    msg:
+      - "vLLM is up: http://{{ ansible_host | default(inventory_hostname) }}:{{ vllm_port }}/v1"
+      - "Container: {{ vllm_unit }} (image {{ vllm_image }}) — docker ps / docker logs {{ vllm_unit }}"
+      - "Model served as: {{ vllm_served_name }}"
+      - "API key file on host: {{ vllm_api_key_file }}"

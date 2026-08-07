@@ -71,7 +71,6 @@
   },
   {
    "default": "text",
-   "description": "multimodal \u2192 adds --language-model-only (serve the text LLM only).",
    "fieldname": "modality",
    "fieldtype": "Select",
    "label": "Modality",
@@ -184,7 +183,7 @@
    "link_fieldname": "model"
   }
  ],
- "modified": "2026-08-04 10:00:00.000000",
+ "modified": "2026-08-07 12:31:43.123570",
  "modified_by": "Administrator",
  "module": "Grove",
  "name": "Model",

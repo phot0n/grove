@@ -35,7 +35,6 @@ class ModelDeployment(Document):
 		aliases: DF.SmallText | None
 		allow_long_max_model_len: DF.Check
 		attention_backend: DF.Literal["auto", "FLASH_ATTN", "XFORMERS", "FLASHINFER"]
-		dtype: DF.Literal["auto", "float16", "bfloat16"]
 		engine_image: DF.Link
 		engine_port: DF.Int
 		engine_url: DF.Data | None
@@ -45,11 +44,15 @@ class ModelDeployment(Document):
 		gpus: DF.Table[ModelDeploymentGPU]
 		inference_server: DF.Link
 		internal_api_key: DF.Password | None
+		kv_cache_dtype: DF.Literal["auto", "fp8", "fp8_e4m3", "fp8_e5m2"]
 		log_lines: DF.Int
 		max_model_len: DF.Int
+		max_num_batched_tokens: DF.Int
+		max_num_seqs: DF.Int
 		model: DF.Link
 		pipeline_parallel_size: DF.Int
 		region: DF.Link | None
+		serve_command: DF.Code | None
 		status: DF.Literal["Draft", "Provisioning", "Active", "Inactive", "Terminated", "Broken"]
 		tensor_parallel_size: DF.Int
 	# end: auto-generated types
@@ -113,8 +116,8 @@ class ModelDeployment(Document):
 		return min(sizes) if sizes else None
 
 	def _validate_gpus(self):
-		"""Derive tensor_parallel_size, reject duplicate/unknown GPUs, and fill each row's
-		display columns from the box's GPU inventory."""
+		"""Derive tensor_parallel_size and the serve command preview, reject duplicate/unknown
+		GPUs, and fill each row's display columns from the box's GPU inventory."""
 		seen = set()
 		for r in self.gpus or []:
 			if r.gpu_index in seen:
@@ -141,6 +144,8 @@ class ModelDeployment(Document):
 		if errors := serve.placement_errors:
 			frappe.throw("<br>".join(errors))
 		self.tensor_parallel_size = serve.tensor_parallel_size
+		# The preview, from the same builder the deploy uses — so what is shown is what runs.
+		self.serve_command = serve.command
 
 	def reject_claimed_gpus(self):
 		"""A GPU backs one engine at a time — two vLLMs on one card split its VRAM and both
@@ -263,9 +268,9 @@ class ModelDeployment(Document):
 	@frappe.whitelist()
 	def apply_engine_config(self):
 		"""Button: re-render this deployment's engine config and restart it to apply edited
-		per-box tuning (dtype / gpu_memory_utilization / attention_backend / engine_port /
-		env rows). Fast path — skips the heavy weights predownload. Replaces the container,
-		so it drops in-flight requests."""
+		per-box tuning (kv cache dtype / gpu_memory_utilization / batch caps / attention backend
+		/ env rows). Fast path — its own playbook, which is the config + restart tasks and
+		nothing else. Replaces the container, so it drops in-flight requests."""
 		frappe.enqueue(
 			"grove.grove.doctype.model_deployment.model_deployment.reconfigure_deployment",
 			queue="long",
@@ -436,8 +441,9 @@ def _vllm_extravars(md, m, inf, key):
 		# What the role checks the box's free space against, before either download starts.
 		# 0 means the figure was never fetched, which the role reads as "cannot check".
 		"vllm_weights_gb": serve.weights_gb,
-		# serve.yml runs grove_https and engine_proxy ahead of the vllm role, so this play
-		# writes the box's htpasswd too — from the same source provision.yml reads.
+		# serve.yml runs grove_https and engine_proxy ahead of the vllm role, so that play
+		# writes the box's htpasswd too — from the same source provision.yml reads. Unused by
+		# reconfigure.yml, which runs neither role.
 		**frappe.get_single("Grove Settings").scrape_auth_variables,
 	}
 	# The image is what the box serves from: the role pulls it and Docker owns the container.
@@ -512,13 +518,16 @@ def deploy_model(model_deployment):
 
 
 def reconfigure_deployment(model_deployment):
-	"""Re-render the engine config and restart it for an already-served
-	deployment, applying edited per-box tuning (dtype / gpu_memory_utilization /
-	attention_backend / engine_port / env rows) WITHOUT the heavy weights predownload.
-	Runs serve.yml with skip_tags=["heavy"] — every config/replace/health task still
-	runs (identical to a full serve minus the download), just faster. The image pull is
-	not heavy, so a moved tag lands here too. Assumes the box is provisioned and the
-	weights are already in its shared cache.
+	"""Re-render the engine config and restart it for an already-served deployment, applying
+	edited per-box tuning (kv cache dtype / gpu_memory_utilization / batch caps /
+	attention backend / env rows).
+
+	Runs reconfigure.yml — the vllm role's config tasks and nothing else: no disk check, no
+	image pull, no weights predownload, no proxy/TLS roles. Assumes the box is provisioned, the
+	image is on it and the weights are in its shared cache, which a deploy already saw to. That
+	is what makes this runnable while a deploy is still sitting on the health gate: a flag typo
+	is fixed by re-rendering the run script and restarting, not by waiting the gate out.
+
 	Replaces the engine container when the rendered config actually moved → drops in-flight
 	requests, so it's button-triggered, not automatic. The deployment stays Active for the run;
 	see the note below the extra-vars."""
@@ -548,9 +557,8 @@ def reconfigure_deployment(model_deployment):
 	# happen is the wrong trade. A run that does replace the container has a gap no route table
 	# could have hidden anyway.
 	play_name, rc = inf.run_playbook(
-		"serve.yml",
+		"reconfigure.yml",
 		extravars=extravars,
-		skip_tags=["heavy"],
 		reference_doctype="Model Deployment",
 		reference_docname=md.name,
 	)

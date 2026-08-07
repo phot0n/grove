@@ -110,8 +110,17 @@ class TestServeCommand(unittest.TestCase):
 		self.assertEqual(args[args.index("--max-model-len") + 1], "8192")
 		self.assertEqual(args[args.index("--gpu-memory-utilization") + 1], "0.9")
 		self.assertEqual(args[args.index("--tensor-parallel-size") + 1], "1")
-		self.assertNotIn("--dtype", args)  # dtype auto → vLLM decides
 		self.assertEqual(args[args.index("--scheduling-policy") + 1], "priority")
+		# Blank tuning → vLLM's own sizing. Never --dtype: the weight dtype is the repo's to
+		# declare, and passing one is how a bf16 checkpoint gets silently served as fp16.
+		for flag in ("--dtype", "--kv-cache-dtype", "--max-num-batched-tokens", "--max-num-seqs"):
+			self.assertNotIn(flag, args, flag)
+
+	def test_kv_cache_dtype_and_batch_caps_when_set(self):
+		args = serve(kv_cache_dtype="fp8", max_num_batched_tokens=8192, max_num_seqs=64).args
+		self.assertEqual(args[args.index("--kv-cache-dtype") + 1], "fp8")
+		self.assertEqual(args[args.index("--max-num-batched-tokens") + 1], "8192")
+		self.assertEqual(args[args.index("--max-num-seqs") + 1], "64")
 
 	def test_scheduling_policy_comes_from_the_model(self):
 		args = serve(dict(CHAT_MODEL, scheduling_policy="fcfs")).args

@@ -1,6 +1,6 @@
 // Model-intrinsic vLLM config lives on the Model and is read in the backend
 // (grove.serve_command.ServeCommand) at build time — the Pod no longer mirrors it. The Serving
-// tab holds only per-pod tuning (serve port, dtype, gpu-mem-util, max_model_len, aliases,
+// tab holds only per-pod tuning (serve port, kv cache dtype, gpu-mem-util, max_model_len, aliases,
 // extra args). Nothing to copy on Model select.
 // Keep the viewer bounded — a loading vLLM emits far more than anyone scrolls back through.
 const LOG_LINE_LIMIT = 2000;

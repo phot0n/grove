@@ -16,12 +16,14 @@
   "engine_url",
   "internal_api_key",
   "section_tuning",
-  "dtype",
+  "kv_cache_dtype",
   "gpu_memory_utilization",
+  "max_num_batched_tokens",
   "column_break_tuning",
   "attention_backend",
   "max_model_len",
   "allow_long_max_model_len",
+  "max_num_seqs",
   "section_gpus",
   "gpus",
   "column_break_ngfd",
@@ -30,6 +32,7 @@
   "section_extra",
   "aliases",
   "extra_serve_args",
+  "serve_command",
   "section_env",
   "env",
   "tab_logs",
@@ -42,17 +45,21 @@
  ],
  "fields": [
   {
+   "description": "What this deployment serves. Set once — the box, the port and the gateway route are all keyed to it; a different model is a different deployment.",
    "fieldname": "model",
    "fieldtype": "Link",
    "in_list_view": 1,
    "label": "Model",
    "options": "Model",
-   "reqd": 1
+   "reqd": 1,
+   "set_only_once": 1
   },
   {
+   "description": "Only provisioned (Active) boxes are offered — a deploy onto anything else fails on the is_provisioned gate.",
    "fieldname": "inference_server",
    "fieldtype": "Link",
    "label": "Inference Server",
+   "link_filters": "[[\"Inference Server\",\"status\",\"=\",\"Active\"]]",
    "options": "Inference Server",
    "reqd": 1
   },
@@ -91,17 +98,21 @@
    "read_only": 1
   },
   {
+   "description": "Grove's own key between the gateway and this engine. Generated on the first Deploy and served with — read-only, because a hand-typed value would only ever disagree with the key that is on the box.",
    "fieldname": "internal_api_key",
    "fieldtype": "Password",
-   "label": "Internal API Key"
+   "label": "Internal API Key",
+   "read_only": 1
   },
   {
    "default": "Draft",
+   "description": "Owned by the lifecycle buttons and the plays they run — not hand-set.",
    "fieldname": "status",
    "fieldtype": "Select",
    "in_list_view": 1,
    "label": "Status",
-   "options": "Draft\nProvisioning\nActive\nInactive\nTerminated\nBroken"
+   "options": "Draft\nProvisioning\nActive\nInactive\nTerminated\nBroken",
+   "read_only": 1
   },
   {
    "description": "Per-box serving knobs \u2014 depend on THIS deployment's GPU, not the portable Model profile.",
@@ -111,10 +122,11 @@
   },
   {
    "default": "auto",
-   "fieldname": "dtype",
+   "description": "\u2192 --kv-cache-dtype. fp8 halves the KV cache, which buys context on a card short of VRAM, at some accuracy. auto = the weights' own dtype. The weight dtype itself is left to vLLM (it reads the repo's config.json).",
+   "fieldname": "kv_cache_dtype",
    "fieldtype": "Select",
-   "label": "Dtype",
-   "options": "auto\nfloat16\nbfloat16"
+   "label": "KV Cache Dtype",
+   "options": "auto\nfp8\nfp8_e4m3\nfp8_e5m2"
   },
   {
    "default": "0.9",
@@ -122,6 +134,12 @@
    "fieldname": "gpu_memory_utilization",
    "fieldtype": "Float",
    "label": "GPU Memory Utilization"
+  },
+  {
+   "description": "\u2192 --max-num-batched-tokens. Tokens one engine step may run at once. Blank = vLLM's own default. Higher fills the GPU on long prompts; lower keeps decode latency down.",
+   "fieldname": "max_num_batched_tokens",
+   "fieldtype": "Int",
+   "label": "Max Num Batched Tokens"
   },
   {
    "fieldname": "column_break_tuning",
@@ -147,6 +165,12 @@
    "fieldname": "allow_long_max_model_len",
    "fieldtype": "Check",
    "label": "Allow Long Max Model Len"
+  },
+  {
+   "description": "→ --max-num-seqs. Sequences the engine runs concurrently. Blank = vLLM's own default. Caps how much KV cache the batch can want, so lower it when a full batch OOMs.",
+   "fieldname": "max_num_seqs",
+   "fieldtype": "Int",
+   "label": "Max Num Seqs"
   },
   {
    "description": "Which GPUs on this box the engine runs on. Add one row per GPU (CUDA index from the Machine's GPU table). N rows \u2192 --tensor-parallel-size N + CUDA_VISIBLE_DEVICES pinned to those indices. Marked Allocated on Deploy, freed on Tear Down.",
@@ -190,6 +214,14 @@
    "fieldname": "extra_serve_args",
    "fieldtype": "Small Text",
    "label": "Extra Serve Args"
+  },
+  {
+   "description": "Everything above, assembled → what the container on the box actually runs. Rebuilt on save; the API key is not in it (it rides VLLM_API_KEY in the env file).",
+   "fieldname": "serve_command",
+   "fieldtype": "Code",
+   "label": "Serve Command",
+   "options": "Shell",
+   "read_only": 1
   },
   {
    "fieldname": "column_break_ngfd",
@@ -246,7 +278,7 @@
   }
  ],
  "links": [],
- "modified": "2026-08-03 17:00:00.000000",
+ "modified": "2026-08-07 12:00:00.000000",
  "modified_by": "Administrator",
  "module": "Grove",
  "name": "Model Deployment",

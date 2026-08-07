@@ -1,0 +1,22 @@
+---
+# Update Engine Config: re-render one instance's env file and run script, replace its container
+# if either moved, wait for it to answer. Run by model_deployment.reconfigure_deployment with the
+# same extra-vars serve.yml gets, so the two can never render differently.
+#
+# Deliberately NOT serve.yml with skip_tags. This play assumes the box is already provisioned,
+# the image is already pulled and the weights are already in the shared cache — a deploy saw to
+# all three — so it runs none of those tasks and none of the openresty / grove_https /
+# engine_proxy roles. That is what makes it fast enough to run against a deploy that is still
+# sitting on its health gate, which is where a wrong flag is usually noticed.
+#
+# The engine proxy location file is not written here: it names the instance and its port, and
+# neither can change without a fresh Deploy.
+- name: Apply an engine's config on a GPU inference host
+  hosts: all
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Re-render this instance's config and restart it
+      ansible.builtin.import_role:
+        name: vllm
+        tasks_from: config.yml

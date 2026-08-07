@@ -153,8 +153,9 @@ class TestGpuInventory(unittest.TestCase):
 			server=SimpleNamespace(gpus=on_box),
 			reject_claimed_gpus=lambda: None,
 			tensor_parallel_size=0,
+			serve_command="",
 		)
-		serve = SimpleNamespace(placement_errors=[], tensor_parallel_size=1)
+		serve = SimpleNamespace(placement_errors=[], tensor_parallel_size=1, command="serve …")
 		with patch(
 			"grove.grove.doctype.model_deployment.model_deployment.ServeCommand.for_deployment",
 			return_value=serve,
@@ -183,6 +184,14 @@ class TestReconfigureKeepsTheModelRoutable(unittest.TestCase):
 	rendered config actually moved. This cost a live 503 on qwen3.5-4b once; the test is here so
 	it cannot come back quietly."""
 
+	def record_play(self, rc):
+		"""A run_playbook that remembers which playbook it was handed."""
+		def run_playbook(playbook, **kwargs):
+			self.played = playbook
+			return ("PLAY-1", rc)
+
+		return run_playbook
+
 	def writes_during(self, rc):
 		"""Every db.set_value payload a reconfigure emits, in order."""
 		md = SimpleNamespace(
@@ -193,7 +202,7 @@ class TestReconfigureKeepsTheModelRoutable(unittest.TestCase):
 			server=SimpleNamespace(
 				name="INF-1",
 				is_provisioned=1,
-				run_playbook=lambda *args, **kwargs: ("PLAY-1", rc),
+				run_playbook=self.record_play(rc),
 			),
 		)
 		written = []
@@ -224,6 +233,13 @@ class TestReconfigureKeepsTheModelRoutable(unittest.TestCase):
 		[final] = self.writes_during(rc=0)
 		self.assertEqual(final["status"], "Active")
 		self.assertEqual(final["engine_url"], "https://10.0.0.9/e/md-00007")
+
+	def test_it_runs_its_own_play_not_a_trimmed_serve(self):
+		# serve.yml with skip_tags still pulled the image, checked the disk and ran the proxy
+		# roles — minutes of work for a flag change, and too slow to use on a deploy that is
+		# stuck on its health gate.
+		self.writes_during(rc=0)
+		self.assertEqual(self.played, "reconfigure.yml")
 
 	def test_a_failed_run_is_broken_and_leaves_the_url_alone(self):
 		# A play that failed may not have written the box's nginx location, so the URL must not
