@@ -6,7 +6,9 @@ from frappe.model.document import Document
 
 from grove import gateway_sync
 from grove.ansible import AnsibleHost
+from grove.cloud_provider.route53 import Route53Client, Route53Error
 from grove.monitoring import run_exporters_play
+from grove.tls import dns_credentials
 from grove.utils import gateway_service_source, validate_id_safe_name
 
 
@@ -74,6 +76,14 @@ class ProxyServer(AnsibleHost, Document):
 				proxies=[self.name],
 				trigger="Proxy Activated",
 			)
+		if self.has_value_changed("status") and self.status == "Terminated":
+			self.remove_dns_records()
+
+	def on_trash(self):
+		# Before the doc goes, while its name still says which records are its own. A row left
+		# behind in the Gateway Host latency set is a black hole for whichever share of customers
+		# resolves to it.
+		self.remove_dns_records()
 
 	@frappe.whitelist()
 	def full_sync(self):
@@ -86,6 +96,57 @@ class ProxyServer(AnsibleHost, Document):
 			trigger="Manual",
 		)
 		frappe.msgprint(f"Full sync queued for {self.name}.")
+
+	@frappe.whitelist()
+	def sync_dns_records(self):
+		"""Button + provision step: point this box's own name at it, and add it to the Gateway
+		Host latency set so clients nearest this region resolve here. UPSERT, so a box that came
+		back on a new address is corrected by running it again."""
+		client, settings = self.dns_client()
+		if not client:
+			return None
+		return client.upsert_proxy_records(
+			settings.proxy_zone,
+			self.hostname,
+			settings.gateway_host,
+			self.public_ip,
+			self.region,
+			self.name,
+		)
+
+	def remove_dns_records(self):
+		"""Both of this box's records, on the way out. A DELETE has to repeat the record exactly
+		as it was written, so this passes the same values the upsert did.
+
+		A record that is already gone is not an error worth blocking a deletion over — AWS says
+		so with InvalidChangeBatch, and only that code is tolerated."""
+		client, settings = self.dns_client()
+		if not client:
+			return None
+		try:
+			return client.delete_proxy_records(
+				settings.proxy_zone,
+				self.hostname,
+				settings.gateway_host,
+				self.public_ip,
+				self.region,
+				self.name,
+			)
+		except Route53Error as e:
+			if e.code != "InvalidChangeBatch":
+				raise
+			return None
+
+	def dns_client(self):
+		"""(Route53Client, Grove Settings) once everything a record needs is set, (None, settings)
+		otherwise. Silent rather than loud: a fleet with no zone configured is the pre-TLS setup,
+		and provisioning a box there should not start failing."""
+		settings = frappe.get_single("Grove Settings")
+		if not (settings.proxy_zone and settings.gateway_host and settings.dns_provider):
+			return None, settings
+		if not (self.public_ip and self.region):
+			frappe.throw(f"Proxy Server {self.name} needs a public IP and a Region before its DNS records.")
+		return Route53Client(*dns_credentials(settings)), settings
 
 	@frappe.whitelist()
 	def deploy_tls(self):
@@ -175,5 +236,8 @@ class ProxyServer(AnsibleHost, Document):
 		frappe.db.commit()
 
 		if rc == 0:
+			# DNS before the sync: the routes push goes to admin_url, which is this box's own
+			# name the moment a zone is set, and nothing resolves it until this runs.
+			self.sync_dns_records()
 			gateway_sync.full_sync(proxies=[self.name], trigger="Provision")
 		return play_name, rc
