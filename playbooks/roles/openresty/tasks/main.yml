@@ -64,18 +64,3 @@
     path: "{{ openresty_log_dir }}"
     state: directory
     mode: "0755"
-
-# Last, deliberately. Distro nginx and OpenResty both want :443, so a box migrating from one to
-# the other is without a web server from here until engine_proxy reloads OpenResty onto its
-# config — a couple of seconds. Removing it first instead would leave that gap open for the whole
-# OpenResty download and install. OpenResty's packaged config listens on :80, so the two coexist
-# quite happily until this point.
-#
-# Removed, not stopped: a merely-stopped nginx takes :443 back on the next boot and OpenResty
-# then fails to bind. purge is safe — every Grove config lives under /etc/grove, including the
-# per-engine location files, so nothing of ours is in /etc/nginx.
-- name: Remove the distribution's nginx if this box ever had one
-  ansible.builtin.apt:
-    name: nginx
-    state: absent
-    purge: true
