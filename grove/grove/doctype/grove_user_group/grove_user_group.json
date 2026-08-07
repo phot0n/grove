@@ -7,11 +7,21 @@
  "engine": "InnoDB",
  "field_order": [
   "description",
+  "dirty",
+  "column_break_sfxr",
   "priority",
   "section_models",
   "models"
  ],
  "fields": [
+  {
+   "default": "0",
+   "description": "Set on change; cleared once a sync run has pushed this group's grant to every Active proxy.",
+   "fieldname": "dirty",
+   "fieldtype": "Check",
+   "label": "Pending Sync",
+   "read_only": 1
+  },
   {
    "description": "What this group is for, e.g. \"internal staff\" or \"acme early access\".",
    "fieldname": "description",
@@ -37,10 +47,14 @@
    "fieldtype": "Table",
    "label": "Models",
    "options": "Grove Model Row"
+  },
+  {
+   "fieldname": "column_break_sfxr",
+   "fieldtype": "Column Break"
   }
  ],
  "links": [],
- "modified": "2026-07-29 00:00:00",
+ "modified": "2026-08-07 12:30:11.140008",
  "modified_by": "Administrator",
  "module": "Grove",
  "name": "Grove User Group",

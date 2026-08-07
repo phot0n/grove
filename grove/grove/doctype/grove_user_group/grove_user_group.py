@@ -8,7 +8,10 @@ from grove.grove.doctype.grove_api_key.grove_api_key import mark_keys_dirty
 
 
 class GroveUserGroup(Document):
-	"""A named set of models. Membership lives on Grove User, which links here."""
+	"""A named set of models. Membership lives on Grove User, which links here.
+
+	The gateway holds this as its own Redis record (group:<name>) and each key points at it, so
+	an edit here is one push however many members the group has."""
 
 	# begin: auto-generated types
 	# This code is auto-generated. Do not modify anything in this block.
@@ -20,17 +23,23 @@ class GroveUserGroup(Document):
 		from grove.grove.doctype.grove_model_row.grove_model_row import GroveModelRow
 
 		description: DF.SmallText | None
+		dirty: DF.Check
 		models: DF.Table[GroveModelRow]
 		priority: DF.Int
 	# end: auto-generated types
 
 	def on_update(self):
-		# The model list or the priority moved → every member's keys carry a stale
-		# projection. Joining or leaving is an edit on Grove User, whose own on_update
-		# dirties that one user.
-		mark_keys_dirty(self.member_users)
+		# The model list or the priority moved → this group's own record is stale. The
+		# members' keys are not: they carry the group's NAME, which has not changed.
+		# Joining or leaving is an edit on Grove User, whose own on_update dirties it.
+		if not self.dirty:
+			frappe.db.set_value(self.doctype, self.name, "dirty", 1, update_modified=False)
+			self.dirty = 1
 
 	def on_trash(self):
+		# The keys have to stop naming a group that no longer exists — otherwise they keep
+		# resolving against whatever its Redis record still says. Frappe blocks deleting a
+		# linked group, so this normally has nothing to do.
 		mark_keys_dirty(self.member_users)
 
 	@property

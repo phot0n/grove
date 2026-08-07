@@ -59,10 +59,10 @@ class GroveAPIKey(Document):
 
 
 def mark_keys_dirty(grove_users):
-	"""Queue keys for the next sync_dirty push. A key carries its user's flattened model
-	set, so anything that changes access has to re-push the affected keys. Takes Grove User
-	doc names (what `user` links to). `grove_users=None` means every key — what a Model
-	release does, since it moves for everyone."""
+	"""Queue keys for the next sync_dirty push. A key carries its user's group NAME plus their
+	own allow/deny, so this is for what moves on the user — joining a group, an allow/deny edit,
+	the budget flag. A change to what a group grants dirties the group, not its members' keys.
+	Takes Grove User doc names (what `user` links to). `grove_users=None` means every key."""
 	filters = {"dirty": 0}
 	if grove_users is not None:
 		grove_users = list(grove_users)

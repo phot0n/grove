@@ -1,16 +1,14 @@
 # Copyright (c) 2026, Grove and contributors
 # For license information, please see license.txt
-"""Who may call which Model. The user's group grants, their own Allow adds, their Deny
-removes, and nothing else is reachable — a user with no grant gets no models. Resolved here
-and projected onto each API Key at sync time, so the gateway carries a flat set and holds no
-precedence logic of its own."""
+"""Who may call which Model. A user's group grants, their own Allow adds, their Deny removes, and
+nothing else is reachable — a user with no grant gets no models.
+
+The precedence itself is NOT applied here: Grove pushes the group as its own Redis record
+(group:<name>) and each key as a pointer to it plus that user's deltas, and the gateway resolves
+the three at request time (gateway_service/eval.go). That is what stops a one-row edit on a group
+from invalidating every key its members hold."""
 
 import frappe
-
-
-def resolve(group_models, allow, deny):
-	"""Model ids a user may call. Deny wins over every grant."""
-	return (set(allow) | set(group_models)) - set(deny)
 
 
 def vllm_priority(group_priority):
@@ -23,35 +21,21 @@ def vllm_priority(group_priority):
 	return -(group_priority or 0)
 
 
-def effective_models(grove_user):
-	"""resolve() for one Grove User (by doc name — what a key carries), read off its group
-	and its own lists. No Grove User doc means no group and no lists, so nothing is
-	reachable."""
+def key_access(grove_user):
+	"""What one Grove User's keys carry: `(group, allow, deny)`. The group name is the pointer the
+	gateway resolves; allow and deny are this user's own deltas on top of it. No Grove User doc
+	means no group and no lists, so nothing is reachable."""
 	if not grove_user:
-		return set()
+		return "", [], []
 
-	group = frappe.db.get_value("Grove User", grove_user, "user_group")
-	group_models = frappe.get_all(
-		"Grove Model Row",
-		filters={"parenttype": "Grove User Group", "parent": group},
-		pluck="model",
-	) if group else []
-
+	group = frappe.db.get_value("Grove User", grove_user, "user_group") or ""
 	rows = frappe.get_all(
 		"Grove Model Row",
 		filters={"parenttype": "Grove User", "parent": grove_user},
 		fields=["model", "parentfield"],
 	)
-	return resolve(
-		group_models,
-		[r.model for r in rows if r.parentfield == "allow"],
-		[r.model for r in rows if r.parentfield == "deny"],
+	return (
+		group,
+		sorted(r.model for r in rows if r.parentfield == "allow"),
+		sorted(r.model for r in rows if r.parentfield == "deny"),
 	)
-
-
-def effective_priority(grove_user):
-	"""vllm_priority() for one Grove User (by doc name), read off their group. No group
-	means the baseline 0 — priority is a group property, with no per-user override."""
-	group = frappe.db.get_value("Grove User", grove_user, "user_group") if grove_user else None
-	tier = frappe.db.get_value("Grove User Group", group, "priority") if group else 0
-	return vllm_priority(tier)

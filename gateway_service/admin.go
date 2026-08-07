@@ -14,12 +14,19 @@ import (
 // project its state into this Proxy Server's local Redis.
 
 type adminKey struct {
-	KeyHash       string `json:"key_hash"` // sha256(secret) hex — the Redis key id
-	Prefix        string `json:"prefix"`
-	User          string `json:"user"`
-	Status        string `json:"status"`         // active | revoked | rate_limited
-	Models        string `json:"models"`         // comma list of model ids; "" = no access
-	Priority      int    `json:"priority"`       // vLLM `priority`, sign already flipped by Grove
+	KeyHash string `json:"key_hash"` // sha256(secret) hex — the Redis key id
+	Prefix  string `json:"prefix"`
+	User    string `json:"user"`
+	Status  string `json:"status"` // active | revoked | rate_limited
+	Group   string `json:"group"`  // Grove User Group name; "" = ungrouped
+	Allow   string `json:"allow"`  // comma list: this user's adds on top of the group
+	Deny    string `json:"deny"`   // comma list: removals that beat every grant
+}
+
+type adminGroup struct {
+	Name     string `json:"name"`
+	Priority int    `json:"priority"` // vLLM `priority`, sign already flipped by Grove
+	Models   string `json:"models"`   // comma list of model ids; "" = grants nothing
 }
 
 // PUT /admin/keys — upsert one or more keys. Revocation is an upsert with
@@ -37,15 +44,44 @@ func (s *server) handleAdminKeys(w http.ResponseWriter, r *http.Request) {
 		if k.KeyHash == "" {
 			continue
 		}
-		s.rdb.HSet(ctx, "key:"+k.KeyHash, map[string]any{
-			"status":         k.Status,
-			"user":           k.User,
-			"prefix":         k.Prefix,
-			"models":         k.Models,
-			"priority":       k.Priority,
+		redisKey := "key:" + k.KeyHash
+		s.rdb.HSet(ctx, redisKey, map[string]any{
+			"status": k.Status,
+			"user":   k.User,
+			"prefix": k.Prefix,
+			"group":  k.Group,
+			"allow":  k.Allow,
+			"deny":   k.Deny,
 		})
+		// Access used to be flattened onto the key. Left behind, that stale set is what
+		// loadKey's legacy branch would read, so an upgraded record drops it here.
+		s.rdb.HDel(ctx, redisKey, "models", "priority")
 	}
 	writeJSON(w, map[string]any{"ok": true, "count": len(body.Keys)})
+}
+
+// PUT /admin/groups — upsert the model grant and priority behind one or more Grove User Groups.
+// The whole point of the split: a group's members hold N keys, and this pushes one record instead
+// of N. Upsert-only, like /admin/keys — a group nobody links to is unreachable, not harmful.
+func (s *server) handleAdminGroups(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Groups []adminGroup `json:"groups"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		http.Error(w, "bad body", http.StatusBadRequest)
+		return
+	}
+	ctx := r.Context()
+	for _, g := range body.Groups {
+		if g.Name == "" {
+			continue
+		}
+		s.rdb.HSet(ctx, "group:"+g.Name, map[string]any{
+			"models":   g.Models,
+			"priority": g.Priority,
+		})
+	}
+	writeJSON(w, map[string]any{"ok": true, "count": len(body.Groups)})
 }
 
 // PUT /admin/routes — replace the routing table for each given model

@@ -53,6 +53,7 @@ func main() {
 	mux.HandleFunc("/models", s.handleModels)
 	// Control-plane push/pull surface (token-gated; reached via OpenResty /grove-admin/).
 	mux.HandleFunc("/admin/keys", adminAuth(adminToken, s.handleAdminKeys))
+	mux.HandleFunc("/admin/groups", adminAuth(adminToken, s.handleAdminGroups))
 	mux.HandleFunc("/admin/routes", adminAuth(adminToken, s.handleAdminRoutes))
 	mux.HandleFunc("/admin/usage", adminAuth(adminToken, s.handleAdminUsage))
 	if adminToken == "" {
@@ -122,8 +123,16 @@ func (s *server) handleDecide(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// What the key's group grants. Skipped for an ungrouped key, which reaches only its own
+	// Allow list, so that request costs no second round trip.
+	grp, err := s.loadGroup(ctx, rec.Group)
+	if err != nil {
+		writeJSON(w, decideResp{Allow: false, Status: 503, Reason: "group store error"})
+		return
+	}
+
 	// Admission gates: key status (revoked / over monthly budget) + allowed models.
-	if status, reason := evaluate(rec, req.Model); status != 200 {
+	if status, reason := evaluate(rec, grp, req.Model); status != 200 {
 		writeJSON(w, decideResp{Allow: false, Status: status, Reason: reason})
 		return
 	}
@@ -156,7 +165,7 @@ func (s *server) handleDecide(w http.ResponseWriter, r *http.Request) {
 		Session:     session,
 		Deployment:  route.Deployment,
 		RequestID:   s.buildRequestID(route, rec.KeyPrefix),
-		Priority:    rec.Priority,
+		Priority:    priorityOf(rec, grp),
 	})
 }
 
@@ -234,9 +243,9 @@ func (s *server) handleMeter(w http.ResponseWriter, r *http.Request) {
 
 // ---- /models -------------------------------------------------------------
 // GET /v1/models (proxied here by OpenResty): the gateway answers directly with
-// the models THIS key may use — deployed models ∩ the key's allowed set — instead
-// of proxying to a single engine (which only knows its own model). Key-gated via
-// the Authorization header, same as /decide.
+// the models THIS key may use — deployed models ∩ what its group and its own
+// allow/deny resolve to — instead of proxying to a single engine (which only knows
+// its own model). Key-gated via the Authorization header, same as /decide.
 
 type modelObj struct {
 	ID      string `json:"id"`
@@ -264,6 +273,11 @@ func (s *server) handleModels(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	grp, err := s.loadGroup(ctx, rec.Group)
+	if err != nil {
+		writeErrJSON(w, 503, "group store error")
+		return
+	}
 	deployed, err := s.listModels(ctx)
 	if err != nil {
 		writeErrJSON(w, 503, "route store error")
@@ -272,7 +286,7 @@ func (s *server) handleModels(w http.ResponseWriter, r *http.Request) {
 	created := time.Now().Unix()
 	data := []modelObj{}
 	for _, m := range deployed {
-		if !rec.Models[m] { // same flat set the inference path uses (matches evaluate)
+		if !canUse(rec, grp, m) { // same decision the inference path makes (matches evaluate)
 			continue
 		}
 		data = append(data, modelObj{ID: m, Object: "model", Created: created, OwnedBy: "frappe"})
@@ -323,22 +337,51 @@ func (s *server) loadKey(ctx context.Context, meterID string) (KeyRecord, bool, 
 	if len(h) == 0 {
 		return KeyRecord{}, false, nil
 	}
-	priority, _ := strconv.Atoi(strings.TrimSpace(h["priority"])) // absent/garbage → baseline 0
+	group, hasGroup := h["group"] // present-but-blank = ungrouped; absent = a legacy record
 	rec := KeyRecord{
 		Status:    h["status"],
 		User:      h["user"],
 		KeyPrefix: h["prefix"],
-		Priority:  priority,
+		Group:     strings.TrimSpace(group),
+		Allow:     modelSet(h["allow"]),
+		Deny:      modelSet(h["deny"]),
+		HasGroup:  hasGroup,
+		Models:    modelSet(h["models"]),
 	}
-	if am := strings.TrimSpace(h["models"]); am != "" {
-		rec.Models = map[string]bool{}
-		for _, m := range strings.Split(am, ",") {
-			if m = strings.TrimSpace(m); m != "" {
-				rec.Models[m] = true
-			}
+	rec.Priority, _ = strconv.Atoi(strings.TrimSpace(h["priority"])) // absent/garbage → baseline 0
+	return rec, true, nil
+}
+
+// loadGroup reads what a group grants. A group with no record — never pushed, or deleted — reads
+// back as the zero value rather than an error, so a key pointing at one falls back to its own
+// Allow list instead of 503ing.
+func (s *server) loadGroup(ctx context.Context, name string) (GroupRecord, error) {
+	if name == "" {
+		return GroupRecord{}, nil
+	}
+	h, err := s.rdb.HGetAll(ctx, "group:"+name).Result()
+	if err != nil {
+		return GroupRecord{}, err
+	}
+	grp := GroupRecord{Models: modelSet(h["models"])}
+	grp.Priority, _ = strconv.Atoi(strings.TrimSpace(h["priority"]))
+	return grp, nil
+}
+
+// modelSet parses one of the comma-joined model lists the control plane writes. Blank → nil, which
+// is a map that answers false to everything — the fail-closed default.
+func modelSet(csv string) map[string]bool {
+	csv = strings.TrimSpace(csv)
+	if csv == "" {
+		return nil
+	}
+	out := map[string]bool{}
+	for _, m := range strings.Split(csv, ",") {
+		if m = strings.TrimSpace(m); m != "" {
+			out[m] = true
 		}
 	}
-	return rec, true, nil
+	return out
 }
 
 func (s *server) loadRoutes(ctx context.Context, model string) ([]Route, error) {

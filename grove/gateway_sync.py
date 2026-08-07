@@ -1,14 +1,19 @@
 # Copyright (c) 2026, Grove and contributors
 # For license information, please see license.txt
-"""Project Grove state (keys + routing table) into each Proxy Server's local
-Redis via the gateway agent's token-gated admin API (§6). Grove is the source
-of truth. The gateway `/keys` and `/routes` endpoints are UPSERTs (they never
-prune), so we can push either everything or just a delta.
+"""Project Grove state (groups + keys + routing table) into each Proxy Server's
+local Redis via the gateway agent's token-gated admin API (§6). Grove is the
+source of truth. The gateway `/groups`, `/keys` and `/routes` endpoints are
+UPSERTs (they never prune), so we can push either everything or just a delta.
+
+Access is pushed in two pieces, deliberately. A group carries the model grant and
+the priority for everyone in it (group:<name>); a key carries only which group it
+belongs to plus that user's own allow/deny. So a group edit is ONE record, not one
+per key its members hold, and the gateway resolves the three at request time.
 
 Two paths:
-  * full_sync(proxies)  — push the COMPLETE key set + routing table. Manual
+  * full_sync(proxies)  — push the COMPLETE group + key set + routing table. Manual
     (buttons), proxy activation, and provisioning use this.
-  * sync_dirty()        — background job (cron): push ONLY the keys/deployments
+  * sync_dirty()        — background job (cron): push ONLY the groups/keys
     flagged `dirty` since the last sync, then clear their flag. Failures stay
     dirty and are retried on the next tick.
 
@@ -22,7 +27,7 @@ import requests
 
 import frappe
 
-from grove.access import effective_models, effective_priority
+from grove.access import key_access, vllm_priority
 from grove.grove.doctype.grove_user.grove_user import is_rate_limited
 
 TIMEOUT = 10
@@ -47,16 +52,39 @@ def _post(admin_url, token, path, payload):
 	return r.json()
 
 
+def _effective_groups():
+	"""Every Grove User Group projected for the gateway: what it grants and how far ahead of
+	the baseline its members are served. One record per group however many keys point at it —
+	the reason the group is not flattened onto each key."""
+	rows = frappe.get_all(
+		"Grove Model Row",
+		filters={"parenttype": "Grove User Group"},
+		fields=["parent", "model"],
+	)
+	models = {}
+	for r in rows:
+		models.setdefault(r.parent, []).append(r.model)
+	return [
+		{
+			"name": g.name,
+			# Already in vLLM's convention — the gateway just stamps it.
+			"priority": vllm_priority(g.priority),
+			"models": ",".join(sorted(models.get(g.name, []))),
+		}
+		for g in frappe.get_all("Grove User Group", fields=["name", "priority"])
+	]
+
+
 def _effective_keys(proxy):
-	"""All API Keys projected for the gateway: identity + status + the flat set of models
-	the key may call + the scheduling priority to stamp on its requests. The only rate limit
-	is the monthly token budget, surfaced via status (rate_limited); no per-request rpm/tpm/
+	"""All API Keys projected for the gateway: identity + status + which group the key inherits
+	its access from + this user's own allow/deny on top of it. The only rate limit is the
+	monthly token budget, surfaced via status (rate_limited); no per-request rpm/tpm/
 	concurrency knobs anymore."""
 	rows = frappe.get_all(
 		"Grove API Key",
 		fields=["name", "key_hash", "user", "status"],
 	)
-	# Access is a property of the user, not the key — resolve each user once even when
+	# Access is a property of the user, not the key — read each user once even when
 	# they hold several keys.
 	per_user = {}
 	keys = []
@@ -70,11 +98,10 @@ def _effective_keys(proxy):
 		if k.user not in per_user:
 			per_user[k.user] = (
 				frappe.db.get_value("Grove User", k.user, "user") or "",
-				sorted(effective_models(k.user)),
+				key_access(k.user),
 				is_rate_limited(k.user),
-				effective_priority(k.user),
 			)
-		email, models, limited, priority = per_user[k.user]
+		email, (group, allow, deny), limited = per_user[k.user]
 		status = k.status or "active"
 		if status == "active" and limited:
 			status = "rate_limited"
@@ -83,8 +110,9 @@ def _effective_keys(proxy):
 			"prefix": k.name,  # doc name (random hash) = usage attribution id
 			"user": email,  # email, not the Grove User name — this one is for humans reading Redis
 			"status": status,
-			"models": ",".join(models),
-			"priority": priority,  # already in vLLM's convention — the gateway just stamps it
+			"group": group,  # the gateway reads group:<name> for the grant and the priority
+			"allow": ",".join(allow),
+			"deny": ",".join(deny),
 		})
 	return keys
 
@@ -136,6 +164,17 @@ def _routes_for_proxy(proxy_name):
 	return routes
 
 
+def push_groups(proxy, groups=_ALL):
+	"""Upsert user groups to one proxy. groups=_ALL → every group; a list of Grove User Group
+	names → just those (the agent HSETs each; other groups are left untouched)."""
+	_p, admin_url, token = _conn(proxy)
+	eff = _effective_groups()
+	if groups is not _ALL:
+		wanted = set(groups)
+		eff = [g for g in eff if g["name"] in wanted]
+	return _post(admin_url, token, "groups", {"groups": eff})
+
+
 def push_keys(proxy, keys=_ALL):
 	"""Upsert keys to one proxy. keys=_ALL → the whole set; a list of API Key
 	names → just those (the agent HSETs each; other keys are left untouched)."""
@@ -161,7 +200,7 @@ def sync_routes(proxy, models=_ALL):
 # --- Sync runs -------------------------------------------------------------
 
 def full_sync(proxies=None, trigger="Manual"):
-	"""Push the COMPLETE key set + routing table to each target proxy.
+	"""Push the COMPLETE group + key set + routing table to each target proxy.
 	proxies=None → all Active. Used by buttons, proxy activation, provisioning."""
 	doc = _new_run("Projection", trigger)
 	if not doc.acquire_lock(wait=60):  # forced → queue behind an in-flight run
@@ -172,20 +211,21 @@ def full_sync(proxies=None, trigger="Manual"):
 		if not active:
 			return None
 
-		keys_snap = _snapshot_dirty("Grove API Key")
+		snaps = {d: _snapshot_dirty(d) for d in ("Grove User Group", "Grove API Key")}
 
 		ok = 0
 		for proxy in active:
-			res = _push_and_classify(proxy, _ALL, _ALL)
+			res = _push_and_classify(proxy, _ALL, _ALL, _ALL)
 			doc.append("results", {"proxy": proxy, **res})
 			ok += res["success"]
 		_finalize(doc, active, ok)
 
 		# A full run that reached every Active proxy has projected all current
-		# keys, so the dirty keys it covered can clear. (Subset runs clear
-		# nothing global; routes are not dirty-gated.)
+		# groups and keys, so the dirty ones it covered can clear. (Subset runs
+		# clear nothing global; routes are not dirty-gated.)
 		if doc.status == "Success" and set(active) >= set(all_active):
-			_clear_unchanged("Grove API Key", keys_snap)
+			for doctype, snap in snaps.items():
+				_clear_unchanged(doctype, snap)
 
 		frappe.db.commit()
 		return doc.name
@@ -194,21 +234,25 @@ def full_sync(proxies=None, trigger="Manual"):
 
 
 def sync_dirty(trigger="Scheduled"):
-	"""Background job (cron): push dirty keys + the full route table for every
-	deployment to the relevant Active proxies, then clear each key that landed
-	(key failures stay dirty → retried next tick). Routes are NOT dirty-gated —
-	they're pushed every run (idempotent). Skips (no doc) when there's nothing to
-	push (no dirty keys and no deployments)."""
+	"""Background job (cron): push dirty groups + dirty keys + the full route table for
+	every deployment to the relevant Active proxies, then clear each item that landed
+	(failures stay dirty → retried next tick). Routes are NOT dirty-gated — they're pushed
+	every run (idempotent). Skips (no doc) when there's nothing to push (nothing dirty and
+	no deployments).
+
+	A group edit dirties ONE row here, whatever it grants and to however many keys — the
+	fan-out it used to cause is exactly what moving the group into its own record removed."""
 	doc = _new_run("Projection", trigger)
 	if not doc.acquire_lock(wait=0):  # scheduled → skip if a run is in flight
 		return None
 	try:
-		dirty_keys = frappe.get_all("Grove API Key", filters={"dirty": 1}, fields=["name", "modified"])
+		dirty_groups = _snapshot_dirty("Grove User Group")
+		dirty_keys = _snapshot_dirty("Grove API Key")
 		# Routes come from Model Deployments AND standalone serving Pods (Running).
 		has_deps = bool(frappe.db.count("Model Deployment")) or bool(
 			frappe.db.count("Pod", {"status": "Running"})
 		)
-		if not dirty_keys and not has_deps:
+		if not dirty_groups and not dirty_keys and not has_deps:
 			return None
 
 		all_active = set(_active_proxies())
@@ -216,26 +260,34 @@ def sync_dirty(trigger="Scheduled"):
 			return None  # work exists but no Active proxy can receive it yet
 
 		# Routes are global (no per-deployment proxy) → every Active proxy gets the
-		# full route table each tick (idempotent, not dirty-gated). Keys are global too.
+		# full route table each tick (idempotent, not dirty-gated). Groups and keys are
+		# global too.
 		route_targets = all_active if has_deps else set()
+		group_targets = all_active if dirty_groups else set()
 		key_targets = all_active if dirty_keys else set()
-		targets = key_targets | route_targets
+		targets = group_targets | key_targets | route_targets
 
+		group_names = [g.name for g in dirty_groups]
 		key_names = [k.name for k in dirty_keys]
 		ok_by_proxy = {}
 		total_ok = 0
 		for proxy in sorted(targets):
+			groups_arg = group_names if proxy in group_targets else None
 			keys_arg = key_names if proxy in key_targets else None
 			models_arg = _ALL if proxy in route_targets else None
-			res = _push_and_classify(proxy, keys_arg, models_arg)
+			res = _push_and_classify(proxy, groups_arg, keys_arg, models_arg)
 			doc.append("results", {"proxy": proxy, **res})
 			ok_by_proxy[proxy] = bool(res["success"])
 			total_ok += res["success"]
 		_finalize(doc, list(targets), total_ok)
 
-		# Keys clear only once every key-target proxy accepted them.
-		if dirty_keys and all(ok_by_proxy.get(p) for p in key_targets):
-			_clear_unchanged("Grove API Key", dirty_keys)
+		# Each doctype clears only once every proxy it targeted accepted the push.
+		for doctype, rows, pushed_to in (
+			("Grove User Group", dirty_groups, group_targets),
+			("Grove API Key", dirty_keys, key_targets),
+		):
+			if rows and all(ok_by_proxy.get(p) for p in pushed_to):
+				_clear_unchanged(doctype, rows)
 
 		frappe.db.commit()
 		return doc.name
@@ -243,14 +295,20 @@ def sync_dirty(trigger="Scheduled"):
 		doc.release_lock()
 
 
-def _push_and_classify(proxy, keys, models):
-	"""Push the requested keys and/or routes to one proxy (None = skip that
+def _push_and_classify(proxy, groups, keys, models):
+	"""Push the requested groups and/or keys and/or routes to one proxy (None = skip that
 	push); report reachability and success separately so the log distinguishes
-	'proxy down' from 'up but rejected'."""
+	'proxy down' from 'up but rejected'.
+
+	Groups go first: a key names its group, and a key that landed ahead of a brand-new group
+	would resolve against a record that is not there yet and 403 until the next tick."""
 	start = time.monotonic()
 	reachable, success, http_status, error = 1, 0, 0, None
 	detail = []
 	try:
+		if groups is not None:
+			r = push_groups(proxy, groups)
+			detail.append(f"groups:{r.get('count', '?')}")
 		if keys is not None:
 			r = push_keys(proxy, keys)
 			detail.append(f"keys:{r.get('count', '?')}")
