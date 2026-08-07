@@ -25,7 +25,8 @@
    "in_list_view": 1,
    "label": "Machine",
    "options": "Machine",
-   "reqd": 1
+   "reqd": 1,
+   "set_only_once": 1
   },
   {
    "fetch_from": "machine.public_ip",
@@ -78,12 +79,14 @@
    "description": "e.g. http:///grove-admin",
    "fieldname": "admin_url",
    "fieldtype": "Data",
-   "label": "Admin URL"
+   "label": "Admin URL",
+   "read_only": 1
   },
   {
    "fieldname": "admin_token",
    "fieldtype": "Password",
-   "label": "Admin Token"
+   "label": "Admin Token",
+   "read_only": 1
   },
   {
    "fieldname": "section_redis",
@@ -95,11 +98,12 @@
    "fieldname": "redis_appendfsync",
    "fieldtype": "Select",
    "label": "Redis appendfsync",
-   "options": "always\neverysec"
+   "options": "always\neverysec",
+   "set_only_once": 1
   }
  ],
  "links": [],
- "modified": "2026-08-07 03:06:24.243965",
+ "modified": "2026-08-07 03:32:55.803385",
  "modified_by": "Administrator",
  "module": "Grove",
  "name": "Proxy Server",

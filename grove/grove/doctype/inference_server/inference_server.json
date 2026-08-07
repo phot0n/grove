@@ -25,7 +25,8 @@
    "in_list_view": 1,
    "label": "Machine",
    "options": "Machine",
-   "reqd": 1
+   "reqd": 1,
+   "set_only_once": 1
   },
   {
    "fetch_from": "machine.public_ip",
@@ -100,7 +101,7 @@
   }
  ],
  "links": [],
- "modified": "2026-08-07 03:05:27.484125",
+ "modified": "2026-08-07 03:33:36.587973",
  "modified_by": "Administrator",
  "module": "Grove",
  "name": "Inference Server",
