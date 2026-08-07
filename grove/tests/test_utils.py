@@ -5,7 +5,15 @@
 import re
 import unittest
 
-from grove.utils import is_env_key, is_env_value, is_id_safe, slugify, validate_id_safe_name
+from grove.utils import (
+	is_dns_name,
+	is_env_key,
+	is_env_value,
+	is_id_safe,
+	is_label_under,
+	slugify,
+	validate_id_safe_name,
+)
 
 
 class TestSlugify(unittest.TestCase):
@@ -76,6 +84,40 @@ class TestValidateIdSafeName(unittest.TestCase):
 		# Frappe raises "Name is required" straight after, and says it better than this would.
 		for blank in ("", None):
 			validate_id_safe_name("Inference Server", blank)
+
+
+class TestIsDnsName(unittest.TestCase):
+	"""What can go in an nginx server_name and a certificate subject. Everything rejected here
+	would otherwise be caught by `openresty -t` on a box that is already serving traffic."""
+
+	def test_accepts_a_bare_name(self):
+		for name in ("grove.example.com", "api.grove.example.com", "use1-p1.grove.example.com", "localhost"):
+			self.assertTrue(is_dns_name(name), name)
+
+	def test_rejects_anything_that_is_not_one(self):
+		for name in ("", None, "https://api.grove.example.com", "api.grove.example.com/",
+			"api.grove.example.com:443", "grove.example.com.", "api..grove.example.com",
+			"-api.grove.example.com", "api_1.grove.example.com"):
+			self.assertFalse(is_dns_name(name), name)
+
+
+class TestIsLabelUnder(unittest.TestCase):
+	"""A wildcard covers one label and no more, which is the whole constraint on Gateway Host:
+	*.grove.example.com is presented by every proxy, and a name it does not match reaches a
+	customer's SDK as a certificate error days after someone typed it."""
+
+	def test_one_label_below_the_zone(self):
+		self.assertTrue(is_label_under("api.grove.example.com", "grove.example.com"))
+
+	def test_the_zone_itself_is_not_covered(self):
+		self.assertFalse(is_label_under("grove.example.com", "grove.example.com"))
+
+	def test_two_labels_below_are_not_covered(self):
+		self.assertFalse(is_label_under("api.eu.grove.example.com", "grove.example.com"))
+
+	def test_a_name_in_another_zone_is_not_covered(self):
+		# ...including one that merely ends the same way.
+		self.assertFalse(is_label_under("api.notgrove.example.com", "grove.example.com"))
 
 
 class TestIsEnvKey(unittest.TestCase):

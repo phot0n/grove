@@ -10,6 +10,8 @@ import frappe
 
 MIB_PER_GB = 1024
 
+DNS_LABEL = re.compile(r"[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?")
+
 
 def vram_gb_from_mib(mib):
 	"""MiB → whole marketed GB. Rounds half up, unlike Python's round(), which is banker's:
@@ -87,6 +89,22 @@ def validate_id_safe_name(doctype, name):
 		f"punctuation cannot be read back out of one.",
 		title="Name is not traceable",
 	)
+
+
+def is_dns_name(name):
+	"""True for a bare DNS name — dot-separated labels and nothing else. What can go in an
+	nginx server_name and a certificate subject, so a scheme, a port, a path or a trailing dot
+	all fail here rather than at `openresty -t` on a box that is already live."""
+	labels = (name or "").split(".")
+	return bool(name) and len(name) <= 253 and all(DNS_LABEL.fullmatch(label) for label in labels)
+
+
+def is_label_under(name, zone):
+	"""True when `name` is exactly one label below `zone`. A wildcard certificate matches one
+	label and no more: `*.grove.example.com` covers `api.grove.example.com`, but neither the
+	apex nor `api.eu.grove.example.com`."""
+	suffix = f".{zone}"
+	return name.endswith(suffix) and "." not in name[: -len(suffix)]
 
 
 def slugify(text):

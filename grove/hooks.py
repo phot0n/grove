@@ -170,6 +170,9 @@ scheduler_events = {
 		# blocked for the rest of the month — the monthly cap is hard.
 		"0 0 * * *": [
 			"grove.usage_pull.reactivate_rate_limited",
+			# Renews the fleet wildcard when certbot says it is due (inside 30 days of expiry)
+			# and pushes it to every Active proxy only if the certificate actually changed.
+			"grove.tls.renew_fleet_certificate",
 		],
 	},
 }

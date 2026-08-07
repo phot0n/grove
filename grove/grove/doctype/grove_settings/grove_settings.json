@@ -3,38 +3,178 @@
  "creation": "2026-07-01 00:00:00",
  "doctype": "DocType",
  "engine": "InnoDB",
- "issingle": 1,
  "field_order": [
   "section_gateway",
   "gateway_host",
+  "proxy_zone",
+  "column_break_tls",
+  "dns_provider",
+  "acme_email",
+  "acme_staging",
   "section_monitoring",
   "metrics_remote_write_url",
+  "monitoring_extra_labels",
   "column_break_monitoring",
   "sd_token",
   "scrape_password",
   "scrape_password_hash",
-  "monitoring_extra_labels"
+  "fleet_certificate_tab",
+  "section_fleet_tls",
+  "fleet_tls_expires_on",
+  "fleet_tls_last_run",
+  "fleet_tls_cert",
+  "fleet_tls_key",
+  "fleet_tls_last_output"
  ],
  "fields": [
-  {"fieldname": "section_gateway", "fieldtype": "Section Break", "label": "Gateway"},
-  {"fieldname": "gateway_host", "fieldtype": "Data", "label": "Gateway Host", "description": "Public host/IP clients hit; used to build the base_url returned by provision_endpoint."},
-  {"fieldname": "section_monitoring", "fieldtype": "Section Break", "label": "Monitoring"},
-  {"fieldname": "metrics_remote_write_url", "fieldtype": "Data", "label": "Metrics Remote Write URL", "description": "Where a Monitoring Agent pushes when its Region names no endpoint of its own, e.g. http://13.206.253.38:8000/v1/write. Prefer https — the agent's token crosses the network on every push. The token itself lives on each agent."},
-  {"fieldname": "column_break_monitoring", "fieldtype": "Column Break"},
-  {"fieldname": "sd_token", "fieldtype": "Password", "label": "Service Discovery Token", "description": "16+ characters of A-Z a-z 0-9 - _ . ~ — e.g. `openssl rand -hex 32`. Every Monitoring Agent sends it to fetch its target list, and it is the only thing guarding that list; unset, the endpoint refuses everyone. It travels in the query string, so it appears in this site's access log — rotate it here and hit Install on each agent."},
-  {"fieldname": "scrape_password", "fieldtype": "Password", "label": "Metrics Scrape Password", "description": "Guards /metrics/node and /metrics/gpu on every box — e.g. `openssl rand -hex 32`. Boxes get its hash, the agent gets the password. Unset, a box writes no htpasswd at all and nginx refuses the endpoint. Rotating it means re-running each box's play (Setup, Update Engine Config, deploy_openresty.yml) and Install on each agent."},
-  {"fieldname": "scrape_password_hash", "fieldtype": "Data", "label": "Metrics Scrape Password Hash", "read_only": 1, "description": "Derived from the password above and written to each box's htpasswd file. Recomputed only when the password changes, so re-running a play does not rewrite the file."},
-  {"fieldname": "monitoring_extra_labels", "fieldtype": "Small Text", "label": "Extra Labels", "description": "JSON stamped on every series pushed from every box, e.g. {\"env\": \"prod\", \"tenant\": \"grove\"}."}
+  {
+   "fieldname": "section_gateway",
+   "fieldtype": "Section Break",
+   "label": "Gateway"
+  },
+  {
+   "description": "Public host clients hit, e.g. api.grove.example.com; used to build the base_url returned by provision_endpoint. With a Proxy Zone set it must be exactly one label under it, because that is all a wildcard certificate covers, and it resolves to every proxy through GeoDNS.",
+   "fieldname": "gateway_host",
+   "fieldtype": "Data",
+   "label": "Gateway Host"
+  },
+  {
+   "description": "Public DNS zone the proxies live in, e.g. grove.example.com. Every proxy is reachable at its own name inside the zone (proxy-name dot zone) and serves one wildcard certificate for the whole zone, which is what lets them all answer for the same Gateway Host behind GeoDNS. Blank = no TLS: boxes keep serving /v1 and /grove-admin in the clear on port 80.",
+   "fieldname": "proxy_zone",
+   "fieldtype": "Data",
+   "label": "Proxy Zone"
+  },
+  {
+   "fieldname": "column_break_tls",
+   "fieldtype": "Column Break"
+  },
+  {
+   "description": "Whose credentials own the zone above: they answer the DNS-01 challenge and write each proxy's records. AWS only \u2014 the zone must be a public Route53 hosted zone in that account.",
+   "fieldname": "dns_provider",
+   "fieldtype": "Link",
+   "label": "DNS Provider",
+   "options": "Cloud Provider"
+  },
+  {
+   "description": "Where Let's Encrypt sends expiry warnings. Blank registers without one, so a stalled renewal goes unannounced.",
+   "fieldname": "acme_email",
+   "fieldtype": "Data",
+   "label": "ACME Email"
+  },
+  {
+   "default": "0",
+   "description": "Issue from Let's Encrypt's staging CA \u2014 untrusted by clients, but not rate-limited. Leave on until the issuance works end to end: production allows five certificates a week for one name.",
+   "fieldname": "acme_staging",
+   "fieldtype": "Check",
+   "label": "Use ACME Staging"
+  },
+  {
+   "fieldname": "section_fleet_tls",
+   "fieldtype": "Section Break",
+   "label": "Fleet Certificate"
+  },
+  {
+   "description": "Read off the certificate below. Renewal is a daily job that only acts inside certbot's 30-day window, so this date moving is how you know it is alive.",
+   "fieldname": "fleet_tls_expires_on",
+   "fieldtype": "Datetime",
+   "label": "Expires On",
+   "read_only": 1
+  },
+  {
+   "description": "The full chain every proxy serves. Written by Issue Fleet Certificate; pushed to each Active proxy on provision and on renewal.",
+   "fieldname": "fleet_tls_cert",
+   "fieldtype": "Small Text",
+   "label": "Certificate",
+   "read_only": 1
+  },
+  {
+   "description": "Its private key, encrypted here and on no box in this database. One key for the whole fleet: a compromised proxy can impersonate every name under the zone, so treat a box breach as a reason to reissue.",
+   "fieldname": "fleet_tls_key",
+   "fieldtype": "Password",
+   "label": "Private Key",
+   "read_only": 1
+  },
+  {
+   "description": "When certbot last ran, whether or not it changed anything.",
+   "fieldname": "fleet_tls_last_run",
+   "fieldtype": "Datetime",
+   "label": "Last certbot Run",
+   "read_only": 1
+  },
+  {
+   "description": "What that run printed, successful or not. A renewal that was not yet due says so here and changes nothing else — which is the normal nightly result.",
+   "fieldname": "fleet_tls_last_output",
+   "fieldtype": "Code",
+   "label": "Last certbot Output",
+   "read_only": 1
+  },
+  {
+   "fieldname": "section_monitoring",
+   "fieldtype": "Section Break",
+   "label": "Monitoring"
+  },
+  {
+   "description": "Where a Monitoring Agent pushes when its Region names no endpoint of its own, e.g. http://13.206.253.38:8000/v1/write. Prefer https \u2014 the agent's token crosses the network on every push. The token itself lives on each agent.",
+   "fieldname": "metrics_remote_write_url",
+   "fieldtype": "Data",
+   "label": "Metrics Remote Write URL"
+  },
+  {
+   "fieldname": "column_break_monitoring",
+   "fieldtype": "Column Break"
+  },
+  {
+   "description": "16+ characters of A-Z a-z 0-9 - _ . ~ \u2014 e.g. `openssl rand -hex 32`. Every Monitoring Agent sends it to fetch its target list, and it is the only thing guarding that list; unset, the endpoint refuses everyone. It travels in the query string, so it appears in this site's access log \u2014 rotate it here and hit Install on each agent.",
+   "fieldname": "sd_token",
+   "fieldtype": "Password",
+   "label": "Service Discovery Token"
+  },
+  {
+   "description": "Guards /metrics/node and /metrics/gpu on every box \u2014 e.g. `openssl rand -hex 32`. Boxes get its hash, the agent gets the password. Unset, a box writes no htpasswd at all and nginx refuses the endpoint. Rotating it means re-running each box's play (Setup, Update Engine Config, deploy_openresty.yml) and Install on each agent.",
+   "fieldname": "scrape_password",
+   "fieldtype": "Password",
+   "label": "Metrics Scrape Password"
+  },
+  {
+   "description": "Derived from the password above and written to each box's htpasswd file. Recomputed only when the password changes, so re-running a play does not rewrite the file. Hidden: it is a verifier the boxes check against, with nothing an operator sets or reads.",
+   "fieldname": "scrape_password_hash",
+   "fieldtype": "Data",
+   "hidden": 1,
+   "label": "Metrics Scrape Password Hash",
+   "read_only": 1
+  },
+  {
+   "description": "JSON stamped on every series pushed from every box, e.g. {\"env\": \"prod\", \"tenant\": \"grove\"}.",
+   "fieldname": "monitoring_extra_labels",
+   "fieldtype": "Small Text",
+   "label": "Extra Labels"
+  },
+  {
+   "fieldname": "fleet_certificate_tab",
+   "fieldtype": "Tab Break",
+   "label": "Fleet Certificate"
+  }
  ],
+ "issingle": 1,
  "links": [],
- "modified": "2026-08-04 00:00:00",
+ "modified": "2026-08-07 13:48:54.608302",
  "modified_by": "Administrator",
  "module": "Grove",
  "name": "Grove Settings",
  "owner": "Administrator",
  "permissions": [
-  {"create": 1, "delete": 1, "email": 1, "print": 1, "read": 1, "report": 1, "role": "System Manager", "share": 1, "write": 1}
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "print": 1,
+   "read": 1,
+   "role": "System Manager",
+   "share": 1,
+   "write": 1
+  }
  ],
+ "row_format": "Dynamic",
  "sort_field": "modified",
  "sort_order": "DESC",
  "states": []
