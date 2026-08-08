@@ -17,7 +17,7 @@ import requests
 import frappe
 
 from grove import log_relay
-from grove.cloud_provider.runpod import RunPodClient, RunPodError
+from grove.cloud_provider.runpod import RunPodClient, RunPodError, pod_status
 from grove.grove.doctype.ssh_key.ssh_key import injected_public_keys
 
 # How long spawn waits for vLLM to actually serve (weights download + load) after the pod is
@@ -157,10 +157,15 @@ class PodProvisioner:
 		else Loading; engine_url (the gateway route target) is set only when Running, so the
 		gateway never routes to a still-loading engine (→ 503s).
 
+		`running` is the caller's verdict on whether the container is up (a bring-up forces it,
+		since its snapshot predates the provider flipping to RUNNING). When it is not, the
+		provider's own state decides — a pod still coming up reads Provisioning, not Stopped.
+
 		Reloads first: the status writes around it go through db.set_value, which leaves the
 		loaded doc stale."""
 		self.pod = frappe.get_doc("Pod", self.pod.name)
 		pod = self.pod
+		state = "Running" if running else pod_status(pod_api.get("status"))
 		port_map = pod_api.get("port_map") or {}
 		for row in pod.ports:
 			row.external_port = port_map.get(str(int(row.internal_port))) or 0
@@ -175,9 +180,9 @@ class PodProvisioner:
 			if url and _is_engine_serving(url):
 				pod.status, pod.engine_url = "Running", url
 			else:
-				pod.status, pod.engine_url = ("Loading" if running else "Stopped"), ""
+				pod.status, pod.engine_url = ("Loading" if running else state), ""
 		else:
-			pod.status = "Running" if running else "Stopped"
+			pod.status = state
 		pod.save(ignore_permissions=True)
 		frappe.db.commit()
 
@@ -205,11 +210,12 @@ class PodProvisioner:
 		self.sync_gateway()
 		return ready
 
-	def sync_gateway(self):
+	def sync_gateway(self, push=True):
 		"""On a serving Pod lifecycle transition: recompute the Model's `published` flag (a
 		Running Pod is a live deployment) and push the route table so the endpoint reaches the
 		gateway. Serving pods have no Model Deployment to drive either, so their lifecycle
-		triggers both here. No-op for a non-serving pod. Best-effort — logged, never fatal."""
+		triggers both here. No-op for a non-serving pod. Best-effort — logged, never fatal.
+		`push=False` keeps the published flag current but leaves the projection to the caller."""
 		model = frappe.db.get_value("Pod", self.pod.name, "model")
 		if not model:
 			return
@@ -217,6 +223,8 @@ class PodProvisioner:
 
 		# Running pod → published=1; Stopped/Terminated → 0 (unless another live route).
 		sync_published(model)
+		if not push:
+			return
 		try:
 			from grove import gateway_sync
 
@@ -249,9 +257,11 @@ class PodProvisioner:
 		except RunPodError as e:
 			return self.fail(e, f"Pod spawn failed {self.pod.name}")
 
-	def sync(self, wait=False):
+	def sync(self, wait=False, push_gateway=True):
 		"""Pull the pod's current provider state onto the Pod (external ports / IP / SSH /
-		status / engine_url), then refresh the gateway (ports may have moved on restart)."""
+		status / engine_url), then refresh the gateway (ports may have moved on restart).
+		`push_gateway=False` skips the projection run — for the scheduled reconcile, which
+		pushes once for the whole fleet instead of once per pod."""
 		self.require_pod_id("spawn it first")
 		try:
 			pod_api = (
@@ -265,9 +275,9 @@ class PodProvisioner:
 			self.set_state({"pod_id": "", "status": "Terminated", "engine_url": ""})
 			self.sync_gateway()
 			return {"status": "Terminated"}
-		running = pod_api.get("status") == "RUNNING" and bool(pod_api.get("public_ip"))
+		running = pod_status(pod_api.get("status")) == "Running" and bool(pod_api.get("public_ip"))
 		self.apply_provider_state(pod_api, running)
-		self.sync_gateway()
+		self.sync_gateway(push=push_gateway)
 		return {"status": self.current_status}
 
 	def restart(self):
@@ -382,10 +392,16 @@ class PodProvisioner:
 		return frappe.db.get_value("Pod", self.pod.name, "status")
 
 	def fail(self, error, title):
-		"""A provider call died mid-lifecycle: park the Pod Stopped (a half-spawned pod is not
-		Running) and hand the message back to the caller instead of raising, since these run as
-		background jobs."""
-		self.set_state({"status": "Stopped"})
+		"""A provider call died mid-lifecycle: hand the message back to the caller instead of
+		raising, since these run as background jobs.
+
+		Only a lifecycle that never got a provider pod is parked Stopped. Once there is a pod id
+		the failure says nothing about the container — a bring-up that outran its poll, or an API
+		call that timed out, leaves a pod that is very likely still coming up. Calling that
+		Stopped drops its gateway route, so the status is left for the scheduled reconcile to
+		read off the provider."""
+		if not frappe.db.get_value("Pod", self.pod.name, "pod_id"):
+			self.set_state({"status": "Stopped"})
 		frappe.log_error(title=title)
 		return {"status": "error", "message": str(error)}
 

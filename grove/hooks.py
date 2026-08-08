@@ -164,6 +164,9 @@ scheduler_events = {
 		],
         "*/5 * * * *": [
 			"grove.usage_pull.pull_all",
+			# The provider owns whether a pod/instance is up; lifecycle jobs only see it while
+			# they run. This closes the drift they leave behind.
+			"grove.cloud_provider.reconcile.sync_all",
 		],
 		# Daily: reactivate rate_limited keys whose current-month usage is back
 		# under budget (month rollover / raised budget). Over-budget keys stay

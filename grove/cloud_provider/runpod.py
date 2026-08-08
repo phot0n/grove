@@ -24,6 +24,23 @@ LOG_READ_TIMEOUT = 65
 DEFAULT_IMAGE = "vllm/vllm-openai:latest"
 DEFAULT_CONTAINER_DISK_GB = 2
 
+# RunPod pod states that map onto a Pod status of their own. Everything else — CREATED,
+# RESTARTING, a state RunPod adds later — is a pod on its way up.
+POD_STATUS = {
+	"RUNNING": "Running",
+	"EXITED": "Stopped",
+	"PAUSED": "Stopped",
+	"DEAD": "Stopped",
+	"TERMINATED": "Terminated",
+}
+
+
+def pod_status(runpod_state):
+	"""RunPod pod state → Pod status. An unrecognised state reads Provisioning, never Stopped:
+	a pod that is slow to come up (or a state this client has not seen) must not be recorded as
+	one the operator stopped."""
+	return POD_STATUS.get(runpod_state, "Provisioning")
+
 
 class RunPodError(Exception):
 	pass

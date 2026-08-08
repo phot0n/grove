@@ -10,7 +10,7 @@ from unittest.mock import patch
 import requests
 
 from grove.cloud_provider.provisioner import PodProvisioner
-from grove.cloud_provider.runpod import RunPodClient, RunPodError
+from grove.cloud_provider.runpod import RunPodClient, RunPodError, pod_status
 
 
 class FakeClient(RunPodClient):
@@ -218,6 +218,19 @@ def pod(gpu_count=2, gpu_type_id="NVIDIA L40S"):
 
 def live(gpu_count=2, gpu_type_id="NVIDIA L40S", status="RUNNING"):
 	return {"status": status, "gpu_count": gpu_count, "gpu_type_id": gpu_type_id}
+
+
+class TestPodStatus(unittest.TestCase):
+	def test_running_and_the_stopped_states(self):
+		self.assertEqual(pod_status("RUNNING"), "Running")
+		for state in ("EXITED", "PAUSED", "DEAD"):
+			self.assertEqual(pod_status(state), "Stopped")
+		self.assertEqual(pod_status("TERMINATED"), "Terminated")
+
+	def test_a_pod_still_coming_up_is_never_stopped(self):
+		# The bug this exists for: a slow bring-up reported as Stopped, which drops its route.
+		for state in ("CREATED", "RESTARTING", "SOME_NEW_STATE", None, ""):
+			self.assertEqual(pod_status(state), "Provisioning")
 
 
 class TestRestartBlocker(unittest.TestCase):
