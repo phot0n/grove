@@ -75,6 +75,26 @@ def _effective_groups():
 	]
 
 
+def _public_catalog():
+	"""Every model named by a group flagged Show in Public Catalogue, as one comma list.
+
+	Pooled here rather than left to the gateway to assemble: it is the only way the anonymous
+	endpoint stays a single read, and a group deleted here simply stops appearing — the gateway
+	holds no per-group state it would have to garbage-collect.
+
+	Names only. This grants nothing: the inference path still resolves a key against its group,
+	and a model on this list is refused without one."""
+	public = frappe.get_all("Grove User Group", filters={"public_catalog": 1}, pluck="name")
+	if not public:
+		return ""
+	rows = frappe.get_all(
+		"Grove Model Row",
+		filters={"parenttype": "Grove User Group", "parent": ("in", public)},
+		pluck="model",
+	)
+	return ",".join(sorted(set(rows)))
+
+
 def _effective_keys(proxy):
 	"""All API Keys projected for the gateway: identity + status + which group the key inherits
 	its access from + this user's own allow/deny on top of it. The only rate limit is the
@@ -166,13 +186,16 @@ def _routes_for_proxy(proxy_name):
 
 def push_groups(proxy, groups=_ALL):
 	"""Upsert user groups to one proxy. groups=_ALL → every group; a list of Grove User Group
-	names → just those (the agent HSETs each; other groups are left untouched)."""
+	names → just those (the agent HSETs each; other groups are left untouched).
+
+	The public catalogue rides every groups push, complete, even a one-group one: it is a pooled
+	list, so a subset push that carried only its own share would erase everybody else's."""
 	_p, admin_url, token = _conn(proxy)
 	eff = _effective_groups()
 	if groups is not _ALL:
 		wanted = set(groups)
 		eff = [g for g in eff if g["name"] in wanted]
-	return _post(admin_url, token, "groups", {"groups": eff})
+	return _post(admin_url, token, "groups", {"groups": eff, "catalog": _public_catalog()})
 
 
 def push_keys(proxy, keys=_ALL):

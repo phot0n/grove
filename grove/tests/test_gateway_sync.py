@@ -130,6 +130,57 @@ class TestEffectiveGroups(unittest.TestCase):
 		self.assertEqual([g["models"] for g in groups], ["m1", "m2"])
 
 
+class TestPublicCatalog(unittest.TestCase):
+	"""The anonymous /v1/models list. Served to anyone who asks, so what it leaves out matters:
+	it names models, it never grants them, and only a group explicitly flagged for it takes part."""
+
+	def catalog(self, public_groups=(), rows=()):
+		seen = {}
+
+		def get_all(doctype, filters=None, **kwargs):
+			seen[doctype] = filters or {}
+			if doctype == "Grove User Group":
+				return list(public_groups)
+			if doctype == "Grove Model Row":
+				return list(rows)
+			raise AssertionError(f"unexpected get_all({doctype})")
+
+		with unittest.mock.patch.object(frappe, "get_all", side_effect=get_all):
+			return gateway_sync._public_catalog(), seen
+
+	def test_only_groups_flagged_for_it_are_asked_for(self):
+		# The filter is the whole access story: a group nobody ticked must never be read here.
+		_catalog, seen = self.catalog(["acme"], ["qwen3-4b"])
+		self.assertEqual(seen["Grove User Group"], {"public_catalog": 1})
+
+	def test_a_flagged_group_publishes_its_models(self):
+		catalog, _seen = self.catalog(["acme"], ["qwen3-4b", "qwen3.5-27b"])
+		self.assertEqual(catalog, "qwen3-4b,qwen3.5-27b")
+
+	def test_no_flagged_group_publishes_nothing(self):
+		# The default for every group, and the default for a fleet that never ticks the box.
+		catalog, seen = self.catalog()
+		self.assertEqual(catalog, "")
+		# Nothing to pool → the row query is not even made.
+		self.assertNotIn("Grove Model Row", seen)
+
+	def test_two_groups_naming_one_model_publish_it_once(self):
+		# Pooled across groups, so an overlap must not produce a duplicate entry on the wire.
+		catalog, _seen = self.catalog(["acme", "beta"], ["qwen3-4b", "qwen3-4b", "qwen3.5-27b"])
+		self.assertEqual(catalog, "qwen3-4b,qwen3.5-27b")
+
+	def test_the_list_is_sorted(self):
+		catalog, _seen = self.catalog(["acme"], ["b", "a"])
+		self.assertEqual(catalog, "a,b")
+
+	def test_only_the_flagged_groups_rows_are_read(self):
+		_catalog, seen = self.catalog(["acme"], ["qwen3-4b"])
+		self.assertEqual(
+			seen["Grove Model Row"],
+			{"parenttype": "Grove User Group", "parent": ("in", ["acme"])},
+		)
+
+
 class TestPushOrder(unittest.TestCase):
 	def test_groups_land_before_the_keys_that_name_them(self):
 		# A key resolves against group:<name>. Pushed first, a key naming a brand-new group

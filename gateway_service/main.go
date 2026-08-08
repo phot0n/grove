@@ -258,7 +258,10 @@ func (s *server) handleModels(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	secret := bearer(r.Header.Get("Authorization"))
 	if secret == "" {
-		writeErrJSON(w, 401, "missing api key")
+		// No key at all → the public catalogue, so a prospect can see what is on offer before
+		// signing up. A key that is present but wrong still 401s below: answering it with the
+		// anonymous list would hide a broken key behind a shorter, plausible one.
+		s.writePublicCatalog(w, r)
 		return
 	}
 	rec, ok, err := s.loadKey(ctx, sha256hex(secret))
@@ -292,6 +295,54 @@ func (s *server) handleModels(w http.ResponseWriter, r *http.Request) {
 		data = append(data, modelObj{ID: m, Object: "model", Created: created, OwnedBy: "frappe"})
 	}
 	writeJSON(w, map[string]any{"object": "list", "data": data})
+}
+
+// catalogKey holds the pooled public catalogue: the comma list of models every group flagged
+// Show in Public Catalogue names, assembled by the control plane and replaced whole on each
+// groups push. Absent = no group is public, which is the default and answers an empty list.
+const catalogKey = "catalog:public"
+
+// writePublicCatalog answers an unauthenticated /v1/models with the models on offer.
+//
+// Names only, and still intersected with what is actually deployed — a catalogue that advertises
+// a model no engine serves sends people to a 503. It grants nothing: canUse is untouched, so
+// calling any of these without a key is still a 403 on the inference path.
+func (s *server) writePublicCatalog(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	catalog, err := s.rdb.Get(ctx, catalogKey).Result()
+	if err == redis.Nil {
+		writeJSON(w, map[string]any{"object": "list", "data": []modelObj{}})
+		return
+	}
+	if err != nil {
+		writeErrJSON(w, 503, "catalog store error")
+		return
+	}
+	public := modelSet(catalog)
+	if len(public) == 0 {
+		writeJSON(w, map[string]any{"object": "list", "data": []modelObj{}})
+		return
+	}
+
+	deployed, err := s.listModels(ctx)
+	if err != nil {
+		writeErrJSON(w, 503, "route store error")
+		return
+	}
+	writeJSON(w, map[string]any{"object": "list", "data": catalogObjects(public, deployed, time.Now().Unix())})
+}
+
+// catalogObjects is what an anonymous /v1/models answers: the advertised set intersected with
+// what is deployed, in the order listModels already sorted them. Pure, so the rule that a
+// catalogue never names a model no engine serves is testable without Redis.
+func catalogObjects(public map[string]bool, deployed []string, created int64) []modelObj {
+	data := []modelObj{}
+	for _, m := range deployed {
+		if public[m] {
+			data = append(data, modelObj{ID: m, Object: "model", Created: created, OwnedBy: "frappe"})
+		}
+	}
+	return data
 }
 
 // listModels returns every currently-deployed model (a deploy:<model> route key

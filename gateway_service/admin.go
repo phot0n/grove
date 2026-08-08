@@ -65,7 +65,8 @@ func (s *server) handleAdminKeys(w http.ResponseWriter, r *http.Request) {
 // of N. Upsert-only, like /admin/keys — a group nobody links to is unreachable, not harmful.
 func (s *server) handleAdminGroups(w http.ResponseWriter, r *http.Request) {
 	var body struct {
-		Groups []adminGroup `json:"groups"`
+		Groups  []adminGroup `json:"groups"`
+		Catalog *string      `json:"catalog"` // pooled public catalogue; nil = a control plane that predates it
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		http.Error(w, "bad body", http.StatusBadRequest)
@@ -80,6 +81,16 @@ func (s *server) handleAdminGroups(w http.ResponseWriter, r *http.Request) {
 			"models":   g.Models,
 			"priority": g.Priority,
 		})
+	}
+	// Replaced whole, never merged: the control plane pools it across every group that still
+	// exists, so this is also how a deleted group stops being advertised. A pointer, so an older
+	// control plane that sends no catalogue leaves the current one alone instead of clearing it.
+	if body.Catalog != nil {
+		if *body.Catalog == "" {
+			s.rdb.Del(ctx, catalogKey)
+		} else {
+			s.rdb.Set(ctx, catalogKey, *body.Catalog, 0)
+		}
 	}
 	writeJSON(w, map[string]any{"ok": true, "count": len(body.Groups)})
 }
