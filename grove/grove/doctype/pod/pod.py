@@ -39,7 +39,7 @@ class Pod(Document):
 		gpu_memory_utilization: DF.Float
 		gpu_type_id: DF.Data | None
 		image_name: DF.Data | None
-		kv_cache_dtype: DF.Literal["auto", "fp8", "fp8_e4m3", "fp8_e5m2"]
+		kv_cache_dtype: DF.Literal["auto", "fp8"]
 		max_model_len: DF.Int
 		model: DF.Link | None
 		pipeline_parallel_size: DF.Int

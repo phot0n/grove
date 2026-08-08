@@ -185,7 +185,7 @@ class TestReconfigureKeepsTheModelRoutable(unittest.TestCase):
 	it cannot come back quietly."""
 
 	def record_play(self, rc):
-		"""A run_playbook that remembers which playbook it was handed."""
+		"""A run_playbook that remembers which play it was handed."""
 		def run_playbook(playbook, **kwargs):
 			self.played = playbook
 			return ("PLAY-1", rc)
@@ -235,9 +235,9 @@ class TestReconfigureKeepsTheModelRoutable(unittest.TestCase):
 		self.assertEqual(final["engine_url"], "https://10.0.0.9/e/md-00007")
 
 	def test_it_runs_its_own_play_not_a_trimmed_serve(self):
-		# serve.yml with skip_tags still pulled the image, checked the disk and ran the proxy
-		# roles — minutes of work for a flag change, and too slow to use on a deploy that is
-		# stuck on its health gate.
+		# A trimmed serve still pulled the image, checked the disk and ran the proxy roles —
+		# minutes of work for a flag change, and too slow to use on a deploy that is stuck on its
+		# health gate.
 		self.writes_during(rc=0)
 		self.assertEqual(self.played, "reconfigure.yml")
 

@@ -44,7 +44,7 @@ class ModelDeployment(Document):
 		gpus: DF.Table[ModelDeploymentGPU]
 		inference_server: DF.Link
 		internal_api_key: DF.Password | None
-		kv_cache_dtype: DF.Literal["auto", "fp8", "fp8_e4m3", "fp8_e5m2"]
+		kv_cache_dtype: DF.Literal["auto", "fp8"]
 		log_lines: DF.Int
 		max_model_len: DF.Int
 		max_num_batched_tokens: DF.Int

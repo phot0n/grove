@@ -261,7 +261,7 @@
    "fieldname": "kv_cache_dtype",
    "fieldtype": "Select",
    "label": "KV Cache Dtype",
-   "options": "auto\nfp8\nfp8_e4m3\nfp8_e5m2"
+   "options": "auto\nfp8"
   },
   {
    "default": "0.9",

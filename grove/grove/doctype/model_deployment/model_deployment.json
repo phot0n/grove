@@ -1,6 +1,5 @@
 {
  "actions": [],
- "allow_rename": 0,
  "autoname": "format:MD-{#####}",
  "creation": "2026-07-01 00:00:00",
  "doctype": "DocType",
@@ -19,11 +18,11 @@
   "kv_cache_dtype",
   "gpu_memory_utilization",
   "max_num_batched_tokens",
+  "max_num_seqs",
   "column_break_tuning",
   "attention_backend",
   "max_model_len",
   "allow_long_max_model_len",
-  "max_num_seqs",
   "section_gpus",
   "gpus",
   "column_break_ngfd",
@@ -45,7 +44,7 @@
  ],
  "fields": [
   {
-   "description": "What this deployment serves. Set once — the box, the port and the gateway route are all keyed to it; a different model is a different deployment.",
+   "description": "What this deployment serves. Set once \u2014 the box, the port and the gateway route are all keyed to it; a different model is a different deployment.",
    "fieldname": "model",
    "fieldtype": "Link",
    "in_list_view": 1,
@@ -55,7 +54,7 @@
    "set_only_once": 1
   },
   {
-   "description": "Only provisioned (Active) boxes are offered — a deploy onto anything else fails on the is_provisioned gate.",
+   "description": "Only provisioned (Active) boxes are offered \u2014 a deploy onto anything else fails on the is_provisioned gate.",
    "fieldname": "inference_server",
    "fieldtype": "Link",
    "label": "Inference Server",
@@ -91,14 +90,14 @@
    "reqd": 1
   },
   {
-   "description": "Auto-derived (read-only): https://<box ip>/e/<slug> \u2014 this deployment's location on its box's engine proxy, which forwards to its own vLLM instance. The gateway forwards straight here (no LiteLLM); vLLM serves /v1/messages natively.",
+   "description": "Auto-derived (read-only): https://BOX-IP/e/SLUG \u2014 this deployment's location on its box's engine proxy, which forwards to its own vLLM instance. The gateway forwards straight here (no LiteLLM); vLLM serves /v1/messages natively.",
    "fieldname": "engine_url",
    "fieldtype": "Data",
    "label": "Engine URL",
    "read_only": 1
   },
   {
-   "description": "Grove's own key between the gateway and this engine. Generated on the first Deploy and served with — read-only, because a hand-typed value would only ever disagree with the key that is on the box.",
+   "description": "Grove's own key between the gateway and this engine. Generated on the first Deploy and served with \u2014 read-only, because a hand-typed value would only ever disagree with the key that is on the box.",
    "fieldname": "internal_api_key",
    "fieldtype": "Password",
    "label": "Internal API Key",
@@ -106,7 +105,7 @@
   },
   {
    "default": "Draft",
-   "description": "Owned by the lifecycle buttons and the plays they run — not hand-set.",
+   "description": "Owned by the lifecycle buttons and the plays they run \u2014 not hand-set.",
    "fieldname": "status",
    "fieldtype": "Select",
    "in_list_view": 1,
@@ -126,7 +125,7 @@
    "fieldname": "kv_cache_dtype",
    "fieldtype": "Select",
    "label": "KV Cache Dtype",
-   "options": "auto\nfp8\nfp8_e4m3\nfp8_e5m2"
+   "options": "auto\nfp8"
   },
   {
    "default": "0.9",
@@ -167,7 +166,7 @@
    "label": "Allow Long Max Model Len"
   },
   {
-   "description": "→ --max-num-seqs. Sequences the engine runs concurrently. Blank = vLLM's own default. Caps how much KV cache the batch can want, so lower it when a full batch OOMs.",
+   "description": "\u2192 --max-num-seqs. Sequences the engine runs concurrently. Blank = vLLM's own default. Caps how much KV cache the batch can want, so lower it when a full batch OOMs.",
    "fieldname": "max_num_seqs",
    "fieldtype": "Int",
    "label": "Max Num Seqs"
@@ -216,7 +215,7 @@
    "label": "Extra Serve Args"
   },
   {
-   "description": "Everything above, assembled → what the container on the box actually runs. Rebuilt on save; the API key is not in it (it rides VLLM_API_KEY in the env file).",
+   "description": "Everything above, assembled \u2192 what the container on the box actually runs. Rebuilt on save; the API key is not in it (it rides VLLM_API_KEY in the env file).",
    "fieldname": "serve_command",
    "fieldtype": "Code",
    "label": "Serve Command",
@@ -278,7 +277,7 @@
   }
  ],
  "links": [],
- "modified": "2026-08-07 12:00:00.000000",
+ "modified": "2026-08-08 14:54:15.794529",
  "modified_by": "Administrator",
  "module": "Grove",
  "name": "Model Deployment",
