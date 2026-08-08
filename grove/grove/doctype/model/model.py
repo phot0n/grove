@@ -9,18 +9,8 @@ from frappe.model.document import Document
 from grove.utils import slugify
 
 HF_CONFIG_URL = "https://huggingface.co/{repo}/resolve/main/config.json"
-HF_MODEL_URL = "https://huggingface.co/api/models/{repo}"
 # Repo root listing, with a size per file. The limit is well past any real shard count.
 HF_TREE_URL = "https://huggingface.co/api/models/{repo}/tree/main?limit=1000"
-
-# Bytes per parameter, for the Weights dtype override only — the shipped size is measured off
-# the files themselves rather than costed out like this.
-DTYPE_BYTES = {
-	"float32": 4, "bfloat16": 2, "float16": 2, "fp8": 1, "int8": 1, "int4": 0.5,
-}
-# HF reports a packed quantization as its container type: AWQ/GPTQ pack eight 4-bit weights
-# into one int32, so for those repos the counts describe containers, not parameters.
-PACKED_DTYPES = {"I16", "U16", "I32", "U32"}
 
 
 class Model(Document):
@@ -38,15 +28,12 @@ class Model(Document):
 		enable_prefix_caching: DF.Check
 		hf_repo: DF.Data | None
 		hidden_layers: DF.Int
-		is_embedding: DF.Check
-		modality: DF.Literal["text", "multimodal"]
+		modality: DF.Literal["text", "multimodal", "embedding"]
 		published: DF.Check
-		quantization: DF.Literal["", "awq", "awq_marlin", "gptq", "gptq_marlin", "fp8"]
 		reasoning_parser: DF.Data | None
 		scheduling_policy: DF.Literal["priority", "fcfs"]
 		thinking: DF.Check
 		tool_call_parser: DF.Data | None
-		weights_dtype: DF.Literal["", "bfloat16", "float16", "float32", "fp8", "int8", "int4"]
 		weights_gb: DF.Float
 	# end: auto-generated types
 
@@ -113,17 +100,10 @@ class Model(Document):
 		return self._hf_json(HF_CONFIG_URL)
 
 	def get_weights_gb(self):
-		"""Size of the weights in GB — decimal, to match how GPU VRAM is quoted. Normally what
-		the repo's own weights weigh; with a Weights dtype set, its parameters re-costed at
-		that precision instead."""
-		if self.weights_dtype:
-			return self.get_rescaled_weights_gb()
-		return self.get_shipped_weights_gb()
-
-	def get_shipped_weights_gb(self):
-		"""What the repo's weights actually weigh: its top-level safetensors shards, added up
-		as they are on disk — or the single GGUF file, for a repo ref that names a quantization.
-		None when it publishes neither.
+		"""Size of the weights in GB — decimal, to match how GPU VRAM is quoted. What the repo's
+		weights actually weigh: its top-level safetensors shards, added up as they are on disk —
+		or the single GGUF file, for a repo ref that names a quantization. None when it
+		publishes neither.
 
 		Measured, not costed out from parameter counts. HF reports a count per dtype, but a
 		packed quantization reports its container type — GLM-5.2-AWQ-INT4 comes back as 726
@@ -137,23 +117,6 @@ class Model(Document):
 			if entry.get("type") == "file" and is_root_weights_file(entry.get("path", ""), suffix)
 		)
 		return round(total_bytes / 1_000_000_000, 2) or None
-
-	def get_rescaled_weights_gb(self):
-		"""The repo's parameters re-costed at the chosen Weights dtype — for a repo served at a
-		precision it does not ship in, e.g. vLLM quantizing a bf16 repo to fp8. Refused for a
-		repo that already ships quantized: its counts are packed containers, so there is no
-		parameter count left to re-cost."""
-		parameters = (self._hf_json(HF_MODEL_URL).get("safetensors") or {}).get("parameters") or {}
-		if packed := PACKED_DTYPES.intersection(parameters):
-			frappe.throw(
-				f"{self.hf_repo} already ships quantized — its weights are packed as "
-				f"{', '.join(sorted(packed))}, so there is no parameter count to re-cost at "
-				f"{self.weights_dtype}. Clear Weights dtype to measure the repo as it is."
-			)
-		if not parameters:
-			return None
-		total_bytes = sum(parameters.values()) * DTYPE_BYTES[self.weights_dtype]
-		return round(total_bytes / 1_000_000_000, 2)
 
 	def _hf_json(self, url_template):
 		"""Fetch JSON from Hugging Face. Sends the site's HF token when there is one — gated

@@ -24,14 +24,12 @@ PARAMETERS = {
 SHIPPED_GB = {"Qwen/Qwen3.6-27B-FP8": 30.87, "cyankiwi/GLM-5.2-AWQ-INT4": 474.22}
 
 
-def model(repo, weights_dtype=""):
+def model(repo):
 	"""A stand-in Model carrying just what the sizing reads."""
-	doc = SimpleNamespace(hf_repo=repo, weights_dtype=weights_dtype)
+	doc = SimpleNamespace(hf_repo=repo)
 	doc.repo_id = Model.repo_id.fget(doc)
 	doc.gguf_quant = Model.gguf_quant.fget(doc)
 	doc.get_weights_gb = Model.get_weights_gb.__get__(doc, SimpleNamespace)
-	doc.get_shipped_weights_gb = Model.get_shipped_weights_gb.__get__(doc, SimpleNamespace)
-	doc.get_rescaled_weights_gb = Model.get_rescaled_weights_gb.__get__(doc, SimpleNamespace)
 	doc._hf_json = lambda url, _repo=repo: (
 		tree(_repo) if url == HF_TREE_URL else {"safetensors": {"parameters": PARAMETERS[_repo]}}
 	)
@@ -107,24 +105,6 @@ class TestGgufWeights(unittest.TestCase):
 		self.assertEqual(doc.repo_id, "unsloth/Qwen3-0.6B-GGUF")
 		self.assertEqual(model("Qwen/Qwen2.5-3B-Instruct").repo_id, "Qwen/Qwen2.5-3B-Instruct")
 		self.assertEqual(model("Qwen/Qwen2.5-3B-Instruct").gguf_quant, "")
-
-
-class TestRescaledWeights(unittest.TestCase):
-	def test_a_bf16_repo_re_costs_at_fp8(self):
-		# 3.086e9 parameters at one byte each.
-		doc = model("Qwen/Qwen2.5-3B-Instruct", weights_dtype="fp8")
-		self.assertAlmostEqual(doc.get_weights_gb(), 3.09, places=1)
-
-	def test_the_same_repo_at_bf16_is_twice_that(self):
-		doc = model("Qwen/Qwen2.5-3B-Instruct", weights_dtype="bfloat16")
-		self.assertAlmostEqual(doc.get_weights_gb(), 6.17, places=1)
-
-	def test_an_already_packed_repo_is_refused_rather_than_guessed_at(self):
-		# Its counts are int32 containers — there is no parameter count left to re-cost.
-		doc = model("cyankiwi/GLM-5.2-AWQ-INT4", weights_dtype="fp8")
-		with patch.object(frappe, "throw", side_effect=frappe.ValidationError):
-			with self.assertRaises(frappe.ValidationError):
-				doc.get_weights_gb()
 
 
 if __name__ == "__main__":

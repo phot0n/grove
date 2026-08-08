@@ -8,7 +8,6 @@ from grove.serve_command import ServeCommand
 
 CHAT_MODEL = {
 	"hf_repo": "Qwen/Qwen3-35B",
-	"quantization": "fp8",
 	"modality": "text",
 	"enable_prefix_caching": True,
 	"enable_auto_tool_choice": True,
@@ -97,7 +96,6 @@ class TestServeCommand(unittest.TestCase):
 			("--port", "8080"),
 			("--tensor-parallel-size", "2"),
 			("--max-model-len", "32768"),
-			("--quantization", "fp8"),
 			("--tool-call-parser", "hermes"),
 			("--reasoning-parser", "qwen3"),
 		):
@@ -126,11 +124,11 @@ class TestServeCommand(unittest.TestCase):
 		args = serve(dict(CHAT_MODEL, scheduling_policy="fcfs")).args
 		self.assertEqual(args[args.index("--scheduling-policy") + 1], "fcfs")
 
-	def test_embedding_model_drops_chat_flags(self):
-		model = dict(CHAT_MODEL, is_embedding=True)
-		args = serve(model).args
+	def test_embedding_modality_drops_chat_flags(self):
+		args = serve(dict(CHAT_MODEL, modality="embedding")).args
 		for flag in ("--enable-auto-tool-choice", "--tool-call-parser", "--reasoning-parser"):
 			self.assertNotIn(flag, args)
+		self.assertNotIn("--language-model-only", args)  # text-only flag, not a pooling one
 		self.assertIn("--enable-prefix-caching", args)  # not chat-only
 
 	def test_thinking_off_drops_reasoning_parser(self):

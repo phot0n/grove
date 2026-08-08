@@ -157,7 +157,7 @@ def available_models():
 	return frappe.get_all(
 		"Model",
 		{"published": 1},
-		["name", "display_name", "is_embedding"],
+		["name", "display_name", "modality"],
 	)
 
 

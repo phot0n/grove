@@ -9,7 +9,7 @@ import frappe
 
 # Model fields the args are derived from — read live, never mirrored onto the placement.
 MODEL_FIELDS = (
-	"hf_repo", "is_embedding", "quantization", "modality", "enable_prefix_caching",
+	"hf_repo", "modality", "enable_prefix_caching",
 	"enable_auto_tool_choice", "tool_call_parser", "thinking", "reasoning_parser",
 	"attention_heads", "weights_gb", "scheduling_policy",
 )
@@ -160,7 +160,7 @@ class ServeCommand:
 	@property
 	def is_embedding(self):
 		"""Pooling model: serves /v1/embeddings, so the chat-only flags are meaningless."""
-		return bool(self.model.get("is_embedding"))
+		return self.model.get("modality") == "embedding"
 
 	@property
 	def args(self):
@@ -199,8 +199,6 @@ class ServeCommand:
 		# the package reads it), so setting it silently left the engine auto-selecting.
 		if self.attention_backend != "auto":
 			args += ["--attention-backend", self.attention_backend]
-		if self.model.get("quantization"):
-			args += ["--quantization", self.model["quantization"]]
 		if self.model.get("modality") == "text":
 			args.append("--language-model-only")
 		if self.model.get("enable_prefix_caching"):
