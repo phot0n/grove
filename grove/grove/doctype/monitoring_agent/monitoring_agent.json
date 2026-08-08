@@ -17,61 +17,62 @@
   "scrape_interval",
   "engine_scrape_interval",
   "column_break_scrape",
-  "max_disk_usage"
+  "max_disk_usage",
+  "flush_interval"
  ],
  "fields": [
   {
+   "description": "The box vmagent runs on. It scrapes every Inference Server, Proxy Server and Pod that names this agent.",
    "fieldname": "machine",
    "fieldtype": "Link",
+   "in_list_view": 1,
    "label": "Machine",
    "options": "Machine",
-   "reqd": 1,
-   "in_list_view": 1,
-   "description": "The box vmagent runs on. It scrapes every Inference Server, Proxy Server and Pod that names this agent."
+   "reqd": 1
   },
   {
+   "fetch_from": "machine.public_ip",
    "fieldname": "public_ip",
    "fieldtype": "Data",
+   "in_list_view": 1,
    "label": "Public IP",
-   "fetch_from": "machine.public_ip",
-   "read_only": 1,
-   "in_list_view": 1
+   "read_only": 1
   },
   {
+   "description": "Where this agent lives, from its Machine. Picks the ingestion endpoint: its Region's Remote Write URL, if that Region has one.",
+   "fetch_from": "machine.region",
    "fieldname": "region",
    "fieldtype": "Link",
+   "in_list_view": 1,
    "label": "Region",
    "options": "Region",
-   "fetch_from": "machine.region",
-   "read_only": 1,
-   "in_list_view": 1,
-   "description": "Where this agent lives, from its Machine. Picks the ingestion endpoint: its Region's Remote Write URL, if that Region has one."
+   "read_only": 1
   },
   {
+   "default": "Pending",
    "fieldname": "status",
    "fieldtype": "Select",
+   "hidden": 1,
    "label": "Status",
    "options": "Pending\nInstalling\nActive\nBroken\nTerminated",
-   "default": "Pending",
-   "read_only": 1,
-   "hidden": 1
+   "read_only": 1
   },
   {
    "fieldname": "column_break_push",
    "fieldtype": "Column Break"
   },
   {
+   "description": "Where this agent pushes, resolved when it is installed: its Region's own endpoint, else the fleet-wide one in Grove Settings.",
    "fieldname": "remote_write_url",
    "fieldtype": "Data",
    "label": "Remote Write URL",
-   "read_only": 1,
-   "description": "Where this agent pushes, resolved when it is installed: its Region's own endpoint, else the fleet-wide one in Grove Settings."
+   "read_only": 1
   },
   {
+   "description": "Bearer token this agent pushes with, minted by the ingestion service \u2014 it carries the tenant and source. Per agent, since a regional endpoint issues its own. Use Rotate Token to change it: the new one has to reach the box, or the pushes start failing.",
    "fieldname": "metrics_token",
    "fieldtype": "Password",
-   "label": "Metrics Token",
-   "description": "Bearer token this agent pushes with, minted by the ingestion service — it carries the tenant and source. Per agent, since a regional endpoint issues its own. Use Rotate Token to change it: the new one has to reach the box, or the pushes start failing."
+   "label": "Metrics Token"
   },
   {
    "fieldname": "section_scrape",
@@ -79,36 +80,43 @@
    "label": "Scraping"
   },
   {
+   "default": "15s",
+   "description": "Node and GPU exporters.",
    "fieldname": "scrape_interval",
    "fieldtype": "Data",
-   "label": "Scrape Interval",
-   "default": "15s",
-   "description": "Node and GPU exporters."
+   "label": "Scrape Interval"
   },
   {
+   "default": "10s",
+   "description": "vLLM engines and pods \u2014 kept tight because saturation is read off it.",
    "fieldname": "engine_scrape_interval",
    "fieldtype": "Data",
-   "label": "Engine Scrape Interval",
-   "default": "5s",
-   "description": "vLLM engines and pods — kept tight because saturation is read off it."
+   "label": "Engine Scrape Interval"
   },
   {
    "fieldname": "column_break_scrape",
    "fieldtype": "Column Break"
   },
   {
+   "default": "4GiB",
+   "description": "On-disk queue while the remote is unreachable. Holds the whole fleet this agent scrapes, not one box.",
    "fieldname": "max_disk_usage",
    "fieldtype": "Data",
-   "label": "Buffer Size",
-   "default": "4GiB",
-   "description": "On-disk queue while the remote is unreachable. Holds the whole fleet this agent scrapes, not one box."
+   "label": "Buffer Size"
+  },
+  {
+   "default": "10s",
+   "fieldname": "flush_interval",
+   "fieldtype": "Data",
+   "label": "Flush Interval"
   }
  ],
  "links": [],
- "modified": "2026-08-06 00:00:00",
+ "modified": "2026-08-08 02:57:26.704210",
  "modified_by": "Administrator",
  "module": "Grove",
  "name": "Monitoring Agent",
+ "naming_rule": "Set by user",
  "owner": "Administrator",
  "permissions": [
   {
@@ -123,6 +131,7 @@
    "write": 1
   }
  ],
+ "row_format": "Dynamic",
  "sort_field": "modified",
  "sort_order": "DESC",
  "states": []

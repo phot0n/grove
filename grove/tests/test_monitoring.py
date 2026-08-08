@@ -12,6 +12,7 @@ import json
 import unittest
 import unittest.mock
 from pathlib import Path
+from types import SimpleNamespace
 from urllib.parse import parse_qs, quote, urlparse
 
 import frappe
@@ -21,6 +22,7 @@ from passlib.hash import sha256_crypt
 
 from grove import monitoring
 from grove.grove.doctype.grove_settings.grove_settings import SD_TOKEN_PATTERN
+from grove.grove.doctype.monitoring_agent.monitoring_agent import MonitoringAgent
 from grove.monitoring import (
 	BOX_HTTPS_PORT,
 	DCGM_EXPORTER_PORT,
@@ -671,6 +673,111 @@ class TestPushedTargets(unittest.TestCase):
 		self.assertEqual(written, entries)
 		for entry in written:
 			self.assertEqual(set(entry), {"targets", "labels"})
+
+
+class TestTheAgentsOwnTuningReachesItsBox(unittest.TestCase):
+	"""What the doc passes to Ansible, rendered the way Ansible resolves it — role defaults
+	underneath, extra-vars on top.
+
+	Push Targets re-renders scrape.yml, which carries the intervals as well as the target lists.
+	It used to be handed the three target variables alone, so every interval fell back to
+	defaults/main.yml and the doc's value was silently written over on a box that was already
+	running it."""
+
+	VMAGENT_DEFAULTS = yaml.safe_load((VMAGENT_ROLE / "defaults/main.yml").read_text())
+
+	def agent(self, **fields):
+		"""A Monitoring Agent as ansible_variables reads one. The property is called unbound so
+		this stays pure — it touches nothing but these attributes."""
+		return SimpleNamespace(**{
+			"name": "MA-1",
+			"remote_write_url": "https://ingest.example/api/v1/write",
+			"get_password": lambda *args, **kwargs: "push-token",
+			"target_variables": {
+				"monitoring_static_targets": True,
+				"monitoring_host_targets": [],
+				"monitoring_engine_targets": [],
+			},
+			# Every tuning field unset, the way a fresh agent arrives.
+			"scrape_interval": None,
+			"engine_scrape_interval": None,
+			"flush_interval": None,
+			"max_disk_usage": None,
+			**fields,
+		})
+
+	def variables(self, **fields):
+		settings = SimpleNamespace(monitoring_variables={
+			"monitoring_extra_labels": {},
+			"monitoring_sd_url": "https://grove.example/api/method/grove.monitoring.targets",
+			"monitoring_sd_token": "tok",
+			"monitoring_scrape_password": "sc4ape",
+		})
+		with unittest.mock.patch.object(frappe, "get_single", return_value=settings):
+			return MonitoringAgent.ansible_variables.fget(self.agent(**fields))
+
+	def scrape_config(self, **fields):
+		"""scrape.yml as the box receives it: the role's defaults, with the doc's extra-vars over
+		them — the precedence Ansible applies, and the whole question here."""
+		rendered = TEMPLATES.get_template("scrape.yml.j2").render(
+			**{**self.VMAGENT_DEFAULTS, **self.variables(**fields)}
+		)
+		return yaml.safe_load(rendered)
+
+	def test_the_docs_interval_beats_the_role_default(self):
+		# The bug, from the operator's side: set 7s, and 7s is what the box scrapes on.
+		config = self.scrape_config(engine_scrape_interval="7s", scrape_interval="20s")
+		[engine] = [j for j in config["scrape_configs"] if j["job_name"] == "grove-engine"]
+		self.assertEqual(engine["scrape_interval"], "7s")
+		self.assertEqual(config["global"]["scrape_interval"], "20s")
+
+	def test_push_targets_carries_the_same_tuning_as_an_install(self):
+		# The play that had this wrong. Its extra-vars have to cover everything the tasks it runs
+		# render, not just the lists that give the play its name.
+		played = {}
+
+		def run_playbook(playbook, extravars=None, **kwargs):
+			played.update(playbook=playbook, extravars=extravars)
+			return ("PLAY-1", 0)
+
+		agent = self.agent(engine_scrape_interval="7s")
+		agent.run_playbook = run_playbook
+		agent.ansible_variables = self.variables(engine_scrape_interval="7s")
+		MonitoringAgent.write_targets(agent)
+
+		self.assertEqual(played["playbook"], "push_targets.yml")
+		self.assertEqual(played["extravars"]["monitoring_engine_scrape_interval"], "7s")
+		# Still the play's own reason for existing — the lists have to come through too.
+		self.assertIn("monitoring_host_targets", played["extravars"])
+
+	def test_a_blank_field_leaves_the_role_default_standing(self):
+		config = self.scrape_config()
+		[engine] = [j for j in config["scrape_configs"] if j["job_name"] == "grove-engine"]
+		self.assertEqual(
+			engine["scrape_interval"], self.VMAGENT_DEFAULTS["monitoring_engine_scrape_interval"]
+		)
+
+	def test_a_blank_field_is_never_passed_as_an_empty_extra_var(self):
+		# An extra-var beats a role default even when it is empty, so a blank passed through would
+		# write `scrape_interval:` with nothing after it — a config vmagent refuses to start on.
+		# This is why the fallbacks are omissions rather than defaults repeated in Python.
+		variables = self.variables()
+		for key in (
+			"monitoring_scrape_interval",
+			"monitoring_engine_scrape_interval",
+			"vmagent_flush_interval",
+			"vmagent_max_disk_usage",
+		):
+			with self.subTest(key):
+				self.assertNotIn(key, variables)
+				self.assertIn(key, self.VMAGENT_DEFAULTS)
+
+	def test_the_unit_takes_the_docs_buffer_settings(self):
+		unit = TEMPLATES.get_template("vmagent.service.j2").render(
+			**{**self.VMAGENT_DEFAULTS, **self.variables(flush_interval="2s", max_disk_usage="8GiB")}
+		)
+		self.assertIn("-remoteWrite.flushInterval=2s", unit)
+		self.assertIn("-remoteWrite.maxDiskUsagePerURL=8GiB", unit)
 
 
 if __name__ == "__main__":

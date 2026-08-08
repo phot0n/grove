@@ -10,6 +10,26 @@ from grove.monitoring import engine_targets, host_targets
 
 
 class MonitoringAgent(AnsibleHost, Document):
+	# begin: auto-generated types
+	# This code is auto-generated. Do not modify anything in this block.
+
+	from typing import TYPE_CHECKING
+
+	if TYPE_CHECKING:
+		from frappe.types import DF
+
+		engine_scrape_interval: DF.Data | None
+		flush_interval: DF.Data | None
+		machine: DF.Link
+		max_disk_usage: DF.Data | None
+		metrics_token: DF.Password | None
+		public_ip: DF.Data | None
+		region: DF.Link | None
+		remote_write_url: DF.Data | None
+		scrape_interval: DF.Data | None
+		status: DF.Literal["Pending", "Installing", "Active", "Broken", "Terminated"]
+	# end: auto-generated types
+
 	"""One vmagent, on its own Machine, scraping every box and pod that names it.
 
 	It discovers what to scrape by asking Grove (grove.monitoring.targets), so a deploy, a
@@ -28,18 +48,16 @@ class MonitoringAgent(AnsibleHost, Document):
 		frappe.msgprint(f"Installing vmagent on {self.name} — watch its Ansible Plays.")
 
 	@property
-	def remote_write_url(self):
-		"""Where this agent pushes: its Region's own ingestion endpoint, else the fleet-wide one
-		in Grove Settings. Resolved on every run rather than stored, so moving a region onto its
-		own endpoint takes an Update Config and nothing else."""
-		regional = frappe.db.get_value("Region", self.region, "remote_write_url") if self.region else ""
-		return regional or frappe.get_single("Grove Settings").metrics_remote_write_url or ""
-
-	@property
 	def ansible_variables(self):
 		"""Everything the vmagent role reads: the fleet-wide settings, this agent's own endpoint,
-		token and intervals, and what it scrapes. One assembly for install and reconfigure, so
-		the two can never drift."""
+		token and intervals, and what it scrapes. One assembly for every play, so no play can
+		render a template from a variable this doc never passed it."""
+		tuning = {
+			"monitoring_scrape_interval": self.scrape_interval,
+			"monitoring_engine_scrape_interval": self.engine_scrape_interval,
+			"vmagent_flush_interval": self.flush_interval,
+			"vmagent_max_disk_usage": self.max_disk_usage,
+		}
 		return {
 			**frappe.get_single("Grove Settings").monitoring_variables,
 			**self.target_variables,
@@ -48,9 +66,10 @@ class MonitoringAgent(AnsibleHost, Document):
 				"metrics_token", raise_exception=False
 			) or "",
 			"monitoring_agent": self.name,
-			"monitoring_scrape_interval": self.scrape_interval or "15s",
-			"monitoring_engine_scrape_interval": self.engine_scrape_interval or "5s",
-			"vmagent_max_disk_usage": self.max_disk_usage or "4GiB",
+			# Omitted when blank rather than defaulted here, so the role's defaults/main.yml is the
+			# one place each default is written. An extra-var beats a role default even when it is
+			# empty, so passing "" would put a blank interval in the scrape config.
+			**{key: value for key, value in tuning.items() if value},
 		}
 
 	def preflight(self):
@@ -129,8 +148,12 @@ class MonitoringAgent(AnsibleHost, Document):
 
 	def write_targets(self):
 		"""Job: push_targets.yml with the lists as they are right now. Leaves status alone —
-		this neither installs nor breaks an agent, and a failed play is the record of it."""
-		return self.run_playbook("push_targets.yml", extravars=self.target_variables)
+		this neither installs nor breaks an agent, and a failed play is the record of it.
+
+		The full variables, not just the target lists: that play re-renders scrape.yml, which
+		carries the intervals too. Passing the lists alone left every other variable to the role
+		defaults, silently writing 15s/10s over whatever this doc says."""
+		return self.run_playbook("push_targets.yml", extravars=self.ansible_variables)
 
 	@frappe.whitelist()
 	def update_config(self):

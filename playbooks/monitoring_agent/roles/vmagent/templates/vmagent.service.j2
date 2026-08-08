@@ -22,7 +22,8 @@ ExecStart=/usr/local/bin/vmagent \
   -remoteWrite.label={{ key }}={{ value }} \
 {% endfor %}
   -remoteWrite.tmpDataPath={{ vmagent_buffer_path }} \
-  -remoteWrite.maxDiskUsagePerURL={{ vmagent_max_disk_usage }}
+  -remoteWrite.maxDiskUsagePerURL={{ vmagent_max_disk_usage }} \
+  -remoteWrite.flushInterval={{ vmagent_flush_interval }}
 Restart=on-failure
 RestartSec=5
 LimitNOFILE=65536
