@@ -117,6 +117,11 @@ def build_ip_permission(rule):
 	return permission
 
 
+def _port_rule(port, **source):
+	"""One single-port TCP rule from its source — {"cidr": ...} or {"source_group_id": ...}."""
+	return {"protocol": "tcp", "from_port": port, "to_port": port, **source}
+
+
 class EC2Client(CloudClient):
 	"""One AWS account in one region. boto3 is imported on first use so a site without it
 	installed can still load the Machine doctype."""
@@ -353,6 +358,60 @@ class EC2Client(CloudClient):
 			GroupId=security_group_id,
 			IpPermissions=[build_ip_permission(rule) for rule in rules],
 		)
+
+	def revoke_ingress(self, security_group_id, rules):
+		"""Close the given ingress rules on an existing security group."""
+		self._call(
+			self.ec2.revoke_security_group_ingress,
+			GroupId=security_group_id,
+			IpPermissions=[build_ip_permission(rule) for rule in rules],
+		)
+
+	def get_ingress_permissions(self, security_group_id, port):
+		"""This group's ingress permissions for exactly this port, as AWS reports them."""
+		groups = self._call(
+			self.ec2.describe_security_groups, GroupIds=[security_group_id]
+		).get("SecurityGroups") or []
+		if not groups:
+			raise AWSError(f"Security group {security_group_id} does not exist")
+		return [
+			permission
+			for permission in groups[0].get("IpPermissions", [])
+			if permission.get("FromPort") == port and permission.get("ToPort") == port
+		]
+
+	def sync_ingress(self, security_group_id, port, cidrs):
+		"""Make this port's ingress exactly `cidrs`. Returns {opened, closed}.
+
+		Scoped to the one port: every other rule on the group is left alone. A diff that revoked
+		everything it did not recognise would take 22 with it and lock Grove out of the box.
+
+		Security-group sources are revoked too, not just CIDRs that fell out of the set — the
+		desired state is a list of addresses, so any group-to-group rule on this port is by
+		definition not in it."""
+		permissions = self.get_ingress_permissions(security_group_id, port)
+		current = {
+			ip_range["CidrIp"]
+			for permission in permissions
+			for ip_range in permission.get("IpRanges", [])
+		}
+		source_groups = [
+			pair["GroupId"]
+			for permission in permissions
+			for pair in permission.get("UserIdGroupPairs", [])
+		]
+
+		desired = set(cidrs)
+		opened, closed = sorted(desired - current), sorted(current - desired)
+		if opened:
+			self.authorize_ingress(security_group_id, [_port_rule(port, cidr=c) for c in opened])
+		if closed or source_groups:
+			self.revoke_ingress(
+				security_group_id,
+				[_port_rule(port, cidr=c) for c in closed]
+				+ [_port_rule(port, source_group_id=g) for g in source_groups],
+			)
+		return {"opened": opened, "closed": closed + source_groups}
 
 	def resize_root_volume(self, instance_id, size_gb, timeout_sec=600, poll_interval_sec=10):
 		"""Grow the instance's root volume, waiting until the new size is visible to the OS.

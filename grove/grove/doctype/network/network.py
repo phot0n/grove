@@ -7,21 +7,20 @@ import frappe
 from frappe.model.document import Document
 
 from grove.cloud_provider.base import CloudClientError, build_cloud_client
+from grove.monitoring import BOX_HTTPS_PORT
 
-# Fixed ingress rules for the two security groups Create Security Groups can build.
+# A proxy serves customers on 80/443 and its own admin API on 443 — both from anywhere, since
+# neither the client nor the control plane has a pinned address.
 PROXY_INGRESS_RULES = [
 	{"protocol": "tcp", "from_port": 22, "to_port": 22, "cidr": "0.0.0.0/0"},
 	{"protocol": "tcp", "from_port": 80, "to_port": 80, "cidr": "0.0.0.0/0"},
 	{"protocol": "tcp", "from_port": 443, "to_port": 443, "cidr": "0.0.0.0/0"},
 ]
-# 443 and nothing else for the workload: the box's engine proxy (nginx) fronts every vLLM
-# instance under /e/<slug>/ and re-publishes the exporters under /metrics/*, so a box that serves
-# ten models opens no more than one that serves one. The old 8080-8085 range was a guess that
-# _assign_engine_port could outgrow — the seventh deployment on a box provisioned green and was
-# unreachable — and it left 9100/9400 to be opened by hand.
-INFERENCE_INGRESS_RULES = [
+# What an inference box opens at creation. 443 is NOT here: it carries the engine proxy, which
+# only the gateway and the metrics agent ever dial, so its sources are computed per box rather
+# than fixed — see inference_ingress_cidrs and sync_inference_ingress.
+INFERENCE_BASE_INGRESS_RULES = [
 	{"protocol": "tcp", "from_port": 22, "to_port": 22, "cidr": "0.0.0.0/0"},
-	{"protocol": "tcp", "from_port": 443, "to_port": 443, "cidr": "0.0.0.0/0"},
 ]
 
 # Pool auto-assigned CIDR blocks are carved from — /16s never collide with each other, so any
@@ -30,6 +29,9 @@ CIDR_POOL = ipaddress.ip_network("10.0.0.0/8")
 CIDR_PREFIX = 16
 # One public subnet per Network, carved off the front of its /16.
 SUBNET_PREFIX = 24
+
+# A box in this state no longer exists, so its address is not one to keep a hole open for.
+GONE_STATUS = "Terminated"
 
 
 class Network(Document):
@@ -142,9 +144,9 @@ class Network(Document):
 		re-clicking after one is filled in by hand never creates a duplicate. Also runs as the
 		second half of Create Network.
 
-		Only ever creates. There is no revoke path here, so a Network whose groups already exist
-		keeps whatever rules they hold — a fleet built before the engine proxy has to have 443
-		added and the old engine range removed by hand."""
+		Only ever creates: a Network whose groups already exist keeps whatever rules they hold.
+		What those groups allow on 443 is not fixed at creation anyway — sync_inference_ingress
+		owns it, and running that is how a fleet built before this change is brought in line."""
 		if not self.vpc_id:
 			frappe.throw(f"Set a VPC ID on Network {self.name} before creating security groups.")
 
@@ -159,10 +161,90 @@ class Network(Document):
 			inference_sg_id = self.cloud_client.create_security_group(
 				f"{self.name}-inference", "Grove-managed: SSH + engine proxy (443)", self.vpc_id
 			)
-			self.cloud_client.authorize_ingress(inference_sg_id, INFERENCE_INGRESS_RULES)
+			self.cloud_client.authorize_ingress(inference_sg_id, INFERENCE_BASE_INGRESS_RULES)
 			self.db_set("inference_security_group_ids", inference_sg_id)
 
 		frappe.msgprint(f"Security groups created for {self.name}.")
+		# Straight after creation, so a new group is never briefly open to the world on 443.
+		self.sync_inference_ingress()
+
+	@frappe.whitelist()
+	def sync_inference_ingress(self):
+		"""Button + provision step: make 443 on this Network's inference security group reachable
+		from the proxy fleet and the metrics agents, and from nowhere else.
+
+		Reconciles rather than adds: a proxy that came back on a new address leaves its old /32
+		behind, and the 0.0.0.0/0 a pre-existing group still carries is closed here. Port 22 is
+		deliberately untouched — Ansible reaches these boxes from wherever bench runs."""
+		if not self.inference_security_group_ids:
+			frappe.msgprint(f"Network {self.name} has no inference security group.")
+			return None
+
+		cidrs = self.inference_ingress_cidrs
+		client = self.cloud_client
+		changes = [
+			client.sync_ingress(group_id, BOX_HTTPS_PORT, cidrs)
+			for group_id in self.inference_security_group_id_list
+		]
+		opened = sorted({cidr for change in changes for cidr in change["opened"]})
+		closed = sorted({cidr for change in changes for cidr in change["closed"]})
+		frappe.msgprint(
+			f"Port {BOX_HTTPS_PORT} on {self.name} now allows {', '.join(cidrs) or 'nothing'}."
+			+ (f"<br>Opened: {', '.join(opened)}." if opened else "")
+			+ (f"<br>Closed: {', '.join(closed)}." if closed else "")
+		)
+		return {"allowed": cidrs, "opened": opened, "closed": closed}
+
+	@property
+	def inference_ingress_cidrs(self):
+		"""The addresses that may reach an inference box on this Network's 443, read live."""
+		proxies = frappe.get_all("Proxy Server", fields=["public_ip", "status"])
+		agents = frappe.get_all("Monitoring Agent", fields=["machine", "public_ip", "status"])
+		machines = {
+			machine["name"]: machine
+			for machine in frappe.get_all(
+				"Machine",
+				filters={"name": ("in", [agent["machine"] for agent in agents if agent["machine"]])},
+				fields=["name", "network", "private_ip"],
+			)
+		}
+		agents = [{**agent, **machines.get(agent["machine"], {})} for agent in agents]
+		return inference_ingress_cidrs(proxies, agents, self.name)
+
+
+def inference_ingress_cidrs(proxies, agents, network):
+	"""Every address allowed to reach an inference box in `network` on 443, as /32s.
+
+	Two callers and no others. The gateway forwards to https://<box public ip>/e/<slug>, and the
+	metrics agent scrapes /metrics/node and /metrics/gpu through the same front. The control plane
+	is not one of them: it reaches a box over SSH and a proxy at its own admin URL.
+
+	An agent contributes the address the box sees it arrive from — its private one when it shares
+	this Network, its public one otherwise. Same rule scrape_ip picks the scrape address by.
+
+	Every agent counts, not only those scraping this Network: an agent box is Grove's own, and the
+	join that would narrow it is not worth the code.
+
+	A box that is Terminated is gone, and its address belongs to whoever AWS hands it to next."""
+	addresses = [proxy.get("public_ip") for proxy in proxies if proxy.get("status") != GONE_STATUS]
+	for agent in agents:
+		if agent.get("status") == GONE_STATUS:
+			continue
+		shares_network = network and agent.get("network") == network
+		private = agent.get("private_ip")
+		addresses.append(private if shares_network and private else agent.get("public_ip"))
+	return sorted({f"{address}/32" for address in addresses if address})
+
+
+def sync_fleet_ingress():
+	"""Re-reconcile every Network that has an inference security group. Enqueued rather than run
+	inline: the proxy change that triggers it must not wait on an AWS call per Network, and one
+	unreachable account must not stop the rest."""
+	networks = frappe.get_all(
+		"Network", filters={"inference_security_group_ids": ("is", "set")}, pluck="name"
+	)
+	for name in networks:
+		frappe.enqueue_doc("Network", name, "sync_inference_ingress", queue="short")
 
 
 def parse_security_group_ids(raw):

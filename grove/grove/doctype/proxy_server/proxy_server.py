@@ -7,6 +7,7 @@ from frappe.model.document import Document
 from grove import gateway_sync
 from grove.ansible import AnsibleHost
 from grove.cloud_provider.route53 import Route53Client, Route53Error
+from grove.grove.doctype.network.network import sync_fleet_ingress
 from grove.monitoring import run_exporters_play
 from grove.tls import dns_credentials
 from grove.utils import gateway_service_source, validate_id_safe_name
@@ -78,12 +79,18 @@ class ProxyServer(AnsibleHost, Document):
 			)
 		if self.has_value_changed("status") and self.status == "Terminated":
 			self.remove_dns_records()
+		# An inference box only answers on 443 to addresses in the proxy fleet, so a proxy that
+		# arrived, moved or died changes what those groups must allow.
+		if self.has_value_changed("public_ip") or self.has_value_changed("status"):
+			sync_fleet_ingress()
 
 	def on_trash(self):
 		# Before the doc goes, while its name still says which records are its own. A row left
 		# behind in the Gateway Host latency set is a black hole for whichever share of customers
 		# resolves to it.
 		self.remove_dns_records()
+		# Enqueued, so it recomputes after this delete commits and without this proxy in the set.
+		sync_fleet_ingress()
 
 	@frappe.whitelist()
 	def full_sync(self):
@@ -239,5 +246,8 @@ class ProxyServer(AnsibleHost, Document):
 			# DNS before the sync: the routes push goes to admin_url, which is this box's own
 			# name the moment a zone is set, and nothing resolves it until this runs.
 			self.sync_dns_records()
+			# provision writes status and public_ip through db.set_value, so on_update never
+			# fires here — this is the only thing that lets a new proxy reach an engine.
+			sync_fleet_ingress()
 			gateway_sync.full_sync(proxies=[self.name], trigger="Provision")
 		return play_name, rc

@@ -153,12 +153,24 @@ class TestBuildIpPermission(unittest.TestCase):
 			"IpProtocol": "tcp", "FromPort": 22, "ToPort": 22, "IpRanges": [{"CidrIp": "0.0.0.0/0"}],
 		})
 
-	def test_source_group_rule(self):
+	def test_a_single_address_rule(self):
+		# The shape sync_ingress writes: one proxy's public IP allowed on the engine proxy's port.
 		permission = build_ip_permission(
-			{"protocol": "tcp", "from_port": 8080, "to_port": 8085, "source_group_id": "sg-proxy"}
+			{"protocol": "tcp", "from_port": 443, "to_port": 443, "cidr": "54.251.169.42/32"}
 		)
 		self.assertEqual(permission, {
-			"IpProtocol": "tcp", "FromPort": 8080, "ToPort": 8085,
+			"IpProtocol": "tcp", "FromPort": 443, "ToPort": 443,
+			"IpRanges": [{"CidrIp": "54.251.169.42/32"}],
+		})
+
+	def test_source_group_rule(self):
+		# No rule Grove writes uses this branch today, but sync_ingress revokes through it: a
+		# group-to-group rule somebody added by hand on the port it owns is not in its desired set.
+		permission = build_ip_permission(
+			{"protocol": "tcp", "from_port": 443, "to_port": 443, "source_group_id": "sg-proxy"}
+		)
+		self.assertEqual(permission, {
+			"IpProtocol": "tcp", "FromPort": 443, "ToPort": 443,
 			"UserIdGroupPairs": [{"GroupId": "sg-proxy"}],
 		})
 
