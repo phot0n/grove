@@ -8,6 +8,7 @@
  "field_order": [
   "tab_pod",
   "cloud_provider",
+  "provider_type",
   "model",
   "column_break_head",
   "status",
@@ -67,6 +68,14 @@
    "label": "Cloud Provider",
    "options": "Cloud Provider",
    "reqd": 1
+  },
+  {
+   "fetch_from": "cloud_provider.provider_type",
+   "fieldname": "provider_type",
+   "fieldtype": "Data",
+   "hidden": 1,
+   "label": "Provider Type",
+   "read_only": 1
   },
   {
    "description": "Set \u2192 this is a standalone vLLM-serving pod. The Model's intrinsic config (repo, quantization, parsers, \u2026) is read live from the Model at build time; only per-pod tuning is set in the vLLM Serving tab.",

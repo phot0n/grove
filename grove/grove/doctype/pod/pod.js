@@ -12,6 +12,11 @@ frappe.ui.form.on('Pod', {
 		if (frm.is_new()) return;
 		setup_log_view(frm);
 
+		// Console URL is RunPod's own; a pod on any other provider has no page there.
+		if (frm.doc.pod_id && frm.doc.provider_type === 'runpod') {
+			frm.add_web_link(`https://console.runpod.io/pods?id=${frm.doc.pod_id}`, __('Open in RunPod'));
+		}
+
 		// No provider pod yet → offer Spawn. Once spawned → Sync / Restart / Terminate.
 		if (!frm.doc.pod_id && (frm.doc.status === 'Pending' || frappe.boot.developer_mode)) {
 			frm.add_custom_button(__('Spawn'), () => {
