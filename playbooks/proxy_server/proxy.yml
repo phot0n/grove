@@ -99,7 +99,9 @@
         content: |
           GROVE_ADMIN_TOKEN={{ admin_token }}
           GROVE_GATEWAY_ID={{ gateway_id | default('') }}
+          GROVE_SYNTHETIC_SESSION_TTL={{ synthetic_session_ttl | default('') }}
         mode: "0600"
+      no_log: true
       notify: restart grove-gateway
 
     - name: redis started

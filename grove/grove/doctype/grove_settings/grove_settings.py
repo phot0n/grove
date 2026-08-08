@@ -36,6 +36,7 @@ class GroveSettings(Document):
 		scrape_password: DF.Password | None
 		scrape_password_hash: DF.Data | None
 		sd_token: DF.Password | None
+		synthetic_session_ttl: DF.Data | None
 	# end: auto-generated types
 
 	def validate(self):
@@ -123,6 +124,12 @@ class GroveSettings(Document):
 			"monitoring_sd_token": self.get_password("sd_token", raise_exception=False) or "",
 			"monitoring_scrape_password": self.get_password("scrape_password", raise_exception=False) or "",
 		}
+
+	@property
+	def gateway_variables(self):
+		"""Ansible vars for the gateway agent's env file. Tuning only — the admin token and the
+		gateway id name one proxy and come from its own doc."""
+		return {"synthetic_session_ttl": self.synthetic_session_ttl or ""}
 
 	@property
 	def scrape_auth_variables(self):

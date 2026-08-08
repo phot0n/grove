@@ -87,6 +87,10 @@ end
 ngx.ctx.meter_id = d.meter_id
 ngx.ctx.prefix = d.prefix or ""
 ngx.ctx.model = model  -- for per-model usage metering in the log phase
+-- Which engine took this request and under what id: together they name the in-flight slot the
+-- agent just claimed, and the log phase is what gives it back.
+ngx.ctx.engine_url = d.engine_url or ""
+ngx.ctx.request_id = d.request_id or ""
 if d.prefix and d.prefix ~= "" then
 	ngx.var.grove_prefix = d.prefix
 end

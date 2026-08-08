@@ -7,6 +7,7 @@
   "section_gateway",
   "gateway_host",
   "proxy_zone",
+  "synthetic_session_ttl",
   "column_break_tls",
   "dns_provider",
   "acme_email",
@@ -43,6 +44,13 @@
    "fieldname": "proxy_zone",
    "fieldtype": "Data",
    "label": "Proxy Zone"
+  },
+  {
+   "default": "0",
+   "description": "How long a client that names no session of its own stays pinned to one engine. 0 balances every such request across the engines serving a model, which is the point of running two. A duration (30m, 2m) trades that for a warm prefix cache per API key — 30m is what every gateway did before this field existed. A client that sends X-Grove-Session or a `user` field is always pinned and is not affected either way. Reaches a box on Deploy Agent.",
+   "fieldname": "synthetic_session_ttl",
+   "fieldtype": "Data",
+   "label": "Synthetic Session TTL"
   },
   {
    "fieldname": "column_break_tls",

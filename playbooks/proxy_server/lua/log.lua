@@ -1,5 +1,5 @@
 -- agent /meter. Runs on EVERY request that was admitted (incl. client
--- disconnect / error), guaranteeing the inflight DECR. Cosockets are banned in
+-- disconnect / error), which is what releases the in-flight slot. Cosockets are banned in
 -- the log phase, so the network call is deferred to a zero-delay timer.
 local ctx = ngx.ctx
 if not ctx.meter_id then
@@ -15,6 +15,8 @@ local payload = cjson.encode({
 	prefix = ctx.prefix or "",
 	model = ctx.model or "",
 	usage = usage,
+	engine_url = ctx.engine_url or "",
+	request_id = ctx.request_id or "",
 })
 
 local function send(premature, body)

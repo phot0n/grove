@@ -1,8 +1,9 @@
 ---
 # Deploy & build the Go agent on an ALREADY-provisioned Proxy Server: push
-# gateway_service source, build on the proxy, install + restart. Does NOT touch
-# OpenResty / Redis / config (use proxy.yml for a full provision).
-# extra-vars: agent_source (path to gateway_service source on control plane).
+# gateway_service source, build on the proxy, install its env file + restart.
+# Does NOT touch OpenResty or Redis (use proxy.yml for a full provision).
+# extra-vars: agent_source (path to gateway_service source on control plane),
+# admin_token, gateway_id, synthetic_session_ttl.
 - hosts: all
   become: true
   gather_facts: true
@@ -11,6 +12,30 @@
     - build_gateway_agent
 
   tasks:
+    # The play is hand-runnable and the file holds the token every /admin push authenticates
+    # with, so a run that forgot it would write a blank one and stop every sync — silently, since
+    # the agent only warns at startup.
+    - name: refuse to write agent.env without an admin token
+      ansible.builtin.assert:
+        that: admin_token | default('') | length > 0
+        fail_msg: >-
+          No admin_token was passed — writing agent.env now would disable /admin on this box and
+          every gateway sync with it. Re-run from the Proxy Server's Deploy Agent button, or pass
+          the same extra-vars it does.
+
+    # Written here and not only on provision: the synthetic-session TTL lives in this file, and a
+    # setting that needs a live gateway re-provisioned to change is not one anybody will change.
+    - name: agent.env
+      ansible.builtin.copy:
+        dest: /etc/grove-gateway/agent.env
+        content: |
+          GROVE_ADMIN_TOKEN={{ admin_token }}
+          GROVE_GATEWAY_ID={{ gateway_id | default('') }}
+          GROVE_SYNTHETIC_SESSION_TTL={{ synthetic_session_ttl | default('') }}
+        mode: "0600"
+      no_log: true
+      notify: restart grove-gateway
+
     - name: install grove-gateway binary
       ansible.builtin.copy:
         src: /tmp/grove-gateway

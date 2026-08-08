@@ -191,10 +191,19 @@ class ProxyServer(AnsibleHost, Document):
 		frappe.msgprint(f"Building + deploying latest agent to {self.name} — watch its Ansible Plays.")
 
 	def _deploy_agent(self):
-		"""Push gateway_service source to Proxy Server, build + restart (no
-		OpenResty/Redis reinstall)."""
+		"""Push gateway_service source to Proxy Server, build + restart, and rewrite agent.env
+		(no OpenResty/Redis reinstall).
+
+		The env file rides along because the gateway's tuning lives in it. Written whole from the
+		same extra-vars provision passes, so a config-only run never blanks the admin token."""
 		return self.run_playbook(
-			"deploy_agent.yml", extravars={"agent_source": gateway_service_source()}
+			"deploy_agent.yml",
+			extravars={
+				"agent_source": gateway_service_source(),
+				"admin_token": self.get_password("admin_token"),
+				"gateway_id": self.name,
+				**frappe.get_single("Grove Settings").gateway_variables,
+			},
 		)
 
 	@frappe.whitelist()
@@ -223,6 +232,7 @@ class ProxyServer(AnsibleHost, Document):
 				"agent_source": gateway_service_source(),
 				"gateway_id": self.name,
 				"proxy_hostname": self.hostname,
+				**settings.gateway_variables,
 				# nginx.conf declares a metrics server on :443 — grove_https puts the certificate
 				# and the htpasswd it reads on the box before OpenResty is asked to start.
 				**settings.scrape_auth_variables,

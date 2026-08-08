@@ -33,13 +33,19 @@ const (
 type server struct {
 	rdb       *redis.Client
 	gatewayID string // this gateway's id — the first part of every request-id
+	// How long a caller that names no session is pinned to one engine. 0 = not at all.
+	syntheticTTL time.Duration
 }
 
 func main() {
 	addr := env("GROVE_AGENT_ADDR", "127.0.0.1:9090")
 	redisAddr := env("GROVE_REDIS_ADDR", "127.0.0.1:6379")
 
-	s := &server{rdb: redis.NewClient(&redis.Options{Addr: redisAddr}), gatewayID: gatewayID()}
+	s := &server{
+		rdb:          redis.NewClient(&redis.Options{Addr: redisAddr}),
+		gatewayID:    gatewayID(),
+		syntheticTTL: parseSyntheticTTL(os.Getenv("GROVE_SYNTHETIC_SESSION_TTL")),
+	}
 	if err := s.rdb.Ping(context.Background()).Err(); err != nil {
 		log.Fatalf("redis unreachable at %s: %v", redisAddr, err)
 	}
@@ -137,9 +143,13 @@ func (s *server) handleDecide(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	session := req.Session
-	if session == "" {
+	// A caller that names a session keeps its engine, so its prefix cache stays warm. One that
+	// names none is balanced — unless the operator asked for the synthetic session back, which
+	// pins a whole key to one engine and is what a single-placement fleet always did.
+	session, ttl := req.Session, stickyTTL
+	if session == "" && s.syntheticTTL > 0 {
 		session = sha256hex(meterID + "|" + req.Model)[:24]
+		ttl = s.syntheticTTL
 	}
 
 	routes, err := s.loadRoutes(ctx, req.Model)
@@ -147,13 +157,22 @@ func (s *server) handleDecide(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, decideResp{Allow: false, Status: 503, Reason: "model unavailable"})
 		return
 	}
-	stickyURL, _ := s.rdb.Get(ctx, "sticky:"+session).Result()
+	var stickyURL string
+	if session != "" {
+		stickyURL, _ = s.rdb.Get(ctx, "sticky:"+session).Result()
+	}
+	s.fillInFlight(ctx, routes)
+
 	route, ok := pickRoute(routes, stickyURL)
 	if !ok {
 		writeJSON(w, decideResp{Allow: false, Status: 503, Reason: "no healthy server for model"})
 		return
 	}
-	s.rdb.Set(ctx, "sticky:"+session, route.EngineURL, stickyTTL)
+	if session != "" {
+		s.rdb.Set(ctx, "sticky:"+session, route.EngineURL, ttl)
+	}
+	requestID := s.buildRequestID(route, rec.KeyPrefix)
+	s.claim(ctx, route.EngineURL, requestID)
 
 	writeJSON(w, decideResp{
 		Allow:       true,
@@ -164,7 +183,7 @@ func (s *server) handleDecide(w http.ResponseWriter, r *http.Request) {
 		Prefix:      rec.KeyPrefix,
 		Session:     session,
 		Deployment:  route.Deployment,
-		RequestID:   s.buildRequestID(route, rec.KeyPrefix),
+		RequestID:   requestID,
 		Priority:    priorityOf(rec, grp),
 	})
 }
@@ -197,12 +216,23 @@ type meterReq struct {
 	Prefix  string `json:"prefix"`
 	Model   string `json:"model"` // model from the request body; buckets per-model usage
 	Usage   string `json:"usage"` // raw JSON captured from the response (may be empty)
+	// Which engine served it and under what request id — together they name the in-flight slot
+	// this request claimed at /decide.
+	EngineURL string `json:"engine_url"`
+	RequestID string `json:"request_id"`
 }
 
 func (s *server) handleMeter(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	var req meterReq
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Prefix == "" {
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		return
+	}
+	// Released before the prefix check: a slot outlives the usage record it came with, and a key
+	// record missing its prefix must not leave the engine counted as busy for the whole window.
+	s.release(ctx, req.EngineURL, req.RequestID)
+	if req.Prefix == "" {
 		w.WriteHeader(http.StatusBadRequest)
 		return
 	}
@@ -475,6 +505,23 @@ func gatewayID() string {
 		return strings.SplitN(h, ".", 2)[0]
 	}
 	return "gw"
+}
+
+// parseSyntheticTTL reads GROVE_SYNTHETIC_SESSION_TTL: how long a caller that names no session of
+// its own is pinned to the engine it first reached. Blank, zero or unparseable → 0, meaning no
+// synthetic session at all and every such request balanced. Set it (30m restores what a
+// single-placement fleet always did) to trade that balance for a warm prefix cache per key.
+func parseSyntheticTTL(raw string) time.Duration {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return 0
+	}
+	ttl, err := time.ParseDuration(raw)
+	if err != nil || ttl < 0 {
+		log.Printf("GROVE_SYNTHETIC_SESSION_TTL %q is not a duration — synthetic sessions off", raw)
+		return 0
+	}
+	return ttl
 }
 
 // cleanIDPart keeps a request-id part parseable: alnum stays, '-' becomes '_' (so the only
