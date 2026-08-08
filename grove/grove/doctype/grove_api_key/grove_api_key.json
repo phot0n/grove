@@ -7,9 +7,10 @@
  "field_order": [
   "user",
   "status",
-  "dirty",
   "key_hash",
-  "api_secret"
+  "api_secret",
+  "column_break_pcmc",
+  "dirty"
  ],
  "fields": [
   {
@@ -25,6 +26,7 @@
    "default": "active",
    "fieldname": "status",
    "fieldtype": "Select",
+   "hidden": 1,
    "in_list_view": 1,
    "label": "Status",
    "options": "active\nrevoked",
@@ -51,10 +53,14 @@
    "fieldtype": "Password",
    "label": "API Secret",
    "read_only": 1
+  },
+  {
+   "fieldname": "column_break_pcmc",
+   "fieldtype": "Column Break"
   }
  ],
  "links": [],
- "modified": "2026-07-26 01:33:04.128564",
+ "modified": "2026-08-08 03:28:04.721819",
  "modified_by": "Administrator",
  "module": "Grove",
  "name": "Grove API Key",

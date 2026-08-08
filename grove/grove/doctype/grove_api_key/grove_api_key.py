@@ -44,6 +44,7 @@ class GroveAPIKey(Document):
 		if not self.dirty:
 			self._mark_dirty()
 
+	@frappe.whitelist()
 	def revoke(self):
 		# this guards against weird race condiions where the key is created and revoked at the same time.
 		if frappe.utils.time_diff_in_hours(frappe.utils.now_datetime(), self.creation) < 6:
