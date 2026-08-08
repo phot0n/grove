@@ -15,6 +15,8 @@ from pathlib import Path
 import yaml
 from jinja2 import Environment, FileSystemLoader
 
+from grove.tests.test_proxy_templates import resolve
+
 PLAYBOOKS = Path(__file__).parent.parent.parent / "playbooks"
 INFERENCE_ROLES = PLAYBOOKS / "inference_server/roles"
 
@@ -35,11 +37,11 @@ PROXY_TEMPLATES = environment(INFERENCE_ROLES / "engine_proxy/templates")
 
 # engine_proxy names the certificate and htpasswd paths that grove_https owns, and grove_https runs
 # ahead of it in every play that uses either — so its defaults are in scope on the box, and here.
-PROXY_VARS = {
+PROXY_VARS = resolve({
 	**role_defaults(PLAYBOOKS / "roles/grove_https"),
 	**role_defaults(PLAYBOOKS / "roles/openresty"),
 	**role_defaults(INFERENCE_ROLES / "engine_proxy"),
-}
+})
 
 BASE = {
 	"vllm_unit": "vllm-md-00007",
