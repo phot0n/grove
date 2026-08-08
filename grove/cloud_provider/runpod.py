@@ -68,11 +68,14 @@ class RunPodClient:
 		return r.json() if r.text else {}
 
 	@staticmethod
-	def build_ports(engine_pool_size, engine_base=8080):
-		"""RunPod ports list: SSH + a pool of vLLM TCP ports. Declared at pod-create;
-		RunPod can't hot-add ports to a running pod, so the whole pool is opened up front
-		and deployments claim from it. e.g. ['22/tcp','8080/tcp','8081/tcp',...]."""
-		return ["22/tcp"] + [f"{engine_base + i}/tcp" for i in range(engine_pool_size)]
+	def proxy_url(pod_id, internal_port):
+		"""RunPod's HTTPS endpoint for a port exposed as http. RunPod terminates TLS with its own
+		certificate, so the pod serves plain http and carries none; the hostname is keyed on the
+		pod id, so unlike a direct-tcp mapping it survives a restart.
+
+		Cloudflare fronts it with a 100s connection cap: a response that starts streaming inside
+		that window is fine, one that is still buffering at 100s returns 524."""
+		return f"https://{pod_id}-{int(internal_port)}.proxy.runpod.net"
 
 	def _container_config(
 		self,
@@ -120,7 +123,8 @@ class RunPodClient:
 		args=None,
 		container_registry_auth_id=None,
 	):
-		"""Create an on-demand pod. `ports` is the pool list (build_ports); `env` is a dict
+		"""Create an on-demand pod. `ports` is the pool list, e.g. ['22/tcp', '8080/http'], built
+		from the Pod's own Ports rows since the provider cannot hot-add later; `env` is a dict
 		(e.g. {"PUBLIC_KEY": <keys>} for SSH). `args` is appended to the image's entrypoint —
 		for a vLLM image whose entrypoint is `vllm serve`, that is the repo plus its flags.
 		`template_id` supplies container defaults (v2 has no templateId field, so the template

@@ -70,11 +70,12 @@ class Pod(Document):
 	  buttons. Model-intrinsic flags come from the Model; the Pod holds per-box tuning."""
 
 	def before_insert(self):
-		# Seed a sensible port pool: 22 (SSH — Ansible/ops connect over it) + a pool of vLLM
-		# engine ports. Opened at spawn since the provider can't hot-add ports later.
+		# Opened at spawn since the provider can't hot-add ports later. The engine is exposed as
+		# http so it rides the provider's HTTPS proxy and the pod needs no certificate of its
+		# own; SSH has to stay direct tcp.
 		if not self.ports:
 			self.append("ports", {"internal_port": 22, "protocol": "tcp"})
-			self.append("ports", {"internal_port": _ENGINE_PORT, "protocol": "tcp"})
+			self.append("ports", {"internal_port": _ENGINE_PORT, "protocol": "http"})
 
 	def validate(self):
 		if not self.template_id and not (self.engine_image or self.image_name):

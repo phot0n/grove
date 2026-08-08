@@ -43,6 +43,11 @@
 			proxy_pass $upstream;
 			proxy_http_version 1.1;
 			proxy_set_header Connection "";
+			# $upstream is a variable, so nginx resolves it per request: a hostname backend (a
+			# cloud provider's TLS proxy) needs both of these, where every IP backend needs
+			# neither. proxy_ssl_server_name is off by default and no SNI means no handshake.
+			resolver 127.0.0.53 valid=30s ipv6=off;
+			proxy_ssl_server_name on;
 			proxy_buffering off;          # stream SSE straight through
 			proxy_read_timeout 600s;
 			proxy_send_timeout 600s;

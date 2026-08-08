@@ -220,6 +220,58 @@ def live(gpu_count=2, gpu_type_id="NVIDIA L40S", status="RUNNING"):
 	return {"status": status, "gpu_count": gpu_count, "gpu_type_id": gpu_type_id}
 
 
+def serving_pod(protocol="http", pod_id="abc123", public_ip="1.2.3.4", external_port=41234):
+	return SimpleNamespace(
+		name="POD-1",
+		pod_id=pod_id,
+		serve_port=8080,
+		public_ip=public_ip,
+		ports=[
+			SimpleNamespace(internal_port=22, protocol="tcp", external_port=22001),
+			SimpleNamespace(internal_port=8080, protocol=protocol, external_port=external_port),
+		],
+	)
+
+
+class TestEngineEndpoint(unittest.TestCase):
+	"""Which address the gateway is handed for a serving pod."""
+
+	def test_an_http_port_is_reached_through_the_provider_tls_proxy(self):
+		# The point of the whole arrangement: https, so the vLLM key is not on the wire in
+		# clear, and no certificate on the pod.
+		endpoint = PodProvisioner(serving_pod()).engine_endpoint
+		self.assertEqual(endpoint, "https://abc123-8080.proxy.runpod.net")
+
+	def test_the_proxy_address_ignores_the_mapping_that_moves_on_restart(self):
+		# Keyed on the pod id alone, so a restart that re-maps every direct port leaves the
+		# gateway route valid.
+		moved = serving_pod(public_ip="9.9.9.9", external_port=50999)
+		self.assertEqual(
+			PodProvisioner(moved).engine_endpoint, "https://abc123-8080.proxy.runpod.net"
+		)
+
+	def test_a_tcp_port_keeps_its_direct_mapping(self):
+		# The escape hatch for work that cannot start streaming inside Cloudflare's 100s cap.
+		endpoint = PodProvisioner(serving_pod(protocol="tcp")).engine_endpoint
+		self.assertEqual(endpoint, "http://1.2.3.4:41234")
+
+	def test_no_address_before_the_provider_has_published_one(self):
+		# A blank endpoint keeps the pod Loading, which is what stops a route reaching a cold
+		# engine — so each half-known state has to stay blank rather than render something.
+		self.assertEqual(PodProvisioner(serving_pod(pod_id="")).engine_endpoint, "")
+		self.assertEqual(
+			PodProvisioner(serving_pod(protocol="tcp", public_ip="")).engine_endpoint, ""
+		)
+		self.assertEqual(
+			PodProvisioner(serving_pod(protocol="tcp", external_port=0)).engine_endpoint, ""
+		)
+
+	def test_a_serve_port_missing_from_the_ports_table_has_no_address(self):
+		pod = serving_pod()
+		pod.serve_port = 9999
+		self.assertEqual(PodProvisioner(pod).engine_endpoint, "")
+
+
 class TestPodStatus(unittest.TestCase):
 	def test_running_and_the_stopped_states(self):
 		self.assertEqual(pod_status("RUNNING"), "Running")

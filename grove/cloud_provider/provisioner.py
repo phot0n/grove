@@ -150,6 +150,25 @@ class PodProvisioner:
 
 	# ── Reading provider state back ───────────────────────────────────────────
 
+	@property
+	def engine_endpoint(self):
+		"""Where the gateway reaches this pod's vLLM, from the Ports row for the serve port.
+
+		An http row goes through the provider's HTTPS proxy — TLS terminates there, so the pod
+		needs no certificate, and the address is keyed on the pod id rather than on a mapping
+		that moves every restart. A tcp row keeps its direct public_ip:external_port, which is
+		plaintext and does move. Empty until the provider has published what the form needs."""
+		pod = self.pod
+		serve_port = int(pod.serve_port or 8080)
+		row = next((p for p in pod.ports if int(p.internal_port) == serve_port), None)
+		if not row:
+			return ""
+		if row.protocol == "http":
+			return RunPodClient.proxy_url(pod.pod_id, serve_port) if pod.pod_id else ""
+		if pod.public_ip and row.external_port:
+			return f"http://{pod.public_ip}:{row.external_port}"
+		return ""
+
 	def apply_provider_state(self, pod_api, running):
 		"""Write a pod's provider state onto the Pod doc: each Ports row's external port (from
 		the provider's remap), the public IP + SSH port, and status. For a serving pod, 'up'
@@ -175,8 +194,7 @@ class PodProvisioner:
 			pod.ssh_port = pod_api["ssh_port"]
 			pod.ssh_user = "root"
 		if pod.model:
-			ext = port_map.get(str(int(pod.serve_port or 8080)))
-			url = f"http://{pod.public_ip}:{ext}" if (running and pod.public_ip and ext) else ""
+			url = self.engine_endpoint if running else ""
 			if url and _is_engine_serving(url):
 				pod.status, pod.engine_url = "Running", url
 			else:

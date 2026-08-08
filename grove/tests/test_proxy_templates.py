@@ -147,6 +147,14 @@ class TestTlsShape(unittest.TestCase):
 			with self.subTest(directive):
 				self.assertIn(directive, self.customer)
 
+	def test_a_hostname_backend_can_be_reached_at_all(self):
+		# $upstream is a variable, so nginx resolves per request. Without a resolver a hostname
+		# engine_url (a provider's TLS proxy) fails outright, and without SNI its handshake
+		# does — while every IP backend keeps working, so nothing here fails loudly.
+		for directive in ("resolver 127.0.0.53", "proxy_ssl_server_name on;"):
+			with self.subTest(directive):
+				self.assertIn(directive, self.customer)
+
 	def test_the_admin_api_answers_only_on_this_box_name(self):
 		# It has to reach ONE proxy; Gateway Host deliberately names them all.
 		self.assertIn("location /grove-admin/", self.box)
