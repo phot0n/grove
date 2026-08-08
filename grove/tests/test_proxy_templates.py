@@ -147,6 +147,14 @@ class TestTlsShape(unittest.TestCase):
 			with self.subTest(directive):
 				self.assertIn(directive, self.customer)
 
+	def test_the_client_address_is_stated_by_the_edge_not_by_the_caller(self):
+		# nginx forwards unknown request headers untouched, so without these a caller's own
+		# X-Forwarded-For reaches the engine verbatim. $proxy_add_x_forwarded_for would append
+		# to that claim instead of replacing it, which is the bug this asserts against.
+		self.assertIn("proxy_set_header X-Forwarded-For $remote_addr;", self.customer)
+		self.assertIn("proxy_set_header X-Real-IP $remote_addr;", self.customer)
+		self.assertNotIn("$proxy_add_x_forwarded_for", self.customer)
+
 	def test_a_hostname_backend_can_be_reached_at_all(self):
 		# $upstream is a variable, so nginx resolves per request. Without a resolver a hostname
 		# engine_url (a provider's TLS proxy) fails outright, and without SNI its handshake
