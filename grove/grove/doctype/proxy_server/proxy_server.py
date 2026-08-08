@@ -164,6 +164,37 @@ class ProxyServer(AnsibleHost, Document):
 		)
 
 	@frappe.whitelist()
+	def deploy_openresty(self):
+		"""Button: push the Lua and nginx.conf this bench has, validate, graceful reload.
+
+		The data-path counterpart to deploy_agent: config only, so Redis keeps its routes and
+		usage counters and the agent is not restarted. Same extra-vars provision passes for the
+		same roles — the play refuses to render if the TLS ones are missing, since that would put
+		a live box back on plaintext :80."""
+		frappe.enqueue_doc(
+			self.doctype, self.name, "_deploy_openresty", queue="long", timeout=900
+		)
+		frappe.msgprint(f"Deploying OpenResty config to {self.name} — watch its Ansible Plays.")
+
+	def _deploy_openresty(self):
+		"""Resolved here, not at enqueue: the certificate key and the scrape password would
+		otherwise be serialised into the job payload and sit in Redis."""
+		settings = frappe.get_single("Grove Settings")
+		# nginx.conf keys its shape on the certificate, so that one has to be here — but the key
+		# only feeds fleet_tls, which deploy_tls owns. Dropping it skips that role and keeps the
+		# fleet's private key out of a config push entirely.
+		tls_variables = settings.tls_variables
+		tls_variables.pop("fleet_tls_key", None)
+		return self.run_playbook(
+			"deploy_openresty.yml",
+			extravars={
+				"proxy_hostname": self.hostname,
+				**settings.scrape_auth_variables,
+				**tls_variables,
+			},
+		)
+
+	@frappe.whitelist()
 	def install_exporters(self):
 		"""Button: install this box's metrics exporters (long job — it SSHes to the box).
 		They only listen; the Monitoring Agent named on this doc is what scrapes them."""

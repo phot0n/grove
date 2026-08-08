@@ -11,6 +11,11 @@ frappe.ui.form.on('Proxy Server', {
 				frm.call('deploy_agent');
 			}, __('Gateway'));
 
+			// Data-path config only — no agent restart, and Redis keeps its routes and counters.
+			frm.add_custom_button(__('Deploy OpenResty Config'), () => {
+				frm.call('deploy_openresty');
+			}, __('Gateway'));
+
 			// The exporters listen on 9100 for the Monitoring Agent above to scrape —
 			// restrict that port to that agent in the security group.
 			frm.add_custom_button(__('Install Exporters'), () => frm.call('install_exporters'));
