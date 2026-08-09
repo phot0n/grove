@@ -3,6 +3,11 @@
 
 import frappe
 from frappe.model.document import Document
+from frappe.utils import add_days, cint, now_datetime
+
+# How long a sync run is worth keeping. Log Settings owns the number once an operator edits it
+# there; this is the default the hook seeds it with.
+RETENTION_DAYS = 60
 
 
 class GatewaySync(Document):
@@ -26,3 +31,25 @@ class GatewaySync(Document):
 
 	def release_lock(self):
 		frappe.db.sql("SELECT RELEASE_LOCK(%s)", (self.lock_name(),))
+
+	@staticmethod
+	def clear_old_logs(days=RETENTION_DAYS):
+		"""Drop runs older than `days`. Frappe's Log Settings calls this nightly; the signature is
+		its LogType protocol, which is also what puts Gateway Sync in that form's list.
+
+		This table grows on a timer rather than on use — the scheduled run writes one doc every two
+		minutes whether or not anything moved, which is around 22,000 docs a quarter, each with a
+		row per box and now a payload on each row. Two months is long enough to answer "what did
+		the fleet do last week" and short enough that the answer stays fast.
+
+		The child rows go first and by join, not by collecting parent names into an IN list: at
+		this size that list is tens of thousands of ids, and a delete that has to be handed every
+		one of them is the kind that gets killed halfway and leaves the table half cleared."""
+		cutoff = add_days(now_datetime(), -cint(days))
+		frappe.db.sql(
+			"""DELETE FROM `tabGateway Sync Row`
+			WHERE parenttype = 'Gateway Sync'
+			  AND parent IN (SELECT name FROM `tabGateway Sync` WHERE creation < %s)""",
+			(cutoff,),
+		)
+		frappe.db.delete("Gateway Sync", {"creation": ("<", cutoff)})
