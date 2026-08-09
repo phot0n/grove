@@ -98,6 +98,25 @@ class TestInstanceTypeFacts(unittest.TestCase):
 		self.assertEqual(normalize_architecture(None), "")
 		self.assertEqual(parse_architecture({}), "")
 
+	def test_a_type_that_also_boots_32_bit_is_still_read_as_64(self):
+		# t2.micro answers ["i386", "x86_64"] to this day. Taking the first entry picked i386,
+		# which the Machine's Select rejects — so provisioning the cheapest type in the catalogue
+		# failed validation before it ever reached EC2.
+		info = {"ProcessorInfo": {"SupportedArchitectures": ["i386", "x86_64"]}}
+		self.assertEqual(parse_architecture(info), "amd64")
+
+	def test_the_list_order_is_not_trusted(self):
+		for order in (["arm64", "i386"], ["i386", "arm64"]):
+			with self.subTest(order):
+				self.assertEqual(
+					parse_architecture({"ProcessorInfo": {"SupportedArchitectures": order}}), "arm64"
+				)
+
+	def test_a_type_grove_cannot_run_still_reports_what_aws_said(self):
+		# Better an architecture the Select refuses, naming itself, than a silent wrong answer.
+		info = {"ProcessorInfo": {"SupportedArchitectures": ["i386"]}}
+		self.assertEqual(parse_architecture(info), "i386")
+
 	def test_a_type_the_region_does_not_have_is_an_error_not_an_empty_answer(self):
 		with self.assertRaises(AWSError):
 			client(types={}).get_instance_type_info("p5.48xlarge")

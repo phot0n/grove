@@ -28,6 +28,10 @@ INSTANCE_STATUS = {
 # in the playbooks, Docker's own platform strings — it is amd64, and these values are compared
 # against those. arm64 is spelled the same on both sides.
 ARCHITECTURE = {"x86_64": "amd64"}
+# What Grove will actually run a box as — the Machine's cpu_architecture Select, in Grove's own
+# names. Anything else AWS reports for a type (i386, on the older burstable families) is a mode
+# nothing here builds images for.
+RUNNABLE_ARCHITECTURES = ("amd64", "arm64")
 
 
 class AWSError(CloudClientError):
@@ -80,10 +84,22 @@ def normalize_architecture(aws_architecture):
 
 
 def parse_architecture(instance_type_info):
-	"""describe_instance_types → the one architecture this type runs. AWS returns a list because
-	a few old types booted either 32- or 64-bit; every current one names exactly one."""
-	architectures = (instance_type_info.get("ProcessorInfo") or {}).get("SupportedArchitectures") or []
-	return normalize_architecture(architectures[0] if architectures else "")
+	"""describe_instance_types → the architecture Grove will run this type as.
+
+	AWS returns a LIST, and not only for museum pieces: t2.micro answers
+	["i386", "x86_64"] to this day. Taking the first entry picked i386 there, which is not a value
+	the Machine's Select accepts, so provisioning the cheapest instance type in the catalogue failed
+	validation before it ever reached EC2.
+
+	So the first entry Grove actually supports wins, and the list order is not trusted. Anything
+	unrecognised still passes through unmapped rather than becoming a wrong answer — a new AWS
+	architecture should surface as itself, not as x86."""
+	architectures = [
+		normalize_architecture(a)
+		for a in (instance_type_info.get("ProcessorInfo") or {}).get("SupportedArchitectures") or []
+	]
+	runnable = [a for a in architectures if a in RUNNABLE_ARCHITECTURES]
+	return (runnable or architectures or [""])[0]
 
 
 def machine_status(ec2_state):
