@@ -15,3 +15,4 @@ grove.patches.move_metrics_token_to_agents
 grove.patches.open_http_on_inference_groups
 grove.patches.rename_gateway_server_references
 grove.patches.name_sync_rows_by_server
+grove.patches.move_gateway_server_passwords
