@@ -172,6 +172,8 @@ class GatewayServer(FleetHost, Document):
 				"agent_source": gateway_service_source(),
 				"admin_token": self.get_password("admin_token"),
 				"gateway_id": self.name,
+				# Which routes this gateway prefers: a same-region row wins its tier outright.
+				"gateway_region": self.region or "",
 				**frappe.get_single("Grove Settings").gateway_variables,
 			},
 		)
@@ -201,6 +203,8 @@ class GatewayServer(FleetHost, Document):
 				"admin_token": self.get_password("admin_token"),
 				"agent_source": gateway_service_source(),
 				"gateway_id": self.name,
+				# Which routes this gateway prefers: a same-region row wins its tier outright.
+				"gateway_region": self.region or "",
 				"proxy_hostname": self.hostname,
 				**settings.gateway_variables,
 				# nginx.conf declares a metrics server on :443 — grove_https puts the certificate

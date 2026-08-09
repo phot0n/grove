@@ -3,7 +3,7 @@
 # gateway_service source, build on the proxy, install its env file + restart.
 # Does NOT touch OpenResty or Redis (use gateway.yml for a full provision).
 # extra-vars: agent_source (path to gateway_service source on control plane),
-# admin_token, gateway_id, synthetic_session_ttl.
+# admin_token, gateway_id, gateway_region, synthetic_session_ttl.
 - hosts: all
   become: true
   gather_facts: true
@@ -31,6 +31,7 @@
         content: |
           GROVE_ADMIN_TOKEN={{ admin_token }}
           GROVE_GATEWAY_ID={{ gateway_id | default('') }}
+          GROVE_GATEWAY_REGION={{ gateway_region | default('') }}
           GROVE_SYNTHETIC_SESSION_TTL={{ synthetic_session_ttl | default('') }}
         mode: "0600"
       no_log: true

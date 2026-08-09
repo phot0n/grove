@@ -100,11 +100,17 @@ http {
 	# deployment= is the chosen engine; upstream= is only the box it sits behind. They were the
 	# same thing when each engine had its own public port, but every engine on a box is now
 	# reached through that box's engine proxy, so $upstream_addr is <ip>:443 for all of them.
+	# engine= is the placement an INGRESS chose, read straight off its response header — nginx
+	# exposes upstream response headers as variables, so no Lua is involved on this side.
+	# deployment= is what the gateway picked, which on an ingress route names the ingress. Both,
+	# because on a direct route they are the same thing and on an ingress route the pair is the
+	# only place the two halves of the decision appear together.
 	log_format grove escape=json
 		'$remote_addr $time_iso8601 "$request" '
 		'bytes=$body_bytes_sent '
 		'rt=$request_time urt=$upstream_response_time '
 		'upstream=$upstream_addr deployment=$grove_deployment '
+		'engine=$upstream_http_x_grove_engine '
 		'key=$grove_prefix model=$grove_model rid=$grove_request_id';
 
 	access_log /var/log/openresty/access.log grove;

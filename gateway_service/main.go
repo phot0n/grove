@@ -38,6 +38,9 @@ type server struct {
 	// Ingress mode only: the bearer a gateway must present on /pick. Blank on a gateway, and
 	// blank on an ingress refuses every pick — see isGateway.
 	ingressToken string
+	// This gateway's own region, which pickRoute prefers. Blank puts every route in one tier,
+	// which is what a single-region fleet already was.
+	region string
 }
 
 func main() {
@@ -61,6 +64,7 @@ func main() {
 		gatewayID:    gatewayID(),
 		syntheticTTL: parseSyntheticTTL(os.Getenv("GROVE_SYNTHETIC_SESSION_TTL")),
 		ingressToken: strings.TrimSpace(os.Getenv("GROVE_INGRESS_TOKEN")),
+		region:       strings.TrimSpace(os.Getenv("GROVE_GATEWAY_REGION")),
 	}
 	if err := s.rdb.Ping(context.Background()).Err(); err != nil {
 		log.Fatalf("redis unreachable at %s: %v", redisAddr, err)
@@ -218,8 +222,9 @@ func (s *server) handleDecide(w http.ResponseWriter, r *http.Request) {
 		stickyURL, _ = s.rdb.Get(ctx, "sticky:"+session).Result()
 	}
 	s.fillInFlight(ctx, routes)
+	s.markUnhealthy(ctx, routes)
 
-	route, status := pickRoute(routes, stickyURL)
+	route, status := pickRoute(routes, stickyURL, s.region)
 	if status == 429 {
 		writeJSON(w, decideResp{
 			Allow: false, Status: 429,
@@ -288,6 +293,13 @@ type meterReq struct {
 	// this request claimed at /decide.
 	EngineURL string `json:"engine_url"`
 	RequestID string `json:"request_id"`
+	// Which placement actually served it. On a direct route the gateway already knows; on an
+	// ingress route only the ingress does, and it says so in a response header Lua reads back.
+	Deployment string `json:"deployment"`
+	// How the hop went, for passive ejection — nginx's $upstream_status and, when an ingress set
+	// one, its X-Grove-Reason.
+	UpstreamStatus string `json:"upstream_status"`
+	Reason         string `json:"reason"`
 }
 
 func (s *server) handleMeter(w http.ResponseWriter, r *http.Request) {
@@ -300,6 +312,9 @@ func (s *server) handleMeter(w http.ResponseWriter, r *http.Request) {
 	// Released before the prefix check: a slot outlives the usage record it came with, and a key
 	// record missing its prefix must not leave the engine counted as busy for the whole window.
 	s.release(ctx, req.EngineURL, req.RequestID)
+	// Before the prefix check, like the release: how a target is behaving is not contingent on
+	// the usage record that happened to ride along with the report.
+	s.recordOutcome(ctx, req.EngineURL, req.UpstreamStatus, req.Reason)
 	if req.Prefix == "" {
 		w.WriteHeader(http.StatusBadRequest)
 		return
@@ -309,6 +324,7 @@ func (s *server) handleMeter(w http.ResponseWriter, r *http.Request) {
 	// own clock when it pulls, then drains this hash. Key is just usage:<prefix>.
 	usageKey := "usage:" + req.Prefix
 	model := strings.TrimSpace(req.Model)
+	deployment := strings.TrimSpace(req.Deployment)
 	u, hasUsage := ParseUsage([]byte(req.Usage))
 
 	// One atomic bump per request (so the control-plane's atomic drain never sees a
@@ -323,6 +339,12 @@ func (s *server) handleMeter(w http.ResponseWriter, r *http.Request) {
 			p.HIncrBy(ctx, usageKey, metric, n)
 			if model != "" {
 				p.HIncrBy(ctx, usageKey, "m:"+metric+":"+model, n)
+			}
+			// Beside the per-model bucket, in the same hash, so one drain carries both. This is
+			// the only path by which usage reaches a placement the gateway never chose — on an
+			// ingress route the replica was picked a tier below.
+			if deployment != "" {
+				p.HIncrBy(ctx, usageKey, "m:"+metric+":"+deployment, n)
 			}
 		}
 		bump("request_count", 1)

@@ -32,6 +32,33 @@ func (r Route) isIngress() bool { return r.Kind == "ingress" }
 // --max-num-seqs set has no number to hold it to, so it is never held back.
 func (r Route) hasRoom() bool { return r.Capacity <= 0 || r.InFlight < r.Capacity }
 
+// nearest narrows a model's routes to the ones in this gateway's own region, when there are any.
+// Everything after it — stickiness, the capacity gate, least-in-flight — then runs inside the
+// winning tier, so an idle replica on another continent never wins on in-flight count alone.
+//
+// Two tiers and no further ordering: a cross-region hop costs so much more than the difference
+// between two remote regions that ranking the far ones would be precision nobody can feel. A
+// route with no Region is treated as remote — every route carried one before this mattered, and
+// the safe reading of "unknown" is "not local".
+//
+// Falls through unchanged when the gateway has no region of its own, or when nothing local is
+// left: a far replica beats a 503.
+func nearest(routes []Route, region string) []Route {
+	if region == "" {
+		return routes
+	}
+	var local []Route
+	for _, r := range routes {
+		if r.Region == region {
+			local = append(local, r)
+		}
+	}
+	if len(local) == 0 {
+		return routes
+	}
+	return local
+}
+
 // pickRoute implements Tier-1 selection with session stickiness (§6 jobs 5-6): among the healthy
 // routes for a model, reuse the sticky one if it is still healthy and has room, else take the one
 // with the fewest requests in flight. The model is invariant — callers only ever pass routes that
@@ -44,7 +71,7 @@ func (r Route) hasRoom() bool { return r.Capacity <= 0 || r.InFlight < r.Capacit
 //
 // A tie keeps the first, which is all two idle engines need to alternate: the caller claims the
 // engine it was given, so the next request no longer sees a tie.
-func pickRoute(routes []Route, stickyURL string) (Route, int) {
+func pickRoute(routes []Route, stickyURL, region string) (Route, int) {
 	var healthy []Route
 	for _, r := range routes {
 		// An empty engine URL is unroutable, whatever the pusher claimed: Lua would
@@ -57,6 +84,7 @@ func pickRoute(routes []Route, stickyURL string) (Route, int) {
 	if len(healthy) == 0 {
 		return Route{}, 503
 	}
+	healthy = nearest(healthy, region)
 
 	var free []Route
 	for _, r := range healthy {

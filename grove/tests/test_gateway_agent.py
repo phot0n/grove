@@ -30,6 +30,7 @@ def deploy_agent_extravars():
 	sent = {}
 	proxy = SimpleNamespace(
 		name="proxy-1",
+		region="ap-south-1",
 		get_password=lambda field: f"secret-{field}",
 		run_playbook=lambda play, extravars: sent.update({"play": play, **extravars}),
 	)

@@ -17,6 +17,16 @@ local payload = cjson.encode({
 	usage = usage,
 	engine_url = ctx.engine_url or "",
 	request_id = ctx.request_id or "",
+	-- Which placement actually served it. On a direct route that is what the gateway chose; on an
+	-- ingress route the ingress chose it and said so in this response header, and it is the only
+	-- way usage reaches a per-deployment bucket the gateway never picked.
+	deployment = ngx.var.upstream_http_x_grove_engine or "",
+	-- How the hop went, for passive ejection. $upstream_status is nginx's own view — blank when
+	-- the connection never got far enough to have one, which is itself a failure.
+	upstream_status = ngx.var.upstream_status or "",
+	-- Set by an ingress that is healthy but has no replica for this model. The agent must not
+	-- eject on that: one unplaced model would take the ingress out for every other model on it.
+	reason = ngx.var.upstream_http_x_grove_reason or "",
 })
 
 local function send(premature, body)
