@@ -193,6 +193,13 @@ class ServeCommand:
 			# response body id carries it. The response HEADER is set by the gateway, so we
 			# deliberately DON'T pass --enable-request-id-headers (it would echo a duplicate).
 			"--enable-log-requests",
+			# vLLM defaults system_fingerprint to "full", which is its exact version and build
+			# hash — `vllm-0.24.0-bf54a486` — on every response and on EVERY streaming frame.
+			# That hands a customer the engine build to look up known issues against, for a field
+			# no caller of ours uses. Stripped at the source: the alternative was rewriting each
+			# SSE frame in the gateway's body filter, which is a mutation of the streaming hot
+			# path to remove one string.
+			"--fingerprint-mode", "none",
 		]
 		if self.pipeline_parallel_size > 1:
 			args += ["--pipeline-parallel-size", str(self.pipeline_parallel_size)]
