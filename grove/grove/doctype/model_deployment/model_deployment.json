@@ -166,10 +166,11 @@
    "label": "Allow Long Max Model Len"
   },
   {
-   "description": "\u2192 --max-num-seqs. Sequences the engine runs concurrently. Blank = vLLM's own default. Caps how much KV cache the batch can want, so lower it when a full batch OOMs.",
+   "description": "\u2192 --max-num-seqs. Sequences the engine runs concurrently, and the gateway's admission cap: requests in flight on this engine are held to it, and one that would exceed it goes to another replica or is refused with 429. Blank = 1024, passed explicitly rather than left to the image's own default, so the gateway caps at the number the engine is actually running. Also bounds how much KV cache the batch can want, so lower it when a full batch OOMs.",
    "fieldname": "max_num_seqs",
    "fieldtype": "Int",
-   "label": "Max Num Seqs"
+   "label": "Max Num Seqs",
+   "default": "1024"
   },
   {
    "description": "Which GPUs on this box the engine runs on. Add one row per GPU (CUDA index from the Machine's GPU table). N rows \u2192 --tensor-parallel-size N + CUDA_VISIBLE_DEVICES pinned to those indices. Marked Allocated on Deploy, freed on Tear Down.",

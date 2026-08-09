@@ -14,17 +14,20 @@ import unittest.mock
 import frappe
 
 from grove import gateway_sync
+from grove.serve_command import DEFAULT_MAX_NUM_SEQS
 
 
-def deployment(name, model="qwen3-35b", server="INF-1", status="Active"):
+def deployment(name, model="qwen3-35b", server="INF-1", status="Active", max_num_seqs=0):
 	return frappe._dict(
 		name=name, model=model, engine_url=f"https://10.0.0.9/e/{name.lower()}",
-		status=status, inference_server=server,
+		status=status, inference_server=server, max_num_seqs=max_num_seqs,
 	)
 
 
-def pod(name, model="qwen3-35b"):
-	return frappe._dict(name=name, model=model, engine_url="http://1.2.3.4:8080")
+def pod(name, model="qwen3-35b", max_num_seqs=0):
+	return frappe._dict(
+		name=name, model=model, engine_url="http://1.2.3.4:8080", max_num_seqs=max_num_seqs
+	)
 
 
 class TestRoutesForProxy(unittest.TestCase):
@@ -80,6 +83,23 @@ class TestRoutesForProxy(unittest.TestCase):
 		# The agent deletes the key on an empty list. Omitted, a stale route would survive and the
 		# model would keep showing in /v1/models.
 		self.assertEqual(self.routes(models=["qwen3-35b"])["qwen3-35b"], [])
+
+	def test_a_route_carries_the_engines_concurrency_cap(self):
+		# --max-num-seqs is what the engine runs at once; past it vLLM queues where the gateway
+		# can neither see the wait nor spend it on a replica. So it is admission control too.
+		[route] = self.routes([deployment("MD-00007", max_num_seqs=64)])["qwen3-35b"]
+		self.assertEqual(route["capacity"], 64)
+
+	def test_a_pod_carries_its_own_cap(self):
+		[route] = self.routes(pods=[pod("POD-1", max_num_seqs=16)])["qwen3-35b"]
+		self.assertEqual(route["capacity"], 16)
+
+	def test_an_unset_cap_resolves_to_what_the_engine_was_started_with(self):
+		# Blank is not "no cap": the serve command fills the same default in, so the number the
+		# gateway holds the engine to is the number the engine is running. Drift between the two
+		# is the one way this whole mechanism can be quietly wrong.
+		[route] = self.routes([deployment("MD-00007")])["qwen3-35b"]
+		self.assertEqual(route["capacity"], DEFAULT_MAX_NUM_SEQS)
 
 
 class TestEffectiveGroups(unittest.TestCase):

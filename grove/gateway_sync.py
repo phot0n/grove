@@ -30,6 +30,7 @@ import requests
 import frappe
 
 from grove.access import model_rows, vllm_priority
+from grove.serve_command import DEFAULT_MAX_NUM_SEQS
 
 TIMEOUT = 10
 _ALL = object()  # sentinel: push the complete set (vs. a subset list, vs. None = skip)
@@ -151,7 +152,7 @@ def _routes_for_proxy(proxy_name):
 	proxy_name is unused, kept for the sync_routes call signature."""
 	deps = frappe.get_all(
 		"Model Deployment",
-		fields=["name", "model", "engine_url", "status", "inference_server"],
+		fields=["name", "model", "engine_url", "status", "inference_server", "max_num_seqs"],
 	)
 	routes = {m: [] for m in frappe.get_all("Model", pluck="name")}
 	for d in deps:
@@ -162,6 +163,11 @@ def _routes_for_proxy(proxy_name):
 				"engine_url": d.engine_url,
 				"internal_key": internal_key,
 				"healthy": True,
+				# --max-num-seqs is what this engine runs at once; past it vLLM queues. The
+				# gateway holds admissions to the same number so the queue forms across
+				# replicas instead of inside one. Blank resolves to the same default the serve
+				# command uses — the two have to agree or the cap is not the engine's.
+				"capacity": int(d.max_num_seqs or DEFAULT_MAX_NUM_SEQS),
 				# Which placement was chosen (request-id target part, access-log deployment=).
 				# A box can serve the same model twice, so the server alone cannot name an engine.
 				"deployment": d.name,
@@ -172,8 +178,13 @@ def _routes_for_proxy(proxy_name):
 	# register the same way: deploy:<model> → engine. Only Running pods with a derived
 	# engine_url contribute; others are dropped so the agent 503s instead of routing to a
 	# dead endpoint. A model served by both an MD and a Pod gets both engines (load-balanced).
-	for p in frappe.get_all("Pod", filters={"status": "Running"}, fields=["name", "model", "engine_url"]):
-		if not p.engine_url:
+	pods = frappe.get_all(
+		"Pod", filters={"status": "Running"}, fields=["name", "model", "engine_url", "max_num_seqs"]
+	)
+	for p in pods:
+		# A pod with no Model serves something the gateway has no route key for (an ASR
+		# container, say) — it is reached directly, not through deploy:<model>.
+		if not (p.model and p.engine_url):
 			continue
 		routes.setdefault(p.model, [])
 		internal_key = frappe.get_doc("Pod", p.name).get_password("api_key") or ""
@@ -181,6 +192,7 @@ def _routes_for_proxy(proxy_name):
 			"engine_url": p.engine_url,
 			"internal_key": internal_key,
 			"healthy": True,
+			"capacity": int(p.max_num_seqs or DEFAULT_MAX_NUM_SEQS),
 			# A pod IS its own placement — it carries no separate deployment doc, so both
 			# fields are the pod. Kept explicit so consumers never special-case a pod route.
 			"deployment": p.name,

@@ -8,9 +8,9 @@ func TestPickRouteFewestInFlight(t *testing.T) {
 		{EngineURL: "b", Healthy: true, InFlight: 2},
 		{EngineURL: "c", Healthy: true, InFlight: 5},
 	}
-	r, ok := pickRoute(routes, "")
-	if !ok || r.EngineURL != "b" {
-		t.Fatalf("want fewest-in-flight b, got %q ok=%v", r.EngineURL, ok)
+	r, status := pickRoute(routes, "")
+	if status != 200 || r.EngineURL != "b" {
+		t.Fatalf("want fewest-in-flight b, got %q status=%d", r.EngineURL, status)
 	}
 }
 
@@ -20,9 +20,9 @@ func TestPickRouteStickyHonored(t *testing.T) {
 		{EngineURL: "b", Healthy: true, InFlight: 2},
 	}
 	// Sticky to the busier "a" — stickiness wins over load.
-	r, ok := pickRoute(routes, "a")
-	if !ok || r.EngineURL != "a" {
-		t.Fatalf("want sticky a, got %q ok=%v", r.EngineURL, ok)
+	r, status := pickRoute(routes, "a")
+	if status != 200 || r.EngineURL != "a" {
+		t.Fatalf("want sticky a, got %q status=%d", r.EngineURL, status)
 	}
 }
 
@@ -32,9 +32,9 @@ func TestPickRouteStickyUnhealthyFailsOver(t *testing.T) {
 		{EngineURL: "b", Healthy: true, InFlight: 5},
 	}
 	// Sticky target unhealthy → re-pick among remaining healthy (same model).
-	r, ok := pickRoute(routes, "a")
-	if !ok || r.EngineURL != "b" {
-		t.Fatalf("want failover to b, got %q ok=%v", r.EngineURL, ok)
+	r, status := pickRoute(routes, "a")
+	if status != 200 || r.EngineURL != "b" {
+		t.Fatalf("want failover to b, got %q status=%d", r.EngineURL, status)
 	}
 }
 
@@ -43,8 +43,8 @@ func TestPickRouteNoneHealthy(t *testing.T) {
 		{EngineURL: "a", Healthy: false},
 		{EngineURL: "b", Healthy: false},
 	}
-	if _, ok := pickRoute(routes, ""); ok {
-		t.Fatal("expected ok=false when no healthy route (→ 503)")
+	if _, status := pickRoute(routes, ""); status != 503 {
+		t.Fatalf("status = %d, want 503 when no route is healthy", status)
 	}
 }
 
@@ -53,17 +53,17 @@ func TestPickRouteSkipsEmptyEngineURL(t *testing.T) {
 		{EngineURL: "", Healthy: true, InFlight: 1}, // pushed without a derived engine_url
 		{EngineURL: "b", Healthy: true, InFlight: 9},
 	}
-	if r, ok := pickRoute(routes, ""); !ok || r.EngineURL != "b" {
-		t.Fatalf("want b despite higher load, got %q ok=%v", r.EngineURL, ok)
+	if r, status := pickRoute(routes, ""); status != 200 || r.EngineURL != "b" {
+		t.Fatalf("want b despite higher load, got %q status=%d", r.EngineURL, status)
 	}
-	if _, ok := pickRoute(routes[:1], ""); ok {
-		t.Fatal("expected ok=false when the only route has no engine URL (→ 503, not 500)")
+	if _, status := pickRoute(routes[:1], ""); status != 503 {
+		t.Fatalf("status = %d, want 503 (not 500) when the only route has no engine URL", status)
 	}
 }
 
 func TestPickRouteEmpty(t *testing.T) {
-	if _, ok := pickRoute(nil, "x"); ok {
-		t.Fatal("expected ok=false for empty routes")
+	if _, status := pickRoute(nil, "x"); status != 503 {
+		t.Fatalf("status = %d, want 503 for empty routes", status)
 	}
 }
 
@@ -74,13 +74,13 @@ func TestPickRouteCarriesTheDeployment(t *testing.T) {
 		{EngineURL: "https://box/e/md-00007", Deployment: "MD-00007", Server: "inf-a", Healthy: true},
 		{EngineURL: "https://box/e/md-00008", Deployment: "MD-00008", Server: "inf-a", Healthy: true},
 	}
-	r, ok := pickRoute(routes, "")
-	if !ok || r.Deployment != "MD-00007" {
-		t.Fatalf("want the first healthy route, got %q ok=%v", r.Deployment, ok)
+	r, status := pickRoute(routes, "")
+	if status != 200 || r.Deployment != "MD-00007" {
+		t.Fatalf("want the first healthy route, got %q status=%d", r.Deployment, status)
 	}
-	r, ok = pickRoute(routes, "https://box/e/md-00008")
-	if !ok || r.Deployment != "MD-00008" {
-		t.Fatalf("want the sticky deployment, got %q ok=%v", r.Deployment, ok)
+	r, status = pickRoute(routes, "https://box/e/md-00008")
+	if status != 200 || r.Deployment != "MD-00008" {
+		t.Fatalf("want the sticky deployment, got %q status=%d", r.Deployment, status)
 	}
 }
 
@@ -92,8 +92,8 @@ func TestPickRouteTakesTheIdleEngine(t *testing.T) {
 		{EngineURL: "https://box/e/md-00007", Deployment: "MD-00007", Healthy: true, InFlight: 3},
 		{EngineURL: "https://box/e/md-00008", Deployment: "MD-00008", Healthy: true},
 	}
-	if r, ok := pickRoute(routes, ""); !ok || r.Deployment != "MD-00008" {
-		t.Fatalf("want the idle MD-00008, got %q ok=%v", r.Deployment, ok)
+	if r, status := pickRoute(routes, ""); status != 200 || r.Deployment != "MD-00008" {
+		t.Fatalf("want the idle MD-00008, got %q status=%d", r.Deployment, status)
 	}
 }
 
@@ -104,12 +104,75 @@ func TestPickRouteAlternatesFromCold(t *testing.T) {
 		{EngineURL: "a", Healthy: true},
 		{EngineURL: "b", Healthy: true},
 	}
-	first, ok := pickRoute(routes, "")
-	if !ok || first.EngineURL != "a" {
-		t.Fatalf("want a on a tie, got %q ok=%v", first.EngineURL, ok)
+	first, status := pickRoute(routes, "")
+	if status != 200 || first.EngineURL != "a" {
+		t.Fatalf("want a on a tie, got %q status=%d", first.EngineURL, status)
 	}
 	routes[0].InFlight = 1 // what claim() records against the engine just handed out
-	if second, ok := pickRoute(routes, ""); !ok || second.EngineURL != "b" {
-		t.Fatalf("want b once a is claimed, got %q ok=%v", second.EngineURL, ok)
+	if second, status := pickRoute(routes, ""); status != 200 || second.EngineURL != "b" {
+		t.Fatalf("want b once a is claimed, got %q status=%d", second.EngineURL, status)
+	}
+}
+
+// --max-num-seqs is what the engine runs at once. Past it vLLM queues internally, where the
+// gateway can neither see the wait nor spend it on an idle replica — so admission stops at the
+// same number.
+func TestPickRouteSpillsToAReplicaAtCapacity(t *testing.T) {
+	routes := []Route{
+		{EngineURL: "a", Healthy: true, InFlight: 8, Capacity: 8},
+		{EngineURL: "b", Healthy: true, InFlight: 7, Capacity: 8},
+	}
+	if r, status := pickRoute(routes, ""); status != 200 || r.EngineURL != "b" {
+		t.Fatalf("want the replica with room, got %q status=%d", r.EngineURL, status)
+	}
+}
+
+func TestPickRouteRefusesWhenEveryReplicaIsFull(t *testing.T) {
+	// 429, not 503: the model is up and serving, the caller just has to come back.
+	routes := []Route{
+		{EngineURL: "a", Healthy: true, InFlight: 8, Capacity: 8},
+		{EngineURL: "b", Healthy: true, InFlight: 9, Capacity: 8},
+	}
+	if _, status := pickRoute(routes, ""); status != 429 {
+		t.Fatalf("status = %d, want 429", status)
+	}
+}
+
+func TestAnUnhealthyReplicaIsStillDownNotBusy(t *testing.T) {
+	// Full and dead must not read the same: 429 tells a client to retry, 503 says the model has
+	// nowhere to go at all.
+	routes := []Route{{EngineURL: "a", Healthy: false, InFlight: 8, Capacity: 8}}
+	if _, status := pickRoute(routes, ""); status != 503 {
+		t.Fatalf("status = %d, want 503", status)
+	}
+}
+
+func TestCapacityBeatsStickiness(t *testing.T) {
+	// A warm prefix cache is not worth queueing behind a full engine while a replica sits idle.
+	routes := []Route{
+		{EngineURL: "a", Healthy: true, InFlight: 8, Capacity: 8},
+		{EngineURL: "b", Healthy: true, InFlight: 0, Capacity: 8},
+	}
+	if r, status := pickRoute(routes, "a"); status != 200 || r.EngineURL != "b" {
+		t.Fatalf("want the idle b, got %q status=%d", r.EngineURL, status)
+	}
+}
+
+func TestNoCapacitySetMeansNoCap(t *testing.T) {
+	// Blank --max-num-seqs leaves vLLM on its own default, which the control plane does not know
+	// — so there is no number to hold the engine to and it must not be treated as zero.
+	routes := []Route{{EngineURL: "a", Healthy: true, InFlight: 500}}
+	if r, status := pickRoute(routes, ""); status != 200 || r.EngineURL != "a" {
+		t.Fatalf("want a admitted uncapped, got %q status=%d", r.EngineURL, status)
+	}
+}
+
+func TestAnUncappedReplicaAbsorbsWhatACappedOneCannot(t *testing.T) {
+	routes := []Route{
+		{EngineURL: "capped", Healthy: true, InFlight: 8, Capacity: 8},
+		{EngineURL: "uncapped", Healthy: true, InFlight: 40},
+	}
+	if r, status := pickRoute(routes, ""); status != 200 || r.EngineURL != "uncapped" {
+		t.Fatalf("want the uncapped engine, got %q status=%d", r.EngineURL, status)
 	}
 }

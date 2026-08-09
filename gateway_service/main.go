@@ -173,8 +173,15 @@ func (s *server) handleDecide(w http.ResponseWriter, r *http.Request) {
 	}
 	s.fillInFlight(ctx, routes)
 
-	route, ok := pickRoute(routes, stickyURL)
-	if !ok {
+	route, status := pickRoute(routes, stickyURL)
+	if status == 429 {
+		writeJSON(w, decideResp{
+			Allow: false, Status: 429,
+			Reason: "every replica of " + req.Model + " is at capacity",
+		})
+		return
+	}
+	if status != 200 {
 		writeJSON(w, decideResp{Allow: false, Status: 503, Reason: "no healthy server for model"})
 		return
 	}

@@ -10,6 +10,9 @@ type Route struct {
 	// Requests admitted to this engine and not yet metered, counted at decide time (inflight.go).
 	// Never pushed — the control plane has no view of what is running right now.
 	InFlight int `json:"-"`
+	// The engine's --max-num-seqs: what it runs concurrently before vLLM starts queueing. 0 =
+	// unset on the placement, which means no cap here rather than a guess at vLLM's default.
+	Capacity int `json:"capacity"`
 	// Model Deployment / pod id — which placement this is, and the request-id's target part.
 	// One box can serve the same model from two deployments, so Server alone names neither.
 	// Empty on a route pushed before this field existed; buildRequestID falls back.
@@ -17,16 +20,23 @@ type Route struct {
 	Server     string `json:"server"` // inference-server / pod id — which box it is on
 }
 
-// pickRoute implements Tier-1 selection with session stickiness (§6 jobs 5-6):
-// among the healthy routes for a model, reuse the sticky one if it's still
-// healthy, else take the one with the fewest requests in flight. The model is
-// invariant — callers only ever pass routes that host the requested model, so
-// failover keeps the model and swaps the place. Returns ok=false when no healthy
-// route exists → 503.
+// hasRoom reports whether this engine can take another request. A placement with no
+// --max-num-seqs set has no number to hold it to, so it is never held back.
+func (r Route) hasRoom() bool { return r.Capacity <= 0 || r.InFlight < r.Capacity }
+
+// pickRoute implements Tier-1 selection with session stickiness (§6 jobs 5-6): among the healthy
+// routes for a model, reuse the sticky one if it is still healthy and has room, else take the one
+// with the fewest requests in flight. The model is invariant — callers only ever pass routes that
+// host the requested model, so failover keeps the model and swaps the place.
+//
+// Returns the status the caller should answer with: 200 to admit, 503 when the model has nowhere
+// healthy to go, and 429 when every healthy replica is already at --max-num-seqs. The two are
+// different answers — a 503 says the model is down, a 429 says come back shortly — and only the
+// second is the client's cue to back off rather than to page someone.
 //
 // A tie keeps the first, which is all two idle engines need to alternate: the caller claims the
 // engine it was given, so the next request no longer sees a tie.
-func pickRoute(routes []Route, stickyURL string) (Route, bool) {
+func pickRoute(routes []Route, stickyURL string) (Route, int) {
 	var healthy []Route
 	for _, r := range routes {
 		// An empty engine URL is unroutable, whatever the pusher claimed: Lua would
@@ -37,20 +47,33 @@ func pickRoute(routes []Route, stickyURL string) (Route, bool) {
 		}
 	}
 	if len(healthy) == 0 {
-		return Route{}, false
+		return Route{}, 503
 	}
+
+	var free []Route
+	for _, r := range healthy {
+		if r.hasRoom() {
+			free = append(free, r)
+		}
+	}
+	if len(free) == 0 {
+		return Route{}, 429
+	}
+
+	// Stickiness loses to capacity: a warm prefix cache is not worth queueing behind a full
+	// engine when a replica is idle.
 	if stickyURL != "" {
-		for _, r := range healthy {
+		for _, r := range free {
 			if r.EngineURL == stickyURL {
-				return r, true
+				return r, 200
 			}
 		}
 	}
-	best := healthy[0]
-	for _, r := range healthy[1:] {
+	best := free[0]
+	for _, r := range free[1:] {
 		if r.InFlight < best.InFlight {
 			best = r
 		}
 	}
-	return best, true
+	return best, 200
 }

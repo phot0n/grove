@@ -18,6 +18,11 @@ DEFAULT_PORT = 8080
 DEFAULT_MAX_MODEL_LEN = 8192
 DEFAULT_GPU_MEMORY_UTILIZATION = 0.9
 DEFAULT_SCHEDULING_POLICY = "priority"
+# What the engine runs concurrently when nobody says otherwise. vLLM's own V1 default happens to
+# be this too, but the flag is passed anyway rather than left off: the gateway holds admissions to
+# this number (Route.Capacity), and it cannot hold an engine to a default that moves with the
+# image tag — which is per Engine Image doc and defaults to `latest`.
+DEFAULT_MAX_NUM_SEQS = 1024
 
 
 class ServeCommand:
@@ -51,9 +56,12 @@ class ServeCommand:
 		self.kv_cache_dtype = kv_cache_dtype or "auto"
 		self.gpu_memory_utilization = gpu_memory_utilization or DEFAULT_GPU_MEMORY_UTILIZATION
 		self.max_model_len = int(max_model_len or DEFAULT_MAX_MODEL_LEN)
-		# 0 = leave it to vLLM, which sizes both off the model and the KV cache it ends up with.
+		# 0 = leave it to vLLM, which sizes it off the model and the KV cache it ends up with.
+		# Deliberately not defaulted like max_num_seqs: the right number depends on chunked
+		# prefill and the model kind, and nothing reads it back the way the gateway reads the
+		# sequence cap.
 		self.max_num_batched_tokens = int(max_num_batched_tokens or 0)
-		self.max_num_seqs = int(max_num_seqs or 0)
+		self.max_num_seqs = int(max_num_seqs or DEFAULT_MAX_NUM_SEQS)
 		self.attention_backend = attention_backend or "auto"
 		self.aliases = (aliases or "").replace(",", " ").split()
 		self.extra_serve_args = (extra_serve_args or "").split()
@@ -72,6 +80,7 @@ class ServeCommand:
 			kv_cache_dtype=pod.kv_cache_dtype,
 			gpu_memory_utilization=pod.gpu_memory_utilization,
 			max_model_len=pod.max_model_len,
+			max_num_seqs=pod.max_num_seqs,
 			attention_backend=pod.attention_backend,
 			aliases=pod.aliases,
 			extra_serve_args=pod.extra_serve_args,
@@ -193,8 +202,8 @@ class ServeCommand:
 			args += ["--kv-cache-dtype", self.kv_cache_dtype]
 		if self.max_num_batched_tokens:
 			args += ["--max-num-batched-tokens", str(self.max_num_batched_tokens)]
-		if self.max_num_seqs:
-			args += ["--max-num-seqs", str(self.max_num_seqs)]
+		# Always passed, never left to the image's default — see DEFAULT_MAX_NUM_SEQS.
+		args += ["--max-num-seqs", str(self.max_num_seqs)]
 		# A flag, not VLLM_ATTENTION_BACKEND: that env var is gone in vLLM 0.24 (nothing in
 		# the package reads it), so setting it silently left the engine auto-selecting.
 		if self.attention_backend != "auto":
