@@ -257,7 +257,9 @@ class PodProvisioner:
 		try:
 			from grove import gateway_sync
 
-			gateway_sync.full_sync(trigger="Provision")
+			# Gateways only: a pod has no Machine and so no ingress, and never appears in any
+			# ingress's replica table.
+			gateway_sync.full_sync(trigger="Provision", ingresses=[])
 		except Exception:
 			frappe.log_error(title="gateway full_sync after pod change failed")
 

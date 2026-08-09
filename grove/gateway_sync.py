@@ -413,20 +413,27 @@ def sync_routes(proxy, models=_ALL):
 
 # --- Sync runs -------------------------------------------------------------
 
-def full_sync(proxies=None, trigger="Manual"):
+def full_sync(proxies=None, trigger="Manual", ingresses=None):
 	"""Push the COMPLETE group + user + key set + routing table to each target proxy, and the
-	replica table to each Active ingress. proxies=None → all Active. Used by buttons, proxy
-	activation, provisioning.
+	replica table to each target ingress. Used by buttons, proxy activation, provisioning.
 
-	Naming a subset of proxies leaves the ingresses alone: that call means "this one box missed
-	something", and an ingress's table has nothing to do with a gateway's."""
+	Both targets default to every Active box, and both can be named instead. The asymmetry is
+	deliberate: a gateway's table is GLOBAL — every gateway holds a row for every model — so a
+	route change reaches all of them. An ingress's table holds only the replicas it OWNS, so a
+	deployment change reaches exactly one ingress and pushing it to the rest is a table they
+	already have.
+
+	Naming a subset of proxies with no ingresses leaves the ingresses alone: that call means
+	"this one gateway missed something", and a gateway's table has nothing to do with an
+	ingress's."""
 	doc = _new_run("Projection", trigger)
 	if not doc.acquire_lock(wait=60):  # forced → queue behind an in-flight run
 		return None
 	try:
 		all_active = _active_proxies()
 		active = proxies or all_active
-		ingresses = [] if proxies else _active_ingresses()
+		if ingresses is None:
+			ingresses = [] if proxies else _active_ingresses()
 		if not (active or ingresses):
 			return None
 
@@ -605,6 +612,37 @@ def _push_and_classify(proxy, groups, users, keys, deletions, models):
 
 def _active_proxies():
 	return frappe.get_all("Gateway Server", filters={"status": "Active"}, pluck="name")
+
+
+def active_among(ingresses):
+	"""Those of these ingresses that can actually take a push — Active, and with a Network to
+	build a table from. A Broken or half-configured one is skipped rather than thrown on."""
+	names = {name for name in ingresses if name}
+	if not names:
+		return []
+	return frappe.get_all(
+		"Ingress Server",
+		filters={"name": ("in", list(names)), "status": "Active", "network": ("is", "set")},
+		pluck="name",
+	)
+
+
+def owning_ingresses(inference_servers):
+	"""The Active ingresses that own any of these boxes — the only ones a change to those boxes
+	moves. Everything else in the fleet, including other ingresses in the same Network, holds a
+	table this push would not change.
+
+	Empty for a box that names no ingress, which is a box the gateways still dial directly."""
+	names = [name for name in inference_servers if name]
+	if not names:
+		return []
+	return active_among(
+		frappe.get_all(
+			"Inference Server",
+			filters={"name": ("in", names), "ingress": ("is", "set")},
+			pluck="ingress",
+		)
+	)
 
 
 def _active_ingresses():

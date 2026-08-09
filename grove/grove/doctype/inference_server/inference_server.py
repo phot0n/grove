@@ -5,6 +5,7 @@
 import frappe
 from frappe.model.document import Document
 
+from grove import gateway_sync
 from grove.ansible import AnsibleHost
 from grove.monitoring import run_exporters_play
 from grove.naming import GeneratedName
@@ -36,6 +37,24 @@ class InferenceServer(GeneratedName, AnsibleHost, Document):
 
 	def validate(self):
 		self.validate_ingress_network()
+
+	def on_update(self):
+		"""Moving a box between ingresses is the cutover, and it changes three tables at once:
+		the old owner loses these replicas, the new one gains them, and every gateway's row for
+		these models flips between a direct engine and an ingress hand-off.
+
+		Pushed here because nothing else would. The scheduled run repairs it within a tick, but a
+		cutover that only takes effect on the next cron is a cutover nobody can watch."""
+		if not self.has_value_changed("ingress"):
+			return
+		before = self.get_doc_before_save()
+		moved = [self.ingress, before.ingress if before else None]
+		frappe.enqueue(
+			"grove.gateway_sync.full_sync",
+			queue="short",
+			trigger="Provision",
+			ingresses=gateway_sync.active_among(moved),
+		)
 
 	def validate_ingress_network(self):
 		"""An ingress can only reach this box privately if the two share a VPC.

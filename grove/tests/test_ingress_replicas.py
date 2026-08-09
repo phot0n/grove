@@ -167,3 +167,54 @@ class TestReplicasForIngress(unittest.TestCase):
 
 if __name__ == "__main__":
 	unittest.main()
+
+
+class TestWhichIngressesAPushReaches(unittest.TestCase):
+	"""A deployment change moves exactly one ingress's table: the one that OWNS its box.
+
+	Not every ingress, and not every ingress in the Network either — a second Mumbai ingress
+	fronting different boxes holds a table this change did not touch, and pushing to it is a
+	round trip that rewrites the same bytes.
+	"""
+
+	def owners(self, servers, ingresses):
+		from grove import gateway_sync
+
+		def get_all(doctype, filters=None, pluck=None, **kwargs):
+			filters = dict(filters or {})
+			if doctype == "Inference Server":
+				wanted = list(filters["name"][1])
+				return [s["ingress"] for s in servers if s["name"] in wanted and s.get("ingress")]
+			wanted = list(filters["name"][1])
+			return [
+				i["name"]
+				for i in ingresses
+				if i["name"] in wanted and i["status"] == "Active" and i.get("network")
+			]
+
+		with patch.object(frappe, "get_all", side_effect=get_all):
+			return gateway_sync.owning_ingresses([s["name"] for s in servers])
+
+	def test_only_the_owner_is_pushed_to(self):
+		owners = self.owners(
+			[{"name": "INF-a", "ingress": "ing-1"}],
+			[{"name": "ing-1", "status": "Active", "network": "Mumbai"},
+			 {"name": "ing-2", "status": "Active", "network": "Mumbai"}],
+		)
+		self.assertEqual(owners, ["ing-1"])
+
+	def test_a_box_with_no_ingress_moves_nothing(self):
+		owners = self.owners(
+			[{"name": "INF-direct", "ingress": None}],
+			[{"name": "ing-1", "status": "Active", "network": "Mumbai"}],
+		)
+		self.assertEqual(owners, [])
+
+	def test_an_ingress_that_cannot_take_a_push_is_skipped(self):
+		# Broken, or configured without a Network — a scheduled run must not die over one box.
+		owners = self.owners(
+			[{"name": "INF-a", "ingress": "ing-broken"}, {"name": "INF-b", "ingress": "ing-nonet"}],
+			[{"name": "ing-broken", "status": "Broken", "network": "Mumbai"},
+			 {"name": "ing-nonet", "status": "Active", "network": None}],
+		)
+		self.assertEqual(owners, [])
