@@ -4,6 +4,7 @@
 
 import unittest
 from types import SimpleNamespace
+from unittest.mock import patch
 
 import frappe
 from frappe.tests import IntegrationTestCase
@@ -12,6 +13,7 @@ from grove.cloud_provider.aws import EC2Client
 from grove.grove.doctype.network.network import (
 	INFERENCE_BASE_INGRESS_RULES,
 	PROXY_INGRESS_RULES,
+	Network,
 	inference_ingress_cidrs,
 	parse_security_group_ids,
 )
@@ -179,6 +181,54 @@ class TestSyncIngress(unittest.TestCase):
 		result = client.sync_ingress("sg-1", 443, ["1.1.1.1/32", "2.2.2.2/32"])
 		self.assertEqual(result["opened"], ["1.1.1.1/32", "2.2.2.2/32"])
 		self.assertEqual(client.revoked, [])
+
+	def test_one_port_is_reconciled_without_disturbing_the_other_front_port(self):
+		# 80 and 443 reconcile as separate calls against the same group. Each must see only its
+		# own permission, or every run would revoke what the previous one just wrote.
+		client = self.client([self.permission(443, "1.1.1.1/32")])
+		result = client.sync_ingress("sg-1", 80, ["1.1.1.1/32"])
+		self.assertEqual(result, {"opened": ["1.1.1.1/32"], "closed": []})
+		self.assertEqual(client.revoked, [])
+
+
+class TestFrontPorts(unittest.TestCase):
+	"""Which ports an inference box opens. Its nginx fronts every engine and both exporters, so
+	those stay on loopback — the front port is the only hole the box needs beyond 22."""
+
+	def network(self, groups=("sg-1",)):
+		calls = []
+		return SimpleNamespace(
+			name="NET-1",
+			inference_security_group_ids=",".join(groups),
+			inference_security_group_id_list=list(groups),
+			inference_ingress_cidrs=["1.1.1.1/32"],
+			cloud_client=SimpleNamespace(
+				sync_ingress=lambda gid, port, cidrs: calls.append((gid, port, tuple(cidrs)))
+				or {"opened": [], "closed": []}
+			),
+			calls=calls,
+		)
+
+	def test_both_front_ports_are_reconciled_to_the_same_sources(self):
+		# 80 is opened before the box listens on it, so no box is briefly unreachable when its
+		# nginx moves off 443.
+		network = self.network()
+		with patch("frappe.msgprint"):
+			Network.sync_inference_ingress(network)
+		self.assertEqual(
+			network.calls,
+			[("sg-1", 80, ("1.1.1.1/32",)), ("sg-1", 443, ("1.1.1.1/32",))],
+		)
+
+	def test_no_engine_or_exporter_port_is_opened(self):
+		# They are reached through the box's own nginx, never directly. A hole for one would be
+		# an unauthenticated engine on the wire.
+		network = self.network()
+		with patch("frappe.msgprint"):
+			Network.sync_inference_ingress(network)
+		for _group, port, _cidrs in network.calls:
+			with self.subTest(port):
+				self.assertNotIn(port, (8080, 9100, 9400))
 
 
 class TestParseSecurityGroupIds(unittest.TestCase):

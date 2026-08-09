@@ -13,15 +13,22 @@ from urllib.parse import urlparse
 import frappe
 from werkzeug.wrappers import Response
 
+from grove.net import reachable_ip
+
 NODE_EXPORTER_PORT = 9100
 DCGM_EXPORTER_PORT = 9400
 # vmagent's own /metrics — its -httpListenAddr in the vmagent role.
 VMAGENT_PORT = 8429
 
-# Every box now answers on one TLS port, and the exporters are re-published as paths behind it
-# (the engine_proxy role on an inference box, OpenResty on a proxy box) — so a box needs nothing
-# open but 22 and this. The exporters still listen on their own ports; they are simply no longer
-# reachable from outside.
+# Every box answers on one port, and the exporters are re-published as paths behind it (the
+# engine_proxy role on an inference box, OpenResty on a proxy box) — so a box needs nothing open
+# but 22 and this. The exporters still listen on their own ports; they are simply not reachable
+# from outside.
+#
+# An inference box is moving from 443 to 80: nothing ever verified its self-signed certificate, and
+# the hop is inside the fleet, so the TLS was buying nothing but a file the box had to carry. A
+# proxy box keeps 443 — that one faces customers and holds a real certificate.
+BOX_HTTP_PORT = 80
 BOX_HTTPS_PORT = 443
 NODE_METRICS_PATH = "/metrics/node"
 GPU_METRICS_PATH = "/metrics/gpu"
@@ -104,19 +111,8 @@ def agent_network(agent):
 	return (machine and frappe.db.get_value("Machine", machine, "network")) or ""
 
 
-def scrape_ip(box, agent_network):
-	"""Where to actually reach a box: its private address when it shares the agent's Network,
-	its public one otherwise.
-
-	Public is the answer for a pod (no Machine and no Network at all), for a colo or bare metal
-	box that has no private address, and for an agent whose own box is in no Network."""
-	if agent_network and box.get("network") == agent_network and box.get("private_ip"):
-		return box["private_ip"]
-	return box.get("ip")
-
-
 def agent_targets(agent):
-	"""The agent's own box. Nothing else names it — it carries no Inference or Proxy Server
+	"""The agent's own box. Nothing else names it — it carries no Inference or Gateway Server
 	doc — and an agent that cannot see its own disk filling is the blind spot that matters:
 	vmagent's queue depth and dropped-sample counters are how a broken pipeline announces
 	itself, before anyone notices a gap in a dashboard.
@@ -162,7 +158,7 @@ def engine_targets(agent):
 				"machine": boxes[deployment.inference_server]["machine"],
 				"region": boxes[deployment.inference_server]["region"],
 			},
-			address=scrape_ip(boxes[deployment.inference_server], network),
+			address=reachable_ip(boxes[deployment.inference_server], network),
 		)
 		for deployment in deployments
 	]
@@ -241,14 +237,14 @@ def _with_machine_address(servers):
 	]
 
 
-def build_host_targets(boxes, agent_network=""):
+def build_host_targets(boxes, viewer_network=""):
 	"""Boxes → exporter entries. A box with no address cannot be scraped — it is skipped
 	rather than emitted as a target that can only ever be down."""
 	entries = []
 	for box in boxes:
 		if not box.get("ip"):
 			continue
-		address = scrape_ip(box, agent_network)
+		address = reachable_ip(box, viewer_network)
 		labels = {
 			"machine": box.get("machine") or "",
 			"region": box.get("region") or "",

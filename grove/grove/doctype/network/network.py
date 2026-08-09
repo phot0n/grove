@@ -7,7 +7,9 @@ import frappe
 from frappe.model.document import Document
 
 from grove.cloud_provider.base import CloudClientError, build_cloud_client
-from grove.monitoring import BOX_HTTPS_PORT
+from grove.monitoring import BOX_HTTP_PORT, BOX_HTTPS_PORT
+from grove.net import reachable_ip
+from grove.utils import is_label_under, slugify
 
 # A proxy serves customers on 80/443 and its own admin API on 443 — both from anywhere, since
 # neither the client nor the control plane has a pinned address.
@@ -29,6 +31,12 @@ CIDR_POOL = ipaddress.ip_network("10.0.0.0/8")
 CIDR_PREFIX = 16
 # One public subnet per Network, carved off the front of its /16.
 SUBNET_PREFIX = 24
+
+# The ports the box's own nginx answers on, both reconciled to the same sources. 80 is where the
+# front is going — plain HTTP, reachable only from inside the fleet, so the box needs no
+# certificate — and 443 is where it still is. Opening 80 early costs nothing while nothing listens
+# on it; 443 comes out once every box has moved.
+FRONT_PORTS = (BOX_HTTP_PORT, BOX_HTTPS_PORT)
 
 # A box in this state no longer exists, so its address is not one to keep a hole open for.
 GONE_STATUS = "Terminated"
@@ -159,7 +167,7 @@ class Network(Document):
 
 		if not self.inference_security_group_ids:
 			inference_sg_id = self.cloud_client.create_security_group(
-				f"{self.name}-inference", "Grove-managed: SSH + engine proxy (443)", self.vpc_id
+				f"{self.name}-inference", "Grove-managed: SSH + engine proxy (80, 443)", self.vpc_id
 			)
 			self.cloud_client.authorize_ingress(inference_sg_id, INFERENCE_BASE_INGRESS_RULES)
 			self.db_set("inference_security_group_ids", inference_sg_id)
@@ -170,8 +178,13 @@ class Network(Document):
 
 	@frappe.whitelist()
 	def sync_inference_ingress(self):
-		"""Button + provision step: make 443 on this Network's inference security group reachable
-		from the proxy fleet and the metrics agents, and from nowhere else.
+		"""Button + provision step: make the box's front ports on this Network's inference security
+		group reachable from the proxy fleet and the metrics agents, and from nowhere else.
+
+		Both 80 and 443, to the same sources. The box's nginx is moving from 443 to 80 — it fronts
+		every engine and both exporters either way, so those ports stay on loopback and never need
+		a hole of their own. Opening 80 ahead of the move costs nothing while nothing listens on
+		it, and means no box is briefly unreachable when it does.
 
 		Reconciles rather than adds: a proxy that came back on a new address leaves its old /32
 		behind, and the 0.0.0.0/0 a pre-existing group still carries is closed here. Port 22 is
@@ -183,13 +196,15 @@ class Network(Document):
 		cidrs = self.inference_ingress_cidrs
 		client = self.cloud_client
 		changes = [
-			client.sync_ingress(group_id, BOX_HTTPS_PORT, cidrs)
+			client.sync_ingress(group_id, port, cidrs)
 			for group_id in self.inference_security_group_id_list
+			for port in FRONT_PORTS
 		]
 		opened = sorted({cidr for change in changes for cidr in change["opened"]})
 		closed = sorted({cidr for change in changes for cidr in change["closed"]})
+		ports = ", ".join(str(port) for port in FRONT_PORTS)
 		frappe.msgprint(
-			f"Port {BOX_HTTPS_PORT} on {self.name} now allows {', '.join(cidrs) or 'nothing'}."
+			f"Ports {ports} on {self.name} now allow {', '.join(cidrs) or 'nothing'}."
 			+ (f"<br>Opened: {', '.join(opened)}." if opened else "")
 			+ (f"<br>Closed: {', '.join(closed)}." if closed else "")
 		)
@@ -213,26 +228,29 @@ class Network(Document):
 
 
 def inference_ingress_cidrs(proxies, agents, network):
-	"""Every address allowed to reach an inference box in `network` on 443, as /32s.
+	"""Every address allowed to reach an inference box in `network` on its front ports, as /32s.
 
 	Two callers and no others. The gateway forwards to https://<box public ip>/e/<slug>, and the
 	metrics agent scrapes /metrics/node and /metrics/gpu through the same front. The control plane
 	is not one of them: it reaches a box over SSH and a proxy at its own admin URL.
 
-	An agent contributes the address the box sees it arrive from — its private one when it shares
-	this Network, its public one otherwise. Same rule scrape_ip picks the scrape address by.
+	Every source contributes the address the box will actually see it arrive from. An agent goes
+	through net.reachable_ip, the same rule it picks its scrape address by. A gateway contributes
+	its PUBLIC address unconditionally, and that is not an oversight to tidy up: the gateway dials
+	the box's public IP, so same-VPC traffic still leaves through the internet gateway and arrives
+	from the public side. The dial address and this rule have to move together — narrowing this to
+	a private /32 while engine_url still says https://<public ip> shuts the fleet out.
 
 	Every agent counts, not only those scraping this Network: an agent box is Grove's own, and the
 	join that would narrow it is not worth the code.
 
 	A box that is Terminated is gone, and its address belongs to whoever AWS hands it to next."""
 	addresses = [proxy.get("public_ip") for proxy in proxies if proxy.get("status") != GONE_STATUS]
-	for agent in agents:
-		if agent.get("status") == GONE_STATUS:
-			continue
-		shares_network = network and agent.get("network") == network
-		private = agent.get("private_ip")
-		addresses.append(private if shares_network and private else agent.get("public_ip"))
+	addresses += [
+		reachable_ip({**agent, "ip": agent.get("public_ip")}, network)
+		for agent in agents
+		if agent.get("status") != GONE_STATUS
+	]
 	return sorted({f"{address}/32" for address in addresses if address})
 
 
