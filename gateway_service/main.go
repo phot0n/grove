@@ -48,6 +48,11 @@ func main() {
 		log.Fatal(err)
 	}
 
+	ingressID, err := resolveMode(os.Getenv("GROVE_GATEWAY_ID"), os.Getenv("GROVE_INGRESS_ID"))
+	if err != nil {
+		log.Fatal(err)
+	}
+
 	s := &server{
 		rdb:          redis.NewClient(&redis.Options{Addr: redisAddr}),
 		gatewayID:    gatewayID(),
@@ -59,6 +64,19 @@ func main() {
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) { w.Write([]byte("ok\n")) })
+	// The replica table is the one thing both planes hold, so both take this push.
+	mux.HandleFunc("/admin/routes", adminAuth(adminToken, s.handleAdminRoutes))
+
+	if ingressID != "" {
+		// Deliberately NOT the gateway's surface with the tenant parts disabled: an ingress does
+		// not serve /decide, /meter or /models at all, so there is no handler on this box that
+		// could read a key store even if one were somehow pushed to it.
+		mux.HandleFunc("/pick", s.handlePick)
+		mux.HandleFunc("/release", s.handleRelease)
+		log.Printf("grove-gateway agent listening on %s as INGRESS %s (redis %s)", addr, ingressID, redisAddr)
+		log.Fatal(http.ListenAndServe(addr, mux))
+	}
+
 	mux.HandleFunc("/decide", s.handleDecide)
 	mux.HandleFunc("/meter", s.handleMeter)
 	mux.HandleFunc("/models", s.handleModels)
@@ -66,11 +84,26 @@ func main() {
 	mux.HandleFunc("/admin/keys", adminAuth(adminToken, s.handleAdminKeys))
 	mux.HandleFunc("/admin/users", adminAuth(adminToken, s.handleAdminUsers))
 	mux.HandleFunc("/admin/groups", adminAuth(adminToken, s.handleAdminGroups))
-	mux.HandleFunc("/admin/routes", adminAuth(adminToken, s.handleAdminRoutes))
 	mux.HandleFunc("/admin/usage", adminAuth(adminToken, s.handleAdminUsage))
 
 	log.Printf("grove-gateway agent listening on %s (redis %s)", addr, redisAddr)
 	log.Fatal(http.ListenAndServe(addr, mux))
+}
+
+// resolveMode reads the two id variables and returns the ingress id, or "" for a gateway.
+//
+// One binary, two planes, and which one this box is is decided entirely by what it was given. Both
+// ids set is refused rather than resolved by precedence: it would be a box serving customer keys
+// from inside a VPC, and the whole point of the split is that no box does both. Neither set is a
+// gateway, which is what every box was before ingresses existed.
+func resolveMode(gatewayID, ingressID string) (string, error) {
+	gatewayID, ingressID = strings.TrimSpace(gatewayID), strings.TrimSpace(ingressID)
+	if gatewayID != "" && ingressID != "" {
+		return "", errors.New(
+			"GROVE_GATEWAY_ID and GROVE_INGRESS_ID are both set — a box is one plane or the other, " +
+				"and one serving tenant keys from inside a VPC is what this split exists to prevent")
+	}
+	return ingressID, nil
 }
 
 func env(k, def string) string {
@@ -545,9 +578,11 @@ func bearer(h string) string {
 }
 
 func sha256hex(s string) string {
-	sum := sha256.Sum256([]byte(s))
+	sum := sha256sum(s)
 	return hex.EncodeToString(sum[:])
 }
+
+func sha256sum(s string) [32]byte { return sha256.Sum256([]byte(s)) }
 
 // gatewayID names this gateway for request-ids: GROVE_GATEWAY_ID (set at deploy to the Proxy
 // Server name) else the host's short name, else "gw".
