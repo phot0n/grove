@@ -58,7 +58,48 @@ def _conn(name, doctype="Gateway Server"):
 	return p, p.admin_url.rstrip("/"), (p.get_password("admin_token") or "")
 
 
+# Every key whose value is a live credential. Redacted before a payload is written to a Gateway
+# Sync Row, which is readable by anyone who can open the Desk: internal_key is the engine's own key
+# on a replica row and the ingress's data token on a gateway row, and key_hash is what a gateway
+# looks a customer's credential up by.
+_SECRET_KEYS = frozenset({"internal_key", "key_hash", "admin_token", "data_token", "api_secret"})
+# A log row, not an archive. A fleet-sized route table would otherwise put megabytes into the
+# table and the form that renders it.
+_PAYLOAD_LIMIT = 8000
+
+
+def _redact(value):
+	"""A payload with every secret replaced by a marker, structure intact.
+
+	Marked rather than dropped: "internal_key": "***" says the key was sent, which is what you are
+	checking when you read one of these back. A missing field would read as a push that forgot it."""
+	if isinstance(value, dict):
+		return {k: ("***" if k in _SECRET_KEYS and v else _redact(v)) for k, v in value.items()}
+	if isinstance(value, list):
+		return [_redact(item) for item in value]
+	return value
+
+
+def _record_payload(path, payload):
+	"""Keep what was just sent, for the row this push will land on. On frappe.local so it is scoped
+	to this job — a module global would bleed between runs sharing a worker."""
+	log = getattr(frappe.local, "grove_sync_payloads", None)
+	if log is not None:
+		log.append({"push": path, "body": _redact(payload)})
+
+
+def _collected_payload():
+	"""What this target was sent, as text for the row. Truncated rather than trimmed field by
+	field: a reader wants to see the shape, and a table too big to store is itself worth seeing."""
+	log = getattr(frappe.local, "grove_sync_payloads", None) or []
+	text = frappe.as_json(log)
+	if len(text) > _PAYLOAD_LIMIT:
+		return f"{text[:_PAYLOAD_LIMIT]}\n… truncated, {len(text)} characters in full"
+	return text
+
+
 def _post(admin_url, token, path, payload, method="POST"):
+	_record_payload(path, payload)
 	r = requests.request(
 		method,
 		f"{admin_url}/{path}",
@@ -567,6 +608,7 @@ def _push_replicas_and_classify(ingress):
 	start = time.monotonic()
 	reachable, success, http_status, error = 1, 0, 0, None
 	detail = []
+	frappe.local.grove_sync_payloads = []
 	try:
 		result = sync_replicas(ingress)
 		detail.append(f"models:{result.get('models', '?')} replicas:{result.get('replicas', '?')}")
@@ -585,6 +627,8 @@ def _push_replicas_and_classify(ingress):
 		"error": error,
 		"duration_ms": int((time.monotonic() - start) * 1000),
 		"detail": " ".join(detail),
+		# Recorded even on failure — what a rejected push tried to send is the whole question.
+		"payload": _collected_payload(),
 	}
 
 
@@ -600,6 +644,7 @@ def _push_and_classify(proxy, groups, users, keys, deletions, models):
 	start = time.monotonic()
 	reachable, success, http_status, error = 1, 0, 0, None
 	detail = []
+	frappe.local.grove_sync_payloads = []
 	try:
 		if groups is not None:
 			r = push_groups(proxy, groups)
@@ -631,6 +676,8 @@ def _push_and_classify(proxy, groups, users, keys, deletions, models):
 		"error": error,
 		"duration_ms": int((time.monotonic() - start) * 1000),
 		"detail": " ".join(detail),
+		# Recorded even on failure — what a rejected push tried to send is the whole question.
+		"payload": _collected_payload(),
 	}
 
 
