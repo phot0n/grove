@@ -1,6 +1,6 @@
 ---
 # Deliberately notifies a handler it does not define. `reload openresty` belongs to the play —
-# proxy.yml, deploy_openresty.yml and deploy_tls.yml each declare one — because defining a second
+# gateway.yml, deploy_openresty.yml and deploy_tls.yml each declare one — because defining a second
 # handler by that name here would shadow theirs, and which one wins is not worth depending on. A
 # play that includes this role without the handler fails loudly on the first change.
 - name: Install the fleet certificate

@@ -99,7 +99,7 @@ class Network(Document):
 
 	@property
 	def proxy_security_group_id_list(self):
-		"""proxy_security_group_ids as a list, for a Proxy Server box."""
+		"""proxy_security_group_ids as a list, for a Gateway Server box."""
 		return parse_security_group_ids(self.proxy_security_group_ids)
 
 	@property
@@ -213,7 +213,7 @@ class Network(Document):
 	@property
 	def inference_ingress_cidrs(self):
 		"""The addresses that may reach an inference box on this Network's 443, read live."""
-		proxies = frappe.get_all("Proxy Server", fields=["public_ip", "status"])
+		proxies = frappe.get_all("Gateway Server", fields=["public_ip", "status"])
 		agents = frappe.get_all("Monitoring Agent", fields=["machine", "public_ip", "status"])
 		machines = {
 			machine["name"]: machine

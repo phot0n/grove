@@ -22,7 +22,7 @@
  ],
  "fields": [
   {
-   "description": "The box vmagent runs on. It scrapes every Inference Server, Proxy Server and Pod that names this agent.",
+   "description": "The box vmagent runs on. It scrapes every Inference Server, Gateway Server and Pod that names this agent.",
    "fieldname": "machine",
    "fieldtype": "Link",
    "in_list_view": 1,

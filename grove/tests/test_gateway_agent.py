@@ -11,14 +11,17 @@ These pin that the button passes everything the file renders.
 
 import re
 import unittest
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
 import yaml
 
-from grove.grove.doctype.proxy_server.proxy_server import ProxyServer
+from grove.grove.doctype.gateway_server.gateway_server import GatewayServer
 
-PLAY = "playbooks/proxy_server/deploy_agent.yml"
+# Anchored to this file, not the cwd: `bench run-tests` runs from the bench root, where a path
+# relative to the app does not resolve. Same shape the template tests use.
+PLAY = Path(__file__).parent.parent.parent / "playbooks" / "gateway_server" / "deploy_agent.yml"
 TTL = "2m"
 
 
@@ -34,11 +37,11 @@ def deploy_agent_extravars():
 	with (
 		patch("frappe.get_single", return_value=settings),
 		patch(
-			"grove.grove.doctype.proxy_server.proxy_server.gateway_service_source",
+			"grove.grove.doctype.gateway_server.gateway_server.gateway_service_source",
 			return_value="/tmp/src",
 		),
 	):
-		ProxyServer._deploy_agent(proxy)
+		GatewayServer._deploy_agent(proxy)
 	return sent
 
 

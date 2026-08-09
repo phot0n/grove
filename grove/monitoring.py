@@ -36,7 +36,7 @@ GPU_METRICS_PATH = "/metrics/gpu"
 
 def run_exporters_play(server):
 	"""Install the metrics exporters on a server's box: node, and DCGM when the Machine has
-	GPU rows. Shared by Inference Server and Proxy Server — the play and the box are the same
+	GPU rows. Shared by Inference Server and Gateway Server — the play and the box are the same
 	thing, only which doc owns the button differs.
 
 	The exporters only listen. Which agent scrapes them is the server's `monitoring_agent`,
@@ -121,7 +121,7 @@ def agent_targets(agent):
 	reachable from outside, and no security group rule is needed for it.
 
 	Not through a TLS front like the fleet's, and so not built by exporter_entry: this box
-	carries no Inference or Proxy Server doc, so nothing ever installs nginx on it. Plain http,
+	carries no Inference or Gateway Server doc, so nothing ever installs nginx on it. Plain http,
 	the default /metrics, and an address that is already unique per port."""
 	box = frappe.db.get_value("Monitoring Agent", agent, ["machine", "region"], as_dict=True)
 	if not box:
@@ -192,9 +192,9 @@ def inference_boxes(agent):
 
 
 def proxy_boxes(agent):
-	"""Proxy Servers this agent scrapes. Never GPU boxes — no DCGM target for them."""
+	"""Gateway Servers this agent scrapes. Never GPU boxes — no DCGM target for them."""
 	servers = frappe.get_all(
-		"Proxy Server",
+		"Gateway Server",
 		filters={"monitoring_agent": agent, "status": ("!=", _GONE_STATUS)},
 		fields=["name", "machine", "public_ip as ip", "region"],
 	)

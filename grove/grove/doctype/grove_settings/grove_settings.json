@@ -6,7 +6,7 @@
  "field_order": [
   "section_gateway",
   "gateway_host",
-  "proxy_zone",
+  "fleet_zone",
   "synthetic_session_ttl",
   "column_break_tls",
   "dns_provider",
@@ -34,16 +34,16 @@
    "label": "Gateway"
   },
   {
-   "description": "Public host clients hit, e.g. api.grove.example.com; used to build the base_url returned by provision_endpoint. With a Proxy Zone set it must be exactly one label under it, because that is all a wildcard certificate covers, and it resolves to every proxy through GeoDNS.",
+   "description": "Public host clients hit, e.g. api.grove.example.com; used to build the base_url returned by provision_endpoint. With a Fleet Zone set it must be exactly one label under it, because that is all a wildcard certificate covers, and it resolves to every proxy through GeoDNS.",
    "fieldname": "gateway_host",
    "fieldtype": "Data",
    "label": "Gateway Host"
   },
   {
    "description": "Public DNS zone the proxies live in, e.g. grove.example.com. Every proxy is reachable at its own name inside the zone (proxy-name dot zone) and serves one wildcard certificate for the whole zone, which is what lets them all answer for the same Gateway Host behind GeoDNS. Blank = no TLS: boxes keep serving /v1 and /grove-admin in the clear on port 80.",
-   "fieldname": "proxy_zone",
+   "fieldname": "fleet_zone",
    "fieldtype": "Data",
-   "label": "Proxy Zone"
+   "label": "Fleet Zone"
   },
   {
    "default": "0",

@@ -21,8 +21,8 @@ from grove.grove.doctype.grove_settings.grove_settings import GroveSettings
 class Settings:
 	"""Grove Settings reduced to what validate_tls_names touches."""
 
-	def __init__(self, proxy_zone="", gateway_host=""):
-		self.proxy_zone = proxy_zone
+	def __init__(self, fleet_zone="", gateway_host=""):
+		self.fleet_zone = fleet_zone
 		self.gateway_host = gateway_host
 		self.meta = SimpleNamespace(get_label=lambda field: field)
 
@@ -41,7 +41,7 @@ def validate(**kwargs):
 
 class TestTlsNames(unittest.TestCase):
 	def test_a_matching_pair_passes(self):
-		validate(proxy_zone="grove.example.com", gateway_host="api.grove.example.com")
+		validate(fleet_zone="grove.example.com", gateway_host="api.grove.example.com")
 
 	def test_neither_set_is_the_pre_tls_fleet(self):
 		# Blank is how every proxy provisioned before this ran, and it has to keep saving.
@@ -50,19 +50,19 @@ class TestTlsNames(unittest.TestCase):
 	def test_surrounding_whitespace_is_taken_off_rather_than_rejected(self):
 		# A pasted hostname is the common case, and a trailing space would otherwise land in a
 		# server_name and a certificate request.
-		settings = validate(proxy_zone=" grove.example.com ", gateway_host="api.grove.example.com")
-		self.assertEqual(settings.proxy_zone, "grove.example.com")
+		settings = validate(fleet_zone=" grove.example.com ", gateway_host="api.grove.example.com")
+		self.assertEqual(settings.fleet_zone, "grove.example.com")
 
 	def test_a_url_is_not_a_hostname(self):
 		# frappe.throw needs a bound site, so what is asserted is that the call does not return.
 		for host in ("https://api.grove.example.com", "api.grove.example.com/v1", "api.grove.example.com:443"):
 			with self.subTest(host), self.assertRaises(Exception):
-				validate(proxy_zone="grove.example.com", gateway_host=host)
+				validate(fleet_zone="grove.example.com", gateway_host=host)
 
 	def test_a_gateway_host_the_wildcard_cannot_cover_is_refused(self):
 		for host in ("grove.example.com", "api.eu.grove.example.com", "api.other.example.com"):
 			with self.subTest(host), self.assertRaises(Exception):
-				validate(proxy_zone="grove.example.com", gateway_host=host)
+				validate(fleet_zone="grove.example.com", gateway_host=host)
 
 	def test_a_gateway_host_alone_is_left_alone(self):
 		# No zone means no certificate and no wildcard to be covered by — an IP-or-host fleet
@@ -114,7 +114,7 @@ class TestTlsVariables(unittest.TestCase):
 	def variables(self, **kwargs):
 		settings = SimpleNamespace(
 			gateway_host="api.grove.example.com",
-			proxy_zone="grove.example.com",
+			fleet_zone="grove.example.com",
 			fleet_tls_cert="cert-pem",
 			get_password=lambda field, raise_exception=True: "key-pem",
 			**kwargs,
@@ -126,7 +126,7 @@ class TestTlsVariables(unittest.TestCase):
 			self.variables(),
 			{
 				"gateway_host": "api.grove.example.com",
-				"proxy_zone": "grove.example.com",
+				"fleet_zone": "grove.example.com",
 				"fleet_tls_cert": "cert-pem",
 				"fleet_tls_key": "key-pem",
 			},
@@ -137,7 +137,7 @@ class TestTlsVariables(unittest.TestCase):
 		# server_name, which parses and matches nothing.
 		empty = SimpleNamespace(
 			gateway_host=None,
-			proxy_zone=None,
+			fleet_zone=None,
 			fleet_tls_cert=None,
 			get_password=lambda field, raise_exception=True: None,
 		)

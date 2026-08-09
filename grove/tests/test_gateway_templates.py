@@ -15,7 +15,7 @@ import yaml
 from jinja2 import Environment, FileSystemLoader
 
 PLAYBOOKS = Path(__file__).parent.parent.parent / "playbooks"
-PROXY = PLAYBOOKS / "proxy_server"
+PROXY = PLAYBOOKS / "gateway_server"
 
 ZONE = "grove.example.com"
 GATEWAY_HOST = f"api.{ZONE}"
@@ -50,7 +50,7 @@ def resolve(variables):
 
 TEMPLATES = environment(PROXY)
 
-# What a proxy box has in scope: the roles proxy.yml lists, whose defaults become play vars.
+# What a proxy box has in scope: the roles gateway.yml lists, whose defaults become play vars.
 BASE = resolve({
 	**role_defaults(PLAYBOOKS / "roles/openresty"),
 	**role_defaults(PLAYBOOKS / "roles/grove_https"),
@@ -84,7 +84,7 @@ def server_with(config, listen_or_name):
 
 
 class TestPlaintextShape(unittest.TestCase):
-	"""No Proxy Zone: what every proxy served before there was a certificate. Asserted because it
+	"""No Fleet Zone: what every proxy served before there was a certificate. Asserted because it
 	is the escape hatch — a fleet mid-migration renders this, and it has to keep working."""
 
 	def setUp(self):
@@ -113,7 +113,7 @@ class TestPlaintextShape(unittest.TestCase):
 
 
 class TestTlsShape(unittest.TestCase):
-	"""With a Proxy Zone: two names, one wildcard, and nothing but a redirect in the clear."""
+	"""With a Fleet Zone: two names, one wildcard, and nothing but a redirect in the clear."""
 
 	def setUp(self):
 		self.config = render(TLS)
@@ -194,7 +194,7 @@ class TestTlsShape(unittest.TestCase):
 
 class TestPlaysAgreeOnTheCertificate(unittest.TestCase):
 	def plays(self):
-		for name in ("proxy.yml", "deploy_openresty.yml", "deploy_tls.yml"):
+		for name in ("gateway.yml", "deploy_openresty.yml", "deploy_tls.yml"):
 			[play] = yaml.safe_load((PROXY / name).read_text())
 			yield name, play
 

@@ -32,7 +32,7 @@ class GroveSettings(Document):
 		gateway_host: DF.Data | None
 		metrics_remote_write_url: DF.Data | None
 		monitoring_extra_labels: DF.SmallText | None
-		proxy_zone: DF.Data | None
+		fleet_zone: DF.Data | None
 		scrape_password: DF.Password | None
 		scrape_password_hash: DF.Data | None
 		sd_token: DF.Password | None
@@ -68,7 +68,7 @@ class GroveSettings(Document):
 		downstream can. A scheme in either renders an nginx server_name that matches nothing, and
 		a Gateway Host more than one label under the zone is not covered by `*.<zone>` at all —
 		both surface as a certificate error in a customer's SDK, days after the save."""
-		for field in ("proxy_zone", "gateway_host"):
+		for field in ("fleet_zone", "gateway_host"):
 			value = (self.get(field) or "").strip()
 			self.set(field, value)
 			if value and not is_dns_name(value):
@@ -76,10 +76,10 @@ class GroveSettings(Document):
 					f"{self.meta.get_label(field)} must be a bare hostname — no scheme, port, "
 					f"path or trailing dot. Got '{value}'."
 				)
-		if self.proxy_zone and self.gateway_host and not is_label_under(self.gateway_host, self.proxy_zone):
+		if self.fleet_zone and self.gateway_host and not is_label_under(self.gateway_host, self.fleet_zone):
 			frappe.throw(
 				f"Gateway Host '{self.gateway_host}' must be exactly one label under "
-				f"'{self.proxy_zone}' — the fleet certificate is a wildcard, and *.{self.proxy_zone} "
+				f"'{self.fleet_zone}' — the fleet certificate is a wildcard, and *.{self.fleet_zone} "
 				f"covers neither the zone itself nor anything deeper."
 			)
 
@@ -145,7 +145,7 @@ class GroveSettings(Document):
 
 	@property
 	def tls_variables(self):
-		"""Ansible vars every Proxy Server needs to front itself with TLS: the two names it
+		"""Ansible vars every Gateway Server needs to front itself with TLS: the two names it
 		answers to and the certificate both of them share. Blank zone renders a box that serves
 		:80 in the clear, which is what every proxy provisioned before this did.
 
@@ -154,7 +154,7 @@ class GroveSettings(Document):
 		no_log, because a task RESULT does echo the module args back into an Ansible Task."""
 		return {
 			"gateway_host": self.gateway_host or "",
-			"proxy_zone": self.proxy_zone or "",
+			"fleet_zone": self.fleet_zone or "",
 			"fleet_tls_cert": self.fleet_tls_cert or "",
 			"fleet_tls_key": self.get_password("fleet_tls_key", raise_exception=False) or "",
 		}
@@ -164,7 +164,7 @@ class GroveSettings(Document):
 		"""Button: get the wildcard for the proxy zone from Let's Encrypt over DNS-01 and store
 		it here. Does not ship it — provision and the daily renewal do that."""
 		frappe.enqueue("grove.tls.issue_fleet_certificate", queue="long", timeout=900)
-		frappe.msgprint(f"Requesting a certificate for *.{self.proxy_zone} — this takes a minute.")
+		frappe.msgprint(f"Requesting a certificate for *.{self.fleet_zone} — this takes a minute.")
 
 	@frappe.whitelist()
 	def full_sync_all(self):

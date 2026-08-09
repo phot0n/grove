@@ -1,13 +1,13 @@
 ---
-# Push the fleet's wildcard certificate onto one already-provisioned Proxy Server and reload.
+# Push the fleet's wildcard certificate onto one already-provisioned Gateway Server and reload.
 # Nothing else — no packages, no Lua, no nginx.conf, no Go agent. Run by grove.tls after a
 # renewal, against every Active proxy at once, so it has to be safe on a live gateway: a reload
 # drops no connections, and the config on the box already names these paths.
 #
-# Deliberately NOT proxy.yml with tags: a renewal happens unattended at midnight, and the smallest
+# Deliberately NOT gateway.yml with tags: a renewal happens unattended at midnight, and the smallest
 # play that can do the job is the one least likely to change something else while nobody is
 # watching.
-- name: Install the fleet certificate on a Proxy Server
+- name: Install the fleet certificate on a Gateway Server
   hosts: all
   become: true
   gather_facts: false

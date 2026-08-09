@@ -6,7 +6,7 @@
 # engines and pods that name this agent, and re-asks on the http_sd interval — so a deploy or
 # a new box appears here with nothing to re-run.
 #
-# node_exporter comes with it: this box is not an Inference or Proxy Server, so nothing else
+# node_exporter comes with it: this box is not an Inference or Gateway Server, so nothing else
 # would ever install one here, and an agent whose own disk fills has no way to say so. Grove
 # hands it back its own node_exporter and vmagent as localhost targets.
 - name: Install the metrics agent

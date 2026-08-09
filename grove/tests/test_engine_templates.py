@@ -15,7 +15,7 @@ from pathlib import Path
 import yaml
 from jinja2 import Environment, FileSystemLoader
 
-from grove.tests.test_proxy_templates import resolve
+from grove.tests.test_gateway_templates import resolve
 
 PLAYBOOKS = Path(__file__).parent.parent.parent / "playbooks"
 INFERENCE_ROLES = PLAYBOOKS / "inference_server/roles"
@@ -226,17 +226,17 @@ class TestOneWebServerForTheFleet(unittest.TestCase):
 		return found
 
 	def test_the_version_is_pinned_in_exactly_one_place(self):
-		# It used to be a var inside proxy.yml's own tasks. Extracting the role is what stops an
+		# It used to be a var inside gateway.yml's own tasks. Extracting the role is what stops an
 		# inference box drifting to a different build than the gateway.
 		pinned = role_defaults(PLAYBOOKS / "roles/openresty")["openresty_version"]
 		self.assertRegex(pinned, r"^\d+\.\d+\.\d+\.\d+$")
-		for play in ("proxy_server/proxy.yml", "inference_server/serve.yml"):
+		for play in ("gateway_server/gateway.yml", "inference_server/serve.yml"):
 			with self.subTest(play):
 				self.assertNotIn("openresty_version", (PLAYBOOKS / play).read_text())
 
 	def test_both_sides_of_the_fleet_install_it(self):
 		plays = self.plays_using("openresty")
-		self.assertIn("proxy.yml", plays)
+		self.assertIn("gateway.yml", plays)
 		self.assertIn("serve.yml", plays)
 		self.assertIn("provision.yml", plays)
 

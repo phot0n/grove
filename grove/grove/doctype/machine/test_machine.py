@@ -426,11 +426,11 @@ class TestSyncDependentServers(IntegrationTestCase):
 		}).insert(ignore_permissions=True)
 		self.addCleanup(self.inference_server.delete, ignore_permissions=True)
 
-		self.proxy_server = frappe.get_doc({
-			"doctype": "Proxy Server", "name": "test-sync-dependents-proxy",
+		self.gateway_server = frappe.get_doc({
+			"doctype": "Gateway Server", "name": "test-sync-dependents-proxy",
 			"machine": self.machine.name, "status": "Active",
 		}).insert(ignore_permissions=True)
-		self.addCleanup(self.proxy_server.delete, ignore_permissions=True)
+		self.addCleanup(self.gateway_server.delete, ignore_permissions=True)
 
 	def test_terminated_machine_breaks_active_servers(self):
 		self.machine.status = "Terminated"
@@ -439,7 +439,7 @@ class TestSyncDependentServers(IntegrationTestCase):
 			frappe.db.get_value("Inference Server", self.inference_server.name, "status"), "Terminated"
 		)
 		self.assertEqual(
-			frappe.db.get_value("Proxy Server", self.proxy_server.name, "status"), "Terminated"
+			frappe.db.get_value("Gateway Server", self.gateway_server.name, "status"), "Terminated"
 		)
 
 	def test_stopped_machine_marks_servers_broken_not_terminated(self):
@@ -517,7 +517,7 @@ class TestNetworkResolution(IntegrationTestCase):
 	def test_proxy_role_picks_proxy_security_groups(self):
 		machine = frappe.get_doc({
 			"doctype": "Machine", "machine_name": "test-net-role-proxy", "cloud_provider": self.provider.name,
-			"network": self.network.name, "machine_type": "Proxy Server",
+			"network": self.network.name, "machine_type": "Gateway Server",
 		}).insert(ignore_permissions=True)
 		self.addCleanup(machine.delete, ignore_permissions=True)
 		self.assertEqual(machine.get_security_group_ids(machine.network_doc), ["sg-proxy"])

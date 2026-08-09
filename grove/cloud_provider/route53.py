@@ -1,7 +1,13 @@
 # Copyright (c) 2026, Grove and contributors
 # For license information, please see license.txt
-"""Route53 records for a Proxy Server: the name that reaches this box, and this box's share of
-the name that reaches the fleet. Pure boto3 — Proxy Server assembles the arguments.
+"""Route53 records for a named fleet box: the name that reaches this box, and this box's share of
+the name that reaches several. Pure boto3 — the doctype assembles the arguments.
+
+Two shapes, because the two shared names answer different questions. Gateway Host is a LATENCY set
+over the gateway fleet: every client should land on the nearest gateway, and every gateway can
+serve every client. A Network's ingress name is a MULTIVALUE set over one VPC's ingresses: the
+boxes behind it are interchangeable and none is nearer than another, so the only job is to hand
+out one that is alive — which is what the per-record health check buys and plain multi-A does not.
 
 Deliberately NOT a CloudClient. That contract is one account in one region and every method on it
 is abstract; Route53 is global, and adding methods there would break RunPodClient, which cannot
@@ -45,13 +51,13 @@ class Route53Client:
 				return hosted_zone["Id"].split("/")[-1]
 		raise Route53Error(f"No public Route53 hosted zone for '{zone}' in this account.")
 
-	def upsert_proxy_records(self, zone, hostname, gateway_host, public_ip, region, identifier):
+	def upsert_gateway_records(self, zone, hostname, gateway_host, public_ip, region, identifier):
 		"""Both records a proxy needs, in one change batch so a box is never half in DNS: its own
 		name, and its entry in the fleet's latency set. UPSERT, so re-provisioning a box that
 		came back on a new address corrects both."""
 		return self._change(zone, "UPSERT", hostname, gateway_host, public_ip, region, identifier)
 
-	def delete_proxy_records(self, zone, hostname, gateway_host, public_ip, region, identifier):
+	def delete_gateway_records(self, zone, hostname, gateway_host, public_ip, region, identifier):
 		"""Both records again, on the way out. A DELETE must repeat the record exactly as it was
 		created — value, TTL, routing policy — which is why this takes the same arguments the
 		upsert did rather than just the names. A stale entry left in a latency set is a black

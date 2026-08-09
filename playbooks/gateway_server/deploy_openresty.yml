@@ -1,7 +1,7 @@
 ---
 # Update ONLY the OpenResty data-plane config on an already-provisioned Proxy
 # Server: push the Lua scripts + nginx.conf, validate, graceful reload. Does NOT
-# touch the Go agent, Redis, or packages — use proxy.yml for a full provision,
+# touch the Go agent, Redis, or packages — use gateway.yml for a full provision,
 # deploy_agent.yml for just the binary. Safe on a live gateway: reload (not
 # restart) drops no connections, and Redis is left alone so deploy:* routes and
 # usage:* counters survive.
@@ -50,7 +50,7 @@
         fail_msg: >-
           {{ fleet_tls_cert_path }} exists, so this box serves TLS, but no gateway_host or
           proxy_hostname was passed — rendering now would put /v1 and /grove-admin back on
-          plaintext :80. Re-run from the Proxy Server's Provision button, or pass the same
+          plaintext :80. Re-run from the Gateway Server's Provision button, or pass the same
           extra-vars it does.
       when: existing_fleet_cert.stat.exists
 

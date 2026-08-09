@@ -16,7 +16,7 @@
   "error"
  ],
  "fields": [
-  {"fieldname": "proxy", "fieldtype": "Link", "label": "Proxy Server", "options": "Proxy Server", "in_list_view": 1, "columns": 2},
+  {"fieldname": "proxy", "fieldtype": "Link", "label": "Gateway Server", "options": "Gateway Server", "in_list_view": 1, "columns": 2},
   {"fieldname": "reachable", "fieldtype": "Check", "label": "Reachable", "in_list_view": 1, "columns": 1, "description": "Whether the proxy's admin API was reachable at all (no connection error / timeout)."},
   {"fieldname": "success", "fieldtype": "Check", "label": "Success", "in_list_view": 1, "columns": 1, "description": "Whether the requested keys and/or routes pushes returned 2xx."},
   {"fieldname": "had_data", "fieldtype": "Check", "label": "Had Data", "in_list_view": 1, "columns": 1, "description": "Usage pulls: whether this proxy had any staged usage to drain (0 = nothing accrued since last pull)."},

@@ -4,7 +4,7 @@
 # of this one — same pinned build as the gateway, so one fleet, one web server.
 #
 # This role belongs to the inference plays only. Never add it to the Monitoring Agent's
-# exporters.yml — that play also runs on Proxy Servers, which serve their own config on :80.
+# exporters.yml — that play also runs on Gateway Servers, which serve their own config on :80.
 - name: Create the per-engine config directory
   ansible.builtin.file:
     path: "{{ engine_proxy_engines_dir }}"

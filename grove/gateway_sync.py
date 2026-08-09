@@ -1,6 +1,6 @@
 # Copyright (c) 2026, Grove and contributors
 # For license information, please see license.txt
-"""Project Grove state (groups + users + keys + routing table) into each Proxy Server's
+"""Project Grove state (groups + users + keys + routing table) into each Gateway Server's
 local Redis via the gateway agent's token-gated admin API (§6). Grove is the
 source of truth. The gateway `/groups`, `/users`, `/keys` and `/routes` endpoints are
 UPSERTs (they never prune), so we can push either everything or just a delta.
@@ -41,9 +41,9 @@ _DIRTY_DOCTYPES = ("Grove User Group", "Grove User", "Grove API Key")
 
 
 def _conn(proxy_name):
-	p = frappe.get_doc("Proxy Server", proxy_name)
+	p = frappe.get_doc("Gateway Server", proxy_name)
 	if not p.admin_url:
-		frappe.throw(f"Proxy Server {proxy_name} has no admin_url")
+		frappe.throw(f"Gateway Server {proxy_name} has no admin_url")
 	return p, p.admin_url.rstrip("/"), (p.get_password("admin_token") or "")
 
 
@@ -410,7 +410,7 @@ def _push_and_classify(proxy, groups, users, keys, deletions, models):
 # --- helpers ---------------------------------------------------------------
 
 def _active_proxies():
-	return frappe.get_all("Proxy Server", filters={"status": "Active"}, pluck="name")
+	return frappe.get_all("Gateway Server", filters={"status": "Active"}, pluck="name")
 
 
 def _new_run(sync_type, trigger):

@@ -13,9 +13,9 @@ IGNORE_TEST_RECORD_DEPENDENCIES = []  # eg. ["User"]
 
 
 
-class IntegrationTestProxyServer(IntegrationTestCase):
+class IntegrationTestGatewayServer(IntegrationTestCase):
 	"""
-	Integration tests for ProxyServer.
+	Integration tests for GatewayServer.
 	Use this class for testing interactions between multiple components.
 	"""
 

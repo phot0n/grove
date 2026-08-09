@@ -1,6 +1,6 @@
 # Copyright (c) 2026, Grove and contributors
 # For license information, please see license.txt
-"""The one wildcard certificate every Proxy Server serves: issued here on the control plane,
+"""The one wildcard certificate every Gateway Server serves: issued here on the control plane,
 stored on Grove Settings, pushed to each box by Ansible.
 
 DNS-01, not HTTP-01, and that is the whole point. Gateway Host resolves to a different proxy
@@ -61,18 +61,18 @@ def renew_fleet_certificate():
 	and exits 0 having done nothing otherwise. Grove notices only when the files on disk stop
 	matching what is stored, which is what keeps this from reloading the fleet every night."""
 	settings = frappe.get_single("Grove Settings")
-	if not (settings.proxy_zone and settings.fleet_tls_cert):
+	if not (settings.fleet_zone and settings.fleet_tls_cert):
 		return
-	run_certbot(settings, ["renew", "--cert-name", settings.proxy_zone])
-	if store_certificate(settings.proxy_zone):
+	run_certbot(settings, ["renew", "--cert-name", settings.fleet_zone])
+	if store_certificate(settings.fleet_zone):
 		push_to_proxies()
 
 
 def push_to_proxies():
 	"""Ship the stored certificate to every Active proxy, one enqueued play each. Separate jobs
 	because a box that is unreachable must not stop the rest of the fleet from being renewed."""
-	for name in frappe.get_all("Proxy Server", filters={"status": "Active"}, pluck="name"):
-		frappe.enqueue_doc("Proxy Server", name, "deploy_tls", queue="long", timeout=600)
+	for name in frappe.get_all("Gateway Server", filters={"status": "Active"}, pluck="name"):
+		frappe.enqueue_doc("Gateway Server", name, "deploy_tls", queue="long", timeout=600)
 
 
 def store_certificate(zone):
@@ -169,7 +169,7 @@ def certbot_environment(settings):
 
 
 def dns_credentials(settings=None):
-	"""The DNS Provider's keys: what answers the DNS-01 challenge here, and what Proxy Server
+	"""The DNS Provider's keys: what answers the DNS-01 challenge here, and what Gateway Server
 	writes its records with. One reader, so the certificate and the records can never end up
 	issued against two different accounts."""
 	settings = settings or frappe.get_single("Grove Settings")
@@ -201,9 +201,9 @@ def read_pem(zone, filename):
 
 
 def require_zone(settings):
-	if not settings.proxy_zone:
-		frappe.throw("Set a Proxy Zone on Grove Settings before requesting a certificate.")
-	return settings.proxy_zone
+	if not settings.fleet_zone:
+		frappe.throw("Set a Fleet Zone on Grove Settings before requesting a certificate.")
+	return settings.fleet_zone
 
 
 def require_dns_provider(settings):

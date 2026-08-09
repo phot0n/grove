@@ -1,5 +1,5 @@
 ---
-# Install OpenResty at the pinned version. Shared by the Proxy Server's data path and every
+# Install OpenResty at the pinned version. Shared by the Gateway Server's data path and every
 # Inference Server's engine proxy, so both run the same build — the config idioms, the defaults
 # and the bug surface are then the same wherever someone is debugging.
 #

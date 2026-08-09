@@ -17,7 +17,7 @@ from unittest.mock import patch
 import frappe
 
 from grove.cloud_provider.route53 import Route53Client, Route53Error
-from grove.grove.doctype.proxy_server.proxy_server import ProxyServer
+from grove.grove.doctype.gateway_server.gateway_server import GatewayServer
 
 ZONE = "grove.example.com"
 GATEWAY_HOST = f"api.{ZONE}"
@@ -75,13 +75,13 @@ class TestProxyRecords(unittest.TestCase):
 	def test_both_records_go_in_one_batch(self):
 		# One call, so a box is never halfway into DNS: reachable by its own name but absent
 		# from the fleet set, or the reverse.
-		self.client.upsert_proxy_records(*self.arguments)
+		self.client.upsert_gateway_records(*self.arguments)
 		[batch] = self.fake.batches
 		self.assertEqual(batch["HostedZoneId"], "Z123")
 		self.assertEqual(set(records(batch)), {f"use1-p1.{ZONE}", GATEWAY_HOST})
 
 	def test_the_box_name_points_at_the_box_and_routes_no_further(self):
-		self.client.upsert_proxy_records(*self.arguments)
+		self.client.upsert_gateway_records(*self.arguments)
 		own = records(self.fake.batches[0])[f"use1-p1.{ZONE}"]["ResourceRecordSet"]
 		self.assertEqual(own["ResourceRecords"], [{"Value": "203.0.113.7"}])
 		self.assertNotIn("SetIdentifier", own)
@@ -90,7 +90,7 @@ class TestProxyRecords(unittest.TestCase):
 	def test_the_fleet_name_is_one_row_of_a_latency_set(self):
 		# SetIdentifier is what makes this box's row its own rather than an overwrite of the
 		# last one; Region is what the resolver's latency is measured against.
-		self.client.upsert_proxy_records(*self.arguments)
+		self.client.upsert_gateway_records(*self.arguments)
 		shared = records(self.fake.batches[0])[GATEWAY_HOST]["ResourceRecordSet"]
 		self.assertEqual(shared["SetIdentifier"], "use1-p1")
 		self.assertEqual(shared["Region"], "us-east-1")
@@ -98,8 +98,8 @@ class TestProxyRecords(unittest.TestCase):
 
 	def test_a_delete_repeats_what_the_upsert_wrote(self):
 		# Route53 matches a DELETE on the whole record, routing policy included.
-		self.client.upsert_proxy_records(*self.arguments)
-		self.client.delete_proxy_records(*self.arguments)
+		self.client.upsert_gateway_records(*self.arguments)
+		self.client.delete_gateway_records(*self.arguments)
 		created, deleted = (records(batch) for batch in self.fake.batches)
 		for name in created:
 			with self.subTest(name):
@@ -109,10 +109,10 @@ class TestProxyRecords(unittest.TestCase):
 
 
 class FakeProxy:
-	"""A Proxy Server doc reduced to what the two derivations read, carrying the real property
+	"""A Gateway Server doc reduced to what the two derivations read, carrying the real property
 	so the name and the URL built from it are exercised together."""
 
-	hostname = ProxyServer.hostname
+	hostname = GatewayServer.hostname
 
 	def __init__(self, name="use1-p1", public_ip="203.0.113.7", admin_url=None):
 		self.name = name
@@ -136,7 +136,7 @@ class TestDerivedNames(unittest.TestCase):
 	def admin_url(self, zone, public_ip="203.0.113.7"):
 		with self.settings(zone):
 			doc = FakeProxy(public_ip=public_ip)
-			ProxyServer.set_admin_url(doc)
+			GatewayServer.set_admin_url(doc)
 			return doc.admin_url
 
 	def test_a_box_is_named_under_the_zone(self):
@@ -157,7 +157,7 @@ class TestDerivedNames(unittest.TestCase):
 		# would take a working gateway off the sync.
 		doc = FakeProxy(public_ip=None, admin_url="http://10.0.0.1/grove-admin")
 		with self.settings(""):
-			ProxyServer.set_admin_url(doc)
+			GatewayServer.set_admin_url(doc)
 		self.assertEqual(doc.admin_url, "http://10.0.0.1/grove-admin")
 
 

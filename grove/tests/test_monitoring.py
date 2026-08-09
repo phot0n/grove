@@ -210,8 +210,8 @@ class TestWhichBoxesAreScraped(unittest.TestCase):
 		filters = self.filters_for(monitoring.inference_boxes)["Inference Server"]
 		self.assertEqual(filters["status"], ("!=", "Terminated"))
 
-	def test_a_terminated_proxy_server_is_not_a_target_either(self):
-		filters = self.filters_for(monitoring.proxy_boxes)["Proxy Server"]
+	def test_a_terminated_gateway_server_is_not_a_target_either(self):
+		filters = self.filters_for(monitoring.proxy_boxes)["Gateway Server"]
 		self.assertEqual(filters["status"], ("!=", "Terminated"))
 
 	def test_a_broken_box_is_still_scraped(self):
@@ -219,7 +219,7 @@ class TestWhichBoxesAreScraped(unittest.TestCase):
 		# way to find out what is wrong with it — filtering on == "Active" would blind you there.
 		for boxes, doctype in (
 			(monitoring.inference_boxes, "Inference Server"),
-			(monitoring.proxy_boxes, "Proxy Server"),
+			(monitoring.proxy_boxes, "Gateway Server"),
 		):
 			with self.subTest(doctype):
 				self.assertNotIn("Active", str(self.filters_for(boxes)[doctype]["status"]))
@@ -304,7 +304,7 @@ class TestExporterPortsAgree(unittest.TestCase):
 		self.assertEqual(int(listen.rsplit(":", 1)[1]), VMAGENT_PORT)
 
 	def test_the_agent_box_installs_the_node_exporter_it_will_be_asked_to_scrape(self):
-		# Nothing else installs one there: the agent box carries no Inference/Proxy Server doc.
+		# Nothing else installs one there: the agent box carries no Inference/Gateway Server doc.
 		play = yaml.safe_load((AGENT / "agent.yml").read_text())[0]
 		self.assertIn("node_exporter", play["roles"])
 

@@ -52,7 +52,7 @@ class Machine(AnsibleHost, Document):
 	def sync_static_ip(self):
 		"""Mirror the static-IP flag onto the servers on this box. The Machine owns the address,
 		so the flag is set here and the servers only report it."""
-		for doctype in ("Proxy Server", "Inference Server"):
+		for doctype in ("Gateway Server", "Inference Server"):
 			for name in frappe.get_all(doctype, filters={"machine": self.name}, pluck="name"):
 				frappe.db.set_value(doctype, name, "is_static_ip", self.is_static_ip)
 
@@ -116,8 +116,12 @@ class Machine(AnsibleHost, Document):
 		return frappe.get_cached_doc("Network", self.network) if self.network else None
 
 	def get_security_group_ids(self, network):
-		"""This box's security groups: the Network's Proxy Server or Inference Server list,
-		matching this Machine's Machine Type. Empty when there's no Network.
+		"""This box's security groups: the Network's proxy or inference list, matching this
+		Machine's Machine Type. Empty when there's no Network.
+
+		An Ingress Server takes the proxy list with a Gateway Server. It needs the same 80/443
+		open — to the gateways, which sit in no Network of their own, and to the Route53 health
+		checkers behind its Network's shared name, whose addresses are AWS's to change.
 
 		A Monitoring Agent box takes the inference list. It needs only 22 inbound — its vmagent
 		and its node_exporter both bind 127.0.0.1, and its scrapes and remote writes are all
@@ -128,7 +132,7 @@ class Machine(AnsibleHost, Document):
 			frappe.throw(f"Set a Machine Type on Machine {self.name} to pick its security groups.")
 		return (
 			network.proxy_security_group_id_list
-			if self.machine_type == "Proxy Server"
+			if self.machine_type in ("Gateway Server", "Ingress Server")
 			else network.inference_security_group_id_list
 		)
 
@@ -274,7 +278,7 @@ class Machine(AnsibleHost, Document):
 		if self.status not in ("Terminated", "Offline", "Draining"):
 			return
 		dependent_status = "Terminated" if self.status == "Terminated" else "Broken"
-		for doctype in ("Proxy Server", "Inference Server", "Monitoring Agent"):
+		for doctype in ("Gateway Server", "Inference Server", "Monitoring Agent"):
 			for name in frappe.get_all(
 				doctype, filters={"machine": self.name, "status": "Active"}, pluck="name"
 			):

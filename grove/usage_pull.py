@@ -1,6 +1,6 @@
 # Copyright (c) 2026, Grove and contributors
 # For license information, please see license.txt
-"""Pull token usage from each Proxy Server into monthly Usage Records (§6 job 3).
+"""Pull token usage from each Gateway Server into monthly Usage Records (§6 job 3).
 
 The gateway no longer tracks the month — it just accumulates per-key deltas in
 `usage:<prefix>`. On pull we: (1) GET /usage, which atomically reads-and-deletes
@@ -106,7 +106,7 @@ def _pull_and_classify(proxy_name):
 def _pull_proxy(proxy_name):
 	"""GET /usage (atomically reads-and-deletes each live counter), record the
 	deltas under this month, and commit. Returns the count of keys pulled."""
-	p = frappe.get_doc("Proxy Server", proxy_name)
+	p = frappe.get_doc("Gateway Server", proxy_name)
 	admin_url = (p.admin_url or "").rstrip("/")
 	token = p.get_password("admin_token")
 
@@ -157,9 +157,9 @@ def _add_delta(proxy_name, prefix, user, month, amounts, per_model=None):
 		doc.month = month
 	doc.user = user
 
-	row = next((r for r in doc.gateway_usage if r.proxy_server == proxy_name), None)
+	row = next((r for r in doc.gateway_usage if r.gateway_server == proxy_name), None)
 	if not row:
-		row = doc.append("gateway_usage", {"proxy_server": proxy_name})
+		row = doc.append("gateway_usage", {"gateway_server": proxy_name})
 	for f in _FIELDS:
 		row.set(f, (row.get(f) or 0) + amounts[f])
 	row.last_pulled = frappe.utils.now()

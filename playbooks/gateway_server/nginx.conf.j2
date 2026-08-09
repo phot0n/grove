@@ -3,7 +3,7 @@
   agent (127.0.0.1:9090) is the brain; this just forwards + streams and calls the agent in the
   access/log phases. Rendered by proxy.yml and deploy_openresty.yml; do not edit on the box.
 
-  Two shapes, one variable. With a Proxy Zone set the box has two names — Gateway Host, which
+  Two shapes, one variable. With a Fleet Zone set the box has two names — Gateway Host, which
   GeoDNS points at whichever proxy is nearest the client, and its own <name>.<zone>, which reaches
   this box and no other — and one wildcard certificate covering both. Without one it renders what
   every proxy served before TLS: everything in the clear on :80.
@@ -144,7 +144,7 @@ http {
 	}
 
 	# This box specifically. /grove-admin has to reach ONE proxy — Gateway Host names them all —
-	# and admin_url on the Proxy Server doc is this name, verified against the same wildcard.
+	# and admin_url on the Gateway Server doc is this name, verified against the same wildcard.
 	#
 	# default_server so the Monitoring Agent's scrape, which connects to the bare IP and sends no
 	# SNI, still lands on /metrics/node exactly as it did before there were two names.

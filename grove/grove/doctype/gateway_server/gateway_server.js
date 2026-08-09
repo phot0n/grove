@@ -1,4 +1,4 @@
-frappe.ui.form.on('Proxy Server', {
+frappe.ui.form.on('Gateway Server', {
 	refresh(frm) {
 		if (frm.is_new()) return;
 

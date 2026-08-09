@@ -33,7 +33,7 @@ class TestSlugify(unittest.TestCase):
 
 
 class TestIsIdSafe(unittest.TestCase):
-	"""Proxy Server and Inference Server names are typed by an operator and end up inside a
+	"""Gateway Server and Inference Server names are typed by an operator and end up inside a
 	request id, which the gateway builds by rewriting '-' to '_'. The rule exists so that
 	rewrite can be undone."""
 

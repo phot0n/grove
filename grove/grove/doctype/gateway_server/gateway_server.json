@@ -76,7 +76,7 @@
    "fieldtype": "Column Break"
   },
   {
-   "description": "Where the control plane reaches this box's agent. Derived from this box's name inside the Proxy Zone once one is set (https, /grove-admin), else from its public IP over plain http.",
+   "description": "Where the control plane reaches this box's agent. Derived from this box's name inside the Fleet Zone once one is set (https, /grove-admin), else from its public IP over plain http.",
    "fieldname": "admin_url",
    "fieldtype": "Data",
    "label": "Admin URL",
@@ -106,7 +106,7 @@
  "modified": "2026-08-07 03:32:55.803385",
  "modified_by": "Administrator",
  "module": "Grove",
- "name": "Proxy Server",
+ "name": "Gateway Server",
  "naming_rule": "Set by user",
  "owner": "Administrator",
  "permissions": [

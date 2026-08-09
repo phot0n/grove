@@ -13,7 +13,7 @@ from grove.tls import dns_credentials
 from grove.utils import gateway_service_source, validate_id_safe_name
 
 
-class ProxyServer(AnsibleHost, Document):
+class GatewayServer(AnsibleHost, Document):
 	# begin: auto-generated types
 	# This code is auto-generated. Do not modify anything in this block.
 
@@ -48,13 +48,13 @@ class ProxyServer(AnsibleHost, Document):
 
 	@property
 	def hostname(self):
-		"""The name that reaches THIS box: <Proxy Server name>.<proxy zone>, covered by the
+		"""The name that reaches THIS box: <Gateway Server name>.<proxy zone>, covered by the
 		fleet's wildcard. Blank with no zone set, and then the box has no name at all — it is
 		reached by IP over plain HTTP, which is how every proxy worked before TLS.
 
 		Doc names are already DNS-legal labels: validate_id_safe_name allows letters, digits
 		and '-' only, on insert and on rename."""
-		zone = frappe.db.get_single_value("Grove Settings", "proxy_zone")
+		zone = frappe.db.get_single_value("Grove Settings", "fleet_zone")
 		return f"{self.name}.{zone}" if zone else ""
 
 	def set_admin_url(self):
@@ -112,8 +112,8 @@ class ProxyServer(AnsibleHost, Document):
 		client, settings = self.dns_client()
 		if not client:
 			return None
-		return client.upsert_proxy_records(
-			settings.proxy_zone,
+		return client.upsert_gateway_records(
+			settings.fleet_zone,
 			self.hostname,
 			settings.gateway_host,
 			self.public_ip,
@@ -131,8 +131,8 @@ class ProxyServer(AnsibleHost, Document):
 		if not client:
 			return None
 		try:
-			return client.delete_proxy_records(
-				settings.proxy_zone,
+			return client.delete_gateway_records(
+				settings.fleet_zone,
 				self.hostname,
 				settings.gateway_host,
 				self.public_ip,
@@ -149,10 +149,10 @@ class ProxyServer(AnsibleHost, Document):
 		otherwise. Silent rather than loud: a fleet with no zone configured is the pre-TLS setup,
 		and provisioning a box there should not start failing."""
 		settings = frappe.get_single("Grove Settings")
-		if not (settings.proxy_zone and settings.gateway_host and settings.dns_provider):
+		if not (settings.fleet_zone and settings.gateway_host and settings.dns_provider):
 			return None, settings
 		if not (self.public_ip and self.region):
-			frappe.throw(f"Proxy Server {self.name} needs a public IP and a Region before its DNS records.")
+			frappe.throw(f"Gateway Server {self.name} needs a public IP and a Region before its DNS records.")
 		return Route53Client(*dns_credentials(settings)), settings
 
 	@frappe.whitelist()
@@ -222,7 +222,7 @@ class ProxyServer(AnsibleHost, Document):
 		frappe.msgprint(f"Building + deploying latest agent to {self.name} — watch its Ansible Plays.")
 
 	def _deploy_agent(self):
-		"""Push gateway_service source to Proxy Server, build + restart, and rewrite agent.env
+		"""Push gateway_service source to Gateway Server, build + restart, and rewrite agent.env
 		(no OpenResty/Redis reinstall).
 
 		The env file rides along because the gateway's tuning lives in it. Written whole from the
@@ -239,7 +239,7 @@ class ProxyServer(AnsibleHost, Document):
 
 	@frappe.whitelist()
 	def setup(self):
-		"""Provision this proxy (OpenResty + Redis + Go agent) via proxy.yml."""
+		"""Provision this proxy (OpenResty + Redis + Go agent) via gateway.yml."""
 		frappe.enqueue_doc(
 			self.doctype,
 			self.name,
@@ -250,14 +250,14 @@ class ProxyServer(AnsibleHost, Document):
 		frappe.msgprint(f"Provisioning {self.name} — watch its Ansible Plays.")
 
 	def provision(self):
-		"""Run proxy.yml against the Proxy Server's Machine → OpenResty + Redis +
+		"""Run gateway.yml against the Gateway Server's Machine → OpenResty + Redis +
 		Go agent. On success, mark Active and project keys/routes."""
-		frappe.db.set_value("Proxy Server", self.name, "status", "Installing")
+		frappe.db.set_value("Gateway Server", self.name, "status", "Installing")
 		frappe.db.commit()
 
 		settings = frappe.get_single("Grove Settings")
 		play_name, rc = self.run_playbook(
-			"proxy.yml",
+			"gateway.yml",
 			extravars={
 				"admin_token": self.get_password("admin_token"),
 				"agent_source": gateway_service_source(),
@@ -277,7 +277,7 @@ class ProxyServer(AnsibleHost, Document):
 		# naming the old address. Refreshed here so the sync below goes where the box now answers.
 		self.set_admin_url()
 		frappe.db.set_value(
-			"Proxy Server",
+			"Gateway Server",
 			self.name,
 			{"status": "Active" if rc == 0 else "Broken", "admin_url": self.admin_url},
 		)

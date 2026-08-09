@@ -1,7 +1,7 @@
 ---
-# Deploy & build the Go agent on an ALREADY-provisioned Proxy Server: push
+# Deploy & build the Go agent on an ALREADY-provisioned Gateway Server: push
 # gateway_service source, build on the proxy, install its env file + restart.
-# Does NOT touch OpenResty or Redis (use proxy.yml for a full provision).
+# Does NOT touch OpenResty or Redis (use gateway.yml for a full provision).
 # extra-vars: agent_source (path to gateway_service source on control plane),
 # admin_token, gateway_id, synthetic_session_ttl.
 - hosts: all
@@ -20,7 +20,7 @@
         that: admin_token | default('') | trim | length > 0
         fail_msg: >-
           No admin_token was passed — writing agent.env now would stop the agent from starting at
-          all, and every gateway sync with it. Re-run from the Proxy Server's Deploy Agent button,
+          all, and every gateway sync with it. Re-run from the Gateway Server's Deploy Agent button,
           or pass the same extra-vars it does.
 
     # Written here and not only on provision: the synthetic-session TTL lives in this file, and a
