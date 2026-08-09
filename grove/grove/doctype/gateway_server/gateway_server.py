@@ -8,10 +8,11 @@ from grove import gateway_sync
 from grove.cloud_provider.route53 import Route53Error
 from grove.fleet import FleetHost
 from grove.grove.doctype.network.network import sync_fleet_ingress
+from grove.naming import GeneratedName
 from grove.utils import gateway_service_source
 
 
-class GatewayServer(FleetHost, Document):
+class GatewayServer(GeneratedName, FleetHost, Document):
 	# begin: auto-generated types
 	# This code is auto-generated. Do not modify anything in this block.
 
@@ -30,6 +31,9 @@ class GatewayServer(FleetHost, Document):
 		region: DF.Link | None
 		status: DF.Literal["Pending", "Installing", "Active", "Broken", "Terminated"]
 	# end: auto-generated types
+
+	# Its name is GROVE_GATEWAY_ID, its record under the fleet zone, and the first part of every request id it stamps.
+	name_prefix = "gw"
 
 	# The gateway's own name is GROVE_GATEWAY_ID and the first part of every request id it
 	# stamps; its records also need Gateway Host to belong to and a Region to be sorted by.
@@ -99,6 +103,8 @@ class GatewayServer(FleetHost, Document):
 
 		A record that is already gone is not an error worth blocking a deletion over — AWS says
 		so with InvalidChangeBatch, and only that code is tolerated."""
+		if not self.has_dns_records:
+			return None
 		client, settings = self.dns_client()
 		if not client:
 			return None

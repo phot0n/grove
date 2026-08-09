@@ -74,10 +74,10 @@ def is_id_safe(name):
 def validate_id_safe_name(doctype, name):
 	"""Refuse a name the request-id sanitiser cannot round-trip.
 
-	Called from before_insert and before_rename, which are the only two moments a name is chosen —
-	both server doctypes are `autoname: prompt`, so an operator types it. Deliberately NOT from
-	validate: that runs on every save and would block unrelated edits to a box named before this
-	rule existed, for a name nothing can change without a rename anyway.
+	Called from before_insert and before_rename, which are the only two moments a name is settled —
+	grove.naming generates one on insert, and an operator may still rename afterwards. Deliberately
+	NOT from validate: that runs on every save and would block unrelated edits to a box named before
+	this rule existed, for a name nothing can change without a rename anyway.
 
 	A blank name is left alone — "Name is required" is Frappe's own error to raise, and it says so
 	better than this would."""

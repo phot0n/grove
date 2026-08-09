@@ -1,7 +1,6 @@
 {
  "actions": [],
  "allow_rename": 1,
- "autoname": "prompt",
  "creation": "2026-08-09 00:00:00",
  "description": "One VPC's front door. Terminates TLS for the gateways and picks a replica inside its own Network. Holds no tenant state \u2014 no keys, users, groups, usage or catalog \u2014 so an ingress compromise leaks no API keys.",
  "doctype": "DocType",
@@ -103,7 +102,6 @@
  "modified_by": "Administrator",
  "module": "Grove",
  "name": "Ingress Server",
- "naming_rule": "Set by user",
  "owner": "Administrator",
  "permissions": [
   {

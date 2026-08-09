@@ -8,10 +8,11 @@ from grove import gateway_sync
 from grove.cloud_provider.route53 import Route53Error
 from grove.fleet import FleetHost
 from grove.grove.doctype.network.network import sync_fleet_ingress
+from grove.naming import GeneratedName
 from grove.utils import gateway_service_source
 
 
-class IngressServer(FleetHost, Document):
+class IngressServer(GeneratedName, FleetHost, Document):
 	"""One VPC's front door: the gateways dial it by name over a verified certificate, and it
 	dials the replicas in its own Network privately. It holds no tenant state — no keys, users,
 	groups, usage or catalog — which is the whole security payoff of the split, and why this is a
@@ -35,6 +36,9 @@ class IngressServer(FleetHost, Document):
 		region: DF.Link | None
 		status: DF.Literal["Pending", "Installing", "Active", "Broken", "Terminated"]
 	# end: auto-generated types
+
+	# Its name is GROVE_INGRESS_ID and its record under the fleet zone, which is the only address a gateway reaches it at.
+	name_prefix = "ing"
 
 	def before_insert(self):
 		super().before_insert()
@@ -107,6 +111,8 @@ class IngressServer(FleetHost, Document):
 
 		A record that is already gone is not an error worth blocking a deletion over; AWS says so
 		with InvalidChangeBatch, and only that code is tolerated."""
+		if not self.has_dns_records:
+			return None
 		client, settings = self.dns_client()
 		if not client:
 			return None

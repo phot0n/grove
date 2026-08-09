@@ -7,10 +7,11 @@ from frappe.model.document import Document
 
 from grove.ansible import AnsibleHost
 from grove.monitoring import run_exporters_play
+from grove.naming import GeneratedName
 from grove.utils import validate_id_safe_name
 
 
-class InferenceServer(AnsibleHost, Document):
+class InferenceServer(GeneratedName, AnsibleHost, Document):
 	# begin: auto-generated types
 	# This code is auto-generated. Do not modify anything in this block.
 
@@ -29,6 +30,9 @@ class InferenceServer(AnsibleHost, Document):
 		region: DF.Link | None
 		status: DF.Literal["Pending", "Installing", "Active", "Broken", "Terminated"]
 	# end: auto-generated types
+
+	# Its name is no DNS record of its own, but it rides on every route as `server` and into request ids.
+	name_prefix = "inf"
 
 	def validate(self):
 		self.validate_ingress_network()
@@ -51,9 +55,8 @@ class InferenceServer(AnsibleHost, Document):
 			)
 
 	def before_insert(self):
-		# This name reaches the gateway on every route as `server`, and a request id when a route
-		# predates the deployment field. Typed by an operator (autoname: prompt), so it is checked
-		# here and on rename — the only two moments it can be chosen.
+		# Generated names are id-safe by construction, but a Region named with a dot in it would
+		# slug into one that is not — so the check stays, here and on rename.
 		validate_id_safe_name(self.doctype, self.name)
 
 	def before_rename(self, old_name, new_name, merge=False):

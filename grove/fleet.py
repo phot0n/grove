@@ -31,8 +31,8 @@ class FleetHost(AnsibleHost):
 
 	def before_insert(self):
 		# The doc name is this box's id in every request id it touches and its DNS label both.
-		# Typed by an operator (autoname: prompt), so it is checked here and on rename — the only
-		# two moments it can be chosen.
+		# grove.naming generates it, and a generated name is id-safe by construction — but a
+		# Region named with a dot would slug into one that is not, so the check stays.
 		validate_id_safe_name(self.doctype, self.name)
 
 	def before_rename(self, old_name, new_name, merge=False):
@@ -57,6 +57,16 @@ class FleetHost(AnsibleHost):
 			self.admin_url = f"https://{self.hostname}/grove-admin"
 		elif self.public_ip:
 			self.admin_url = f"http://{self.public_ip}/grove-admin"
+
+	@property
+	def has_dns_records(self):
+		"""Whether this box ever got far enough to have records worth removing.
+
+		The removal paths ask first. dns_client throws when a record's ingredients are missing,
+		which is the right answer to "write my records" and the wrong one to "delete me": a server
+		that never reached a public IP has nothing in DNS, and refusing to delete it strands the
+		doc — and, through the link, the Machine underneath it."""
+		return all(self.get(field) for field in self.dns_fields)
 
 	def dns_client(self):
 		"""(Route53Client, Grove Settings) once everything a record needs is set, (None, settings)

@@ -1,7 +1,6 @@
 {
  "actions": [],
  "allow_rename": 1,
- "autoname": "prompt",
  "creation": "2026-07-01 00:00:00",
  "doctype": "DocType",
  "engine": "InnoDB",
