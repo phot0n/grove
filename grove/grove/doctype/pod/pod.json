@@ -16,10 +16,11 @@
   "monitoring_agent",
   "section_image",
   "engine_image",
-  "image_name",
-  "template_id",
+  "engine_kind",
+  "engine_url",
   "column_break_cwib",
   "startup_command",
+  "health_path",
   "section_compute",
   "gpu_type_id",
   "gpu_count",
@@ -32,24 +33,24 @@
   "ssh_user",
   "ssh_port",
   "column_break_ports",
+  "serve_port",
   "ports",
   "section_env",
   "env",
   "tab_vllm",
   "section_serve",
-  "serve_port",
   "api_key",
-  "column_break_serve",
   "kv_cache_dtype",
   "gpu_memory_utilization",
-  "attention_backend",
   "max_model_len",
   "allow_long_max_model_len",
+  "column_break_serve",
+  "max_num_seqs",
+  "attention_backend",
   "pipeline_parallel_size",
   "section_extra",
   "aliases",
   "extra_serve_args",
-  "engine_url",
   "serve_command",
   "tab_logs",
   "toggle_log_stream",
@@ -78,12 +79,13 @@
    "read_only": 1
   },
   {
-   "description": "Set \u2192 this is a standalone vLLM-serving pod. The Model's intrinsic config (repo, quantization, parsers, \u2026) is read live from the Model at build time; only per-pod tuning is set in the vLLM Serving tab.",
+   "description": "What this pod serves \u2014 and the key the gateway routes on, so every pod needs one. For a vLLM image the Model's intrinsic config (repo, quantization, parsers, \u2026) is read live at build time and only per-pod tuning is set in the Serving tab; for a custom image the Model is the route key alone.",
    "fieldname": "model",
    "fieldtype": "Link",
    "in_list_view": 1,
    "label": "Model",
-   "options": "Model"
+   "options": "Model",
+   "reqd": 1
   },
   {
    "fieldname": "column_break_head",
@@ -119,23 +121,20 @@
    "label": "Image / Startup"
   },
   {
-   "description": "Image to spawn, with its registry and pull credentials. Wins over the manual Image below. Ignored if a Template is set.",
+   "description": "Image to spawn, with its registry, pull credentials and engine kind.",
    "fieldname": "engine_image",
    "fieldtype": "Link",
    "label": "Engine Image",
-   "options": "Engine Image"
+   "options": "Engine Image",
+   "reqd": 1
   },
   {
-   "description": "Escape hatch for a one-off image ref, e.g. 'vllm/vllm-openai:latest' \u2014 full path including registry host, public pulls only (no credentials). Used only when Engine Image is blank; ignored if a Template is set.",
-   "fieldname": "image_name",
+   "description": "What the image serves, mirrored from the Engine Image. 'custom' derives no vLLM arguments \u2014 the image's own entrypoint runs, plus any Startup Command.",
+   "fetch_from": "engine_image.engine_kind",
+   "fieldname": "engine_kind",
    "fieldtype": "Data",
-   "label": "Image"
-  },
-  {
-   "description": "Provider template id. If set, the template supplies the image (Image field ignored).",
-   "fieldname": "template_id",
-   "fieldtype": "Data",
-   "label": "Template ID"
+   "label": "Engine Kind",
+   "read_only": 1
   },
   {
    "fieldname": "section_compute",
@@ -229,6 +228,12 @@
    "fieldtype": "Column Break"
   },
   {
+   "description": "Internal port the engine listens on \u2014 must be in the Ports table (opened at spawn). Where the health gate is polled and the gateway route points, whatever the engine kind. Reached externally via its mapped port.",
+   "fieldname": "serve_port",
+   "fieldtype": "Int",
+   "label": "Serve Port"
+  },
+  {
    "description": "TCP ports to open at spawn (the provider can't hot-add). Needs 22 (SSH) + the serve port + any extra engine ports. Defaults seeded on create.",
    "fieldname": "ports",
    "fieldtype": "Table",
@@ -236,7 +241,7 @@
    "options": "Pod Port"
   },
   {
-   "depends_on": "eval:doc.model",
+   "depends_on": "eval:doc.engine_kind != 'custom'",
    "fieldname": "tab_vllm",
    "fieldtype": "Tab Break",
    "label": "Serving"
@@ -246,13 +251,6 @@
    "fieldname": "section_serve",
    "fieldtype": "Section Break",
    "label": "Serve"
-  },
-  {
-   "default": "8080",
-   "description": "Internal port vLLM listens on \u2014 must be in the Ports table (opened at spawn). Reached externally via its mapped port.",
-   "fieldname": "serve_port",
-   "fieldtype": "Int",
-   "label": "Serve Port"
   },
   {
    "description": "vLLM --api-key, injected as VLLM_API_KEY env (kept out of the visible command). Auto-generated if blank.",
@@ -341,11 +339,18 @@
    "read_only": 1
   },
   {
-   "depends_on": "eval:!doc.model",
-   "description": "Overrides the image's default start command (dockerStartCmd). Used only when no Model is set (base-image pods). With a Model, the derived Serve Command (vLLM Serving tab) is used instead.",
+   "depends_on": "eval:doc.engine_kind == 'custom'",
+   "description": "Arguments appended to the image's own entrypoint (dockerStartCmd). Used only by a custom-kind image \u2014 a vLLM image runs the derived Serve Command on the Serving tab instead. Leave blank to run the image exactly as built.",
    "fieldname": "startup_command",
    "fieldtype": "Small Text",
    "label": "Startup Command"
+  },
+  {
+   "default": "/health",
+   "description": "Path polled on the serve port to decide the container is actually serving: status stays Loading until it answers 200. Blank means no gate \u2014 the pod reads Running as soon as the provider says the container is up, which is earlier than it serves. A Model-serving pod falls back to vLLM's /health.",
+   "fieldname": "health_path",
+   "fieldtype": "Data",
+   "label": "Health Path"
   },
   {
    "fieldname": "column_break_cwib",
@@ -370,7 +375,7 @@
   }
  ],
  "links": [],
- "modified": "2026-08-07 12:00:00.000000",
+ "modified": "2026-08-09 14:10:57.712772",
  "modified_by": "Administrator",
  "module": "Grove",
  "name": "Pod",

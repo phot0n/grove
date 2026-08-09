@@ -10,6 +10,7 @@ from unittest.mock import patch
 import requests
 
 from grove.cloud_provider.provisioner import PodProvisioner
+from grove.grove.doctype.pod.pod import Pod
 from grove.cloud_provider.runpod import RunPodClient, RunPodError, pod_status
 
 
@@ -220,12 +221,22 @@ def live(gpu_count=2, gpu_type_id="NVIDIA L40S", status="RUNNING"):
 	return {"status": status, "gpu_count": gpu_count, "gpu_type_id": gpu_type_id}
 
 
-def serving_pod(protocol="http", pod_id="abc123", public_ip="1.2.3.4", external_port=41234):
+def serving_pod(
+	protocol="http",
+	pod_id="abc123",
+	public_ip="1.2.3.4",
+	external_port=41234,
+	health_path=None,
+	is_custom_engine=False,
+):
 	return SimpleNamespace(
 		name="POD-1",
 		pod_id=pod_id,
 		serve_port=8080,
 		public_ip=public_ip,
+		model="Qwen/Qwen3-35B",
+		health_path=health_path,
+		is_custom_engine=is_custom_engine,
 		ports=[
 			SimpleNamespace(internal_port=22, protocol="tcp", external_port=22001),
 			SimpleNamespace(internal_port=8080, protocol=protocol, external_port=external_port),
@@ -272,6 +283,28 @@ class TestEngineEndpoint(unittest.TestCase):
 		self.assertEqual(PodProvisioner(pod).engine_endpoint, "")
 
 
+class TestHealthPath(unittest.TestCase):
+	"""Which pods wait for their engine before reading Running."""
+
+	def test_a_vllm_pod_gates_on_its_own_health(self):
+		self.assertEqual(PodProvisioner(serving_pod()).health_path, "/health")
+
+	def test_a_custom_image_gates_on_the_path_it_names(self):
+		# The bug this exists for: an ASR container read Running the moment RunPod said the
+		# container was up, minutes before anything answered on the port.
+		pod = serving_pod(is_custom_engine=True, health_path="/v1/health/ready")
+		self.assertEqual(PodProvisioner(pod).health_path, "/v1/health/ready")
+
+	def test_a_custom_image_that_names_none_is_not_gated(self):
+		# vLLM's /health must not be assumed onto an image that has never heard of it — that
+		# would leave the pod Loading forever.
+		self.assertEqual(PodProvisioner(serving_pod(is_custom_engine=True)).health_path, "")
+
+	def test_a_vllm_pod_may_override_the_path(self):
+		pod = serving_pod(health_path="/v1/models")
+		self.assertEqual(PodProvisioner(pod).health_path, "/v1/models")
+
+
 class TestPodStatus(unittest.TestCase):
 	def test_running_and_the_stopped_states(self):
 		self.assertEqual(pod_status("RUNNING"), "Running")
@@ -312,6 +345,27 @@ class TestRestartBlocker(unittest.TestCase):
 
 	def test_gpu_fields_the_provider_omits_are_not_treated_as_a_change(self):
 		self.assertIsNone(restart_blocker(pod(), live(gpu_count=None, gpu_type_id=None)))
+
+
+class TestServePortIsOpened(unittest.TestCase):
+	"""A serve port the provider was never asked to open is refused at validate."""
+
+	def test_a_custom_image_is_checked_too(self):
+		# The bug this exists for: an ASR pod served on 8000 while its Serve Port stayed at the
+		# 8080 default. engine_endpoint found no row for 8080, so the health gate had nothing to
+		# poll and the pod sat Loading forever with a live container behind it.
+		unopened = serving_pod(is_custom_engine=True)
+		unopened.serve_port = 8000
+		with patch("grove.grove.doctype.pod.pod.frappe.throw") as throw:
+			Pod.validate(unopened)
+		self.assertIn("8000", throw.call_args.args[0])
+
+	def test_a_serve_port_in_the_ports_table_passes(self):
+		custom = serving_pod(is_custom_engine=True)
+		with patch("grove.grove.doctype.pod.pod.frappe.throw") as throw:
+			Pod.validate(custom)
+		throw.assert_not_called()
+		self.assertEqual(custom.serve_command, "")
 
 
 if __name__ == "__main__":

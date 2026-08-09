@@ -77,14 +77,15 @@ class PodProvisioner:
 	@property
 	def env(self):
 		"""Env injected into the container: HF_HOME on the volume (weights survive restart) +
-		VLLM_API_KEY for a serving pod + the HF token for gated models, then the Pod's own Env
-		rows layered on top (user wins on conflict). PUBLIC_KEY is added by config_kwargs.
+		VLLM_API_KEY for a vLLM pod + the HF token for gated models, then the Pod's own Env rows
+		layered on top (user wins on conflict). PUBLIC_KEY is added by config_kwargs. A custom
+		image gets none of the vLLM vars — whatever it needs comes from its own Env rows.
 		The attention backend is NOT here — it rides the serve command as --attention-backend,
 		because vLLM 0.24 dropped VLLM_ATTENTION_BACKEND."""
 		pod = self.pod
 		mount = pod.volume_mount_path or VOLUME_MOUNT
 		env = {"HF_HOME": f"{mount}/hf"}
-		if pod.model:
+		if not pod.is_custom_engine:
 			key = pod.get_password("api_key", raise_exception=False)
 			if key:
 				env["VLLM_API_KEY"] = key
@@ -115,10 +116,11 @@ class PodProvisioner:
 	@property
 	def config_kwargs(self):
 		"""The pod settings RunPod accepts on BOTH create and update — so a restart applies
-		exactly what a spawn would. args = the derived serve_command (Model set) else the manual
-		startup_command; RunPod appends it to the image's entrypoint."""
+		exactly what a spawn would. args = the derived serve_command for a vLLM image, else the
+		operator's startup_command; RunPod appends it to the image's entrypoint, so a custom
+		image with neither runs exactly as built."""
 		pod = self.pod
-		command = pod.serve_command if pod.model else (pod.startup_command or None)
+		command = pod.serve_command or pod.startup_command or None
 		return dict(
 			volume_in_gb=pod.volume_in_gb or 50,
 			container_disk_in_gb=pod.container_disk_gb or 20,
@@ -133,8 +135,8 @@ class PodProvisioner:
 
 	@property
 	def spawn_kwargs(self):
-		"""config_kwargs plus the create-only fields: the GPU shape and the template, neither of
-		which RunPod's update accepts."""
+		"""config_kwargs plus the create-only field RunPod's update does not accept: the GPU
+		shape."""
 		if not self.pod.gpu_type_id:
 			frappe.throw(
 				f"Pod {self.pod.name} has no GPU Type ID — set it (provider GPU id, e.g. "
@@ -144,7 +146,6 @@ class PodProvisioner:
 			self.config_kwargs,
 			gpu_type_id=self.pod.gpu_type_id,
 			gpu_count=self.pod.gpu_count or 1,  # homogeneous pod
-			template_id=self.pod.template_id or None,
 			# cloud_type defaults SECURE in spawn_pod (Community closed to new hosts)
 		)
 
@@ -169,12 +170,21 @@ class PodProvisioner:
 			return f"http://{pod.public_ip}:{row.external_port}"
 		return ""
 
+	@property
+	def health_path(self):
+		"""Path polled on the serve port to decide the container serves, or "" when this pod
+		declares no gate and the provider's own state is the whole status. A vLLM image falls
+		back to its /health; a custom image (an ASR container, say) has to name its own — it
+		takes just as long to come up, and without a gate the pod reads Running minutes before
+		anything answers on the port."""
+		return self.pod.health_path or ("" if self.pod.is_custom_engine else "/health")
+
 	def apply_provider_state(self, pod_api, running):
 		"""Write a pod's provider state onto the Pod doc: each Ports row's external port (from
-		the provider's remap), the public IP + SSH port, and status. For a serving pod, 'up'
-		means vLLM answers /health (not just SSH) — so status is Running only when it serves,
-		else Loading; engine_url (the gateway route target) is set only when Running, so the
-		gateway never routes to a still-loading engine (→ 503s).
+		the provider's remap), the public IP + SSH port, and status. For a pod with a health
+		gate, 'up' means the engine answers it (not just SSH) — so status is Running only when
+		it serves, else Loading; engine_url (the gateway route target) is set only when Running,
+		so the gateway never routes to a still-loading engine (→ 503s).
 
 		`running` is the caller's verdict on whether the container is up (a bring-up forces it,
 		since its snapshot predates the provider flipping to RUNNING). When it is not, the
@@ -193,20 +203,21 @@ class PodProvisioner:
 		if pod_api.get("ssh_port"):
 			pod.ssh_port = pod_api["ssh_port"]
 			pod.ssh_user = "root"
-		if pod.model:
+		path = self.health_path
+		if not path:
+			pod.status = state
+		else:
 			url = self.engine_endpoint if running else ""
-			if url and _is_engine_serving(url):
+			if url and _is_engine_serving(url + path):
 				pod.status, pod.engine_url = "Running", url
 			else:
 				pod.status, pod.engine_url = ("Loading" if running else state), ""
-		else:
-			pod.status = state
 		pod.save(ignore_permissions=True)
 		frappe.db.commit()
 
 	def await_engine(self, pod_api):
-		"""Poll the engine /health until vLLM serves (status → Running) or ENGINE_READY_TIMEOUT
-		passes (stays Loading; a later Sync flips it). Serving pods only. Ports don't move while
+		"""Poll the health gate until the engine serves (status → Running) or ENGINE_READY_TIMEOUT
+		passes (stays Loading; a later Sync flips it). Gated pods only. Ports don't move while
 		the pod stays up, so the caller's pod_api snapshot holds for the whole wait."""
 		deadline = time.time() + ENGINE_READY_TIMEOUT
 		while time.time() < deadline:
@@ -217,13 +228,13 @@ class PodProvisioner:
 
 	def await_ready(self):
 		"""The tail every bring-up shares (spawn / start / restart): wait for the provider to
-		publish endpoints, write them onto the Pod, then — for a serving pod — wait for vLLM to
-		answer /health before the gateway route goes live. Returns the parsed provider pod."""
+		publish endpoints, write them onto the Pod, then — for a gated pod — wait for the engine
+		to answer its health path before the gateway route goes live. Returns the parsed pod."""
 		ready = self.client.poll_pod_ready(self.pod.pod_id)
 		self.apply_provider_state(ready, running=True)
-		if self.pod.model:
-			# vLLM keeps loading weights after SSH is up — wait for /health so the status flips
-			# Loading → Running and the gateway route registers only once it serves.
+		if self.health_path:
+			# The engine keeps loading weights after SSH is up — wait for the health gate so the
+			# status flips Loading → Running and the route registers only once it serves.
 			self.await_engine(ready)
 		self.sync_gateway()
 		return ready
@@ -424,12 +435,12 @@ class PodProvisioner:
 		return {"status": "error", "message": str(error)}
 
 
-def _is_engine_serving(engine_url, timeout=5):
-	"""True once vLLM is actually serving: GET /health → 200. This — not SSH-reachability — is
-	real readiness; weights can take many minutes to download + load after the pod is up.
-	/health needs no api-key."""
+def _is_engine_serving(health_url, timeout=5):
+	"""True once the engine is actually serving: GET on its health path → 200. This — not
+	SSH-reachability — is real readiness; weights can take many minutes to download + load after
+	the pod is up. vLLM's /health needs no api-key."""
 	try:
-		return requests.get(f"{engine_url}/health", timeout=timeout).status_code == 200
+		return requests.get(health_url, timeout=timeout).status_code == 200
 	except requests.RequestException:
 		return False
 
