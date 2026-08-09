@@ -34,11 +34,12 @@ class TestAnIngressHoldsNoTenantState(unittest.TestCase):
 			with self.subTest(field["fieldname"]):
 				self.assertNotIn(field.get("options"), TENANT_DOCTYPES)
 
-	def test_its_only_secret_is_the_token_the_control_plane_uses(self):
-		# admin_token authenticates a replica-table push and nothing else. Any other Password
-		# here would be a credential the infra plane has no business holding.
+	def test_its_only_secrets_are_the_two_infra_tokens(self):
+		# admin_token authenticates a replica-table push; data_token is what a gateway presents on
+		# the data path. Both are Grove's own, neither belongs to a tenant, and they are separate
+		# on purpose — one token would mean every gateway holding the control plane's credential.
 		passwords = [f["fieldname"] for f in self.fields if f["fieldtype"] == "Password"]
-		self.assertEqual(passwords, ["admin_token"])
+		self.assertEqual(sorted(passwords), ["admin_token", "data_token"])
 
 	def test_it_knows_exactly_one_network(self):
 		# An ingress reaches its own VPC privately and no other, so this is required and set once.

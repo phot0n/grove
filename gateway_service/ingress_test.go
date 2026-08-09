@@ -195,6 +195,30 @@ func TestCapacityBeatsAffinity(t *testing.T) {
 	}
 }
 
+func TestOnlyAGatewayMayPick(t *testing.T) {
+	s := &server{ingressToken: "correct-horse"}
+	if !s.isGateway("correct-horse") {
+		t.Error("the right token was refused")
+	}
+	for _, wrong := range []string{"", "correct-hors", "correct-horsee", "CORRECT-HORSE"} {
+		if s.isGateway(wrong) {
+			t.Errorf("token %q was accepted", wrong)
+		}
+	}
+}
+
+func TestAnIngressWithNoTokenRefusesEveryone(t *testing.T) {
+	// A misrendered env file leaves this blank. Comparing blank to blank would open every engine
+	// in the VPC to anyone who can reach 443, and the firewall in front is not something this
+	// process can verify.
+	s := &server{ingressToken: ""}
+	for _, token := range []string{"", "anything"} {
+		if s.isGateway(token) {
+			t.Errorf("token %q was accepted by an ingress with no token set", token)
+		}
+	}
+}
+
 func TestABoxIsOnePlaneOrTheOther(t *testing.T) {
 	if _, err := resolveMode("gw-1", "ing-1"); err == nil {
 		t.Error("a box given both ids was accepted")

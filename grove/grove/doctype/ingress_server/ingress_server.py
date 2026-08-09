@@ -26,8 +26,7 @@ class IngressServer(FleetHost, Document):
 
 		admin_token: DF.Password | None
 		admin_url: DF.Data | None
-		health_check_id: DF.Data | None
-		ingress_host: DF.Data | None
+		data_token: DF.Password | None
 		machine: DF.Link
 		monitoring_agent: DF.Link | None
 		network: DF.Link
@@ -38,15 +37,17 @@ class IngressServer(FleetHost, Document):
 
 	def before_insert(self):
 		super().before_insert()
-		# Generated rather than typed: the field is read-only, the agent refuses to start without
-		# one, and a provision that fails on a blank token is a wasted twenty-minute play.
+		# Generated rather than typed: both fields are read-only, the agent refuses to start
+		# without a token, and a provision that fails on a blank one is a wasted twenty-minute
+		# play. Two separate secrets, never one: admin_token is the control plane's credential
+		# and data_token is what every gateway holds.
 		if not self.admin_token:
 			self.admin_token = frappe.generate_hash(length=48)
+		if not self.data_token:
+			self.data_token = frappe.generate_hash(length=48)
 
 	def validate(self):
 		self.set_admin_url()
-		if self.network:
-			self.ingress_host = frappe.get_cached_doc("Network", self.network).ingress_host
 
 	def on_update(self):
 		# A newly-Active ingress has an empty replica table until something fills it, and the
@@ -64,30 +65,20 @@ class IngressServer(FleetHost, Document):
 
 	@frappe.whitelist()
 	def sync_dns_records(self):
-		"""Button + provision step: point this box's own name at it, and add it to its Network's
-		shared ingress name behind a health check of its own. UPSERT, so a box that came back on
-		a new address is corrected by running it again."""
+		"""Button + provision step: point this box's own name at it. UPSERT, so a box that came
+		back on a new address is corrected by running it again.
+
+		One record and no shared name: a gateway reaches this ingress out of its route table, not
+		by resolving something that names several."""
 		client, settings = self.dns_client()
 		if not client:
 			return None
-		# Before the record: a multivalue row naming a health check that does not exist yet is
-		# rejected, and the id has to survive this call to be deletable later.
-		self.db_set(
-			"health_check_id",
-			client.sync_health_check(self.name, self.public_ip, self.hostname, self.health_check_id),
-		)
 		return client.upsert_ingress_records(
-			settings.fleet_zone,
-			self.hostname,
-			self.ingress_host,
-			self.public_ip,
-			self.name,
-			self.health_check_id,
+			settings.fleet_zone, self.hostname, self.public_ip, self.name
 		)
 
 	def remove_dns_records(self):
-		"""Both records and the health check behind them, in that order — Route53 refuses to
-		delete a check a record still references.
+		"""This box's record, on the way out.
 
 		A record that is already gone is not an error worth blocking a deletion over; AWS says so
 		with InvalidChangeBatch, and only that code is tolerated."""
@@ -95,22 +86,13 @@ class IngressServer(FleetHost, Document):
 		if not client:
 			return None
 		try:
-			change = client.delete_ingress_records(
-				settings.fleet_zone,
-				self.hostname,
-				self.ingress_host,
-				self.public_ip,
-				self.name,
-				self.health_check_id,
+			return client.delete_ingress_records(
+				settings.fleet_zone, self.hostname, self.public_ip, self.name
 			)
 		except Route53Error as e:
 			if e.code != "InvalidChangeBatch":
 				raise
-			change = None
-		if self.health_check_id:
-			client.delete_health_check(self.health_check_id)
-			self.db_set("health_check_id", "")
-		return change
+			return None
 
 	@frappe.whitelist()
 	def sync_replicas(self):
@@ -158,10 +140,10 @@ class IngressServer(FleetHost, Document):
 		that absence is the point — see test_ingress_server."""
 		return {
 			"admin_token": self.get_password("admin_token"),
+			"data_token": self.get_password("data_token"),
 			"agent_source": gateway_service_source(),
 			"ingress_id": self.name,
 			"ingress_hostname": self.hostname,
-			"ingress_host": self.ingress_host or "",
 			# nginx.conf declares a metrics server on :443 — grove_https puts the certificate and
 			# the htpasswd it reads on the box before OpenResty is asked to start.
 			**settings.scrape_auth_variables,
@@ -183,6 +165,7 @@ class IngressServer(FleetHost, Document):
 			extravars={
 				"agent_source": gateway_service_source(),
 				"admin_token": self.get_password("admin_token"),
+				"data_token": self.get_password("data_token"),
 				"ingress_id": self.name,
 			},
 		)
@@ -207,7 +190,6 @@ class IngressServer(FleetHost, Document):
 			"deploy_openresty.yml",
 			extravars={
 				"ingress_hostname": self.hostname,
-				"ingress_host": self.ingress_host or "",
 				**settings.scrape_auth_variables,
 				**tls_variables,
 			},

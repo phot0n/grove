@@ -11,6 +11,7 @@ package main
 // affinity per-ingress in Redis — the way the gateway's sticky: keys used to — would shred it.
 
 import (
+	"crypto/subtle"
 	"encoding/json"
 	"math"
 	"net/http"
@@ -23,6 +24,11 @@ import (
 const spillFactor = 1.25
 
 type pickReq struct {
+	// The bearer the gateway presented, forwarded by Lua. Proving the caller is a gateway, on a
+	// hop already carrying verified server TLS and a firewall — so this is the third layer, not
+	// the only one. Deliberately not the admin token: that is the control plane's credential,
+	// and every gateway holding it would hand them the admin plane.
+	Token string `json:"token"`
 	Model string `json:"model"`
 	// Computed by the gateway from the api key, the model and a jittered time bucket. Opaque
 	// here: the ingress hashes it and never learns what went into it.
@@ -50,6 +56,10 @@ func (s *server) handlePick(w http.ResponseWriter, r *http.Request) {
 	var req pickReq
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeJSON(w, pickResp{Allow: false, Status: 400, Reason: "bad pick body"})
+		return
+	}
+	if !s.isGateway(req.Token) {
+		writeJSON(w, pickResp{Allow: false, Status: 401, Reason: "not-a-gateway"})
 		return
 	}
 
@@ -80,6 +90,17 @@ func (s *server) handlePick(w http.ResponseWriter, r *http.Request) {
 		InternalKey: route.InternalKey,
 		Deployment:  route.Deployment,
 	})
+}
+
+// isGateway checks the data-path bearer in constant time. An ingress that was given no token
+// refuses everything rather than waving callers through: a blank secret compared loosely is the
+// shape where a misrendered env file silently opens the whole VPC's engines to anyone who can
+// reach 443, and the firewall in front is not something this process can verify.
+func (s *server) isGateway(token string) bool {
+	if s.ingressToken == "" {
+		return false
+	}
+	return subtle.ConstantTimeCompare([]byte(token), []byte(s.ingressToken)) == 1
 }
 
 // handleRelease crosses a finished request off its engine. The ingress's counterpart to /meter,

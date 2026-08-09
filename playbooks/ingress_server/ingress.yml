@@ -8,7 +8,7 @@
 # and the in-flight counters are re-derived, so this box takes the default persistence rather than
 # the gateway's appendfsync always.
 #
-# extra-vars: admin_token, agent_source, ingress_id, ingress_hostname, ingress_host.
+# extra-vars: admin_token, data_token, agent_source, ingress_id, ingress_hostname.
 - hosts: all
   become: true
   gather_facts: true
@@ -19,7 +19,6 @@
     # Defaulted here so a play run by hand renders the plaintext config instead of failing on an
     # undefined variable halfway through the template.
     ingress_hostname: ""
-    ingress_host: ""
 
   pre_tasks:
     - name: refuse to provision without an admin token
@@ -102,6 +101,7 @@
         dest: /etc/grove-gateway/agent.env
         content: |
           GROVE_ADMIN_TOKEN={{ admin_token }}
+          GROVE_INGRESS_TOKEN={{ data_token | default('') }}
           GROVE_INGRESS_ID={{ ingress_id | default('') }}
         mode: "0600"
       no_log: true

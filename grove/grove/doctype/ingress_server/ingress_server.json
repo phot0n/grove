@@ -3,7 +3,7 @@
  "allow_rename": 1,
  "autoname": "prompt",
  "creation": "2026-08-09 00:00:00",
- "description": "One VPC's front door. Terminates TLS for the gateways and picks a replica inside its own Network. Holds no tenant state — no keys, users, groups, usage or catalog — so an ingress compromise leaks no API keys.",
+ "description": "One VPC's front door. Terminates TLS for the gateways and picks a replica inside its own Network. Holds no tenant state \u2014 no keys, users, groups, usage or catalog \u2014 so an ingress compromise leaks no API keys.",
  "doctype": "DocType",
  "engine": "InnoDB",
  "field_order": [
@@ -14,10 +14,9 @@
   "status",
   "column_break_admin",
   "monitoring_agent",
-  "ingress_host",
   "admin_url",
   "admin_token",
-  "health_check_id"
+  "data_token"
  ],
  "fields": [
   {
@@ -38,7 +37,7 @@
    "read_only": 1
   },
   {
-   "description": "The one VPC this ingress fronts. It reaches those replicas privately and no others, so this is set once — a box cannot change which network it is inside.",
+   "description": "The one VPC this ingress fronts. It reaches those replicas privately and no others, so this is set once \u2014 a box cannot change which network it is inside.",
    "fieldname": "network",
    "fieldtype": "Link",
    "in_list_view": 1,
@@ -48,7 +47,7 @@
    "set_only_once": 1
   },
   {
-   "description": "A latency label the gateway sorts networks by, not a routing key — several Networks can share a region.",
+   "description": "A latency label the gateway sorts networks by, not a routing key \u2014 several Networks can share a region.",
    "fetch_from": "network.region",
    "fieldname": "region",
    "fieldtype": "Link",
@@ -78,13 +77,6 @@
    "options": "Monitoring Agent"
   },
   {
-   "description": "The Network's shared data name, derived from the Network and the Fleet Zone. Every Active ingress in the Network is one A record on it, and this is the only ingress address a gateway ever holds.",
-   "fieldname": "ingress_host",
-   "fieldtype": "Data",
-   "label": "Ingress Host",
-   "read_only": 1
-  },
-  {
    "description": "Where the control plane pushes this ingress's replica table. Derived from this box's name inside the Fleet Zone once one is set (https, /grove-admin), else from its public IP over plain http.",
    "fieldname": "admin_url",
    "fieldtype": "Data",
@@ -99,10 +91,10 @@
    "read_only": 1
   },
   {
-   "description": "The Route53 health check gating this box's row in the shared name. Set by Sync DNS Records.",
-   "fieldname": "health_check_id",
-   "fieldtype": "Data",
-   "label": "Health Check ID",
+   "description": "Generated on insert. The bearer a gateway presents on the data path. Separate from the Admin Token on purpose \u2014 that one is the control plane's credential, and handing it to every gateway would give them the admin plane.",
+   "fieldname": "data_token",
+   "fieldtype": "Password",
+   "label": "Data Token",
    "read_only": 1
   }
  ],

@@ -2,10 +2,10 @@
   Grove ingress — OpenResty in front of one VPC's engines. Rendered by ingress.yml and
   deploy_openresty.yml; do not edit on the box.
 
-  Two names, mirroring the gateway's split and for the same reason. The Network's shared name is
-  what the gateways dial, and DNS hands out whichever ingress in the Network is healthy — so it
-  must never carry /grove-admin, which has to reach ONE box to push it a replica table. This box's
-  own <name>.<zone> carries that, and the metrics scrape with it.
+  One name, unlike the gateway. A gateway answers to Gateway Host as well, which GeoDNS points at
+  whichever box is nearest; nothing resolves to a set of ingresses, because a gateway addresses one
+  by name out of its own route table. So /v1/, /grove-admin and the scrape all hang under this
+  box's <name>.<zone>.
 
   /v1/ hangs under the shared name only. access.lua asks the agent for a replica in this Network
   and rewrites the upstream; nothing here reads or rewrites the body, because the gateway already
@@ -113,14 +113,16 @@ http {
 
 	}
 
-	# The Network's shared name. Every ingress in the Network answers to it with the same
-	# wildcard certificate, and DNS picks one — which is safe only because every ingress holds
-	# the identical replica table and hashes a session the same way.
+	# This box. The gateways dial it here by the name on the Ingress Server doc, verified against
+	# the fleet wildcard, and the control plane pushes its replica table to the same name.
+	#
+	# default_server so the Monitoring Agent's scrape, which connects to the bare IP and sends no
+	# SNI, still lands on /metrics/node.
 	server {
 
-		listen 443 ssl;
+		listen 443 ssl default_server;
 		http2 on;
-		server_name {{ ingress_host }};
+		server_name {{ ingress_hostname }};
 
 		ssl_certificate     {{ certificate }};
 		ssl_certificate_key {{ certificate_key }};
@@ -129,26 +131,9 @@ http {
 
 {{ grove_variables() }}
 {{ healthz() }}
-{{ data_locations() }}
-	}
-
-	# This box specifically. /grove-admin has to reach ONE ingress — the shared name above names
-	# them all — and admin_url on the Ingress Server doc is this name, verified against the same
-	# wildcard.
-	#
-	# default_server so the Monitoring Agent's scrape, which connects to the bare IP and sends no
-	# SNI, still lands on /metrics/node.
-	server {
-
-		listen 443 ssl default_server;
-		server_name {{ ingress_hostname }};
-
-		ssl_certificate     {{ certificate }};
-		ssl_certificate_key {{ certificate_key }};
-
-{{ healthz() }}
 {{ admin_locations() }}
 {{ metrics_locations() }}
+{{ data_locations() }}
 	}
 {% else %}
 	server {

@@ -9,7 +9,6 @@
   vars:
     grove_dir: "{{ playbook_dir }}"
     ingress_hostname: ""
-    ingress_host: ""
 
   # Roles run before tasks, which is what this needs: nginx.conf declares a `listen 443 ssl`
   # server, and OpenResty will not start with no certificate on disk. Re-running it is also how a

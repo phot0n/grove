@@ -4,10 +4,10 @@
 and no box. Shares the gateway's render harness, because the two files have to keep agreeing about
 where a certificate comes from.
 
-Same failure mode as the gateway's, one level down and one degree worse: DNS hands out an ingress
-at random, so a location under the wrong server block is reachable through a name that means "any
-box in this Network". /grove-admin under the shared name would push a replica table to whichever
-ingress answered.
+Simpler than the gateway's: an ingress answers to one name, because a gateway addresses it out of
+its own route table rather than resolving something that names several. What still has to hold is
+that the plaintext shape — a fleet with no zone yet — keeps working, and that nothing but a
+redirect is ever served in the clear once there is a certificate.
 """
 
 import unittest
@@ -24,7 +24,6 @@ from grove.tests.test_gateway_templates import (
 )
 
 INGRESS = PLAYBOOKS / "ingress_server"
-INGRESS_HOST = f"mumbai-ingress.{ZONE}"
 INGRESS_HOSTNAME = f"aps1-i1.{ZONE}"
 
 TEMPLATES = environment(INGRESS)
@@ -35,13 +34,11 @@ BASE = resolve({
 	**role_defaults(PLAYBOOKS / "roles/grove_https"),
 	**role_defaults(PLAYBOOKS / "roles/fleet_tls"),
 	"ingress_hostname": "",
-	"ingress_host": "",
 })
 
 TLS = {
 	**BASE,
 	"ingress_hostname": INGRESS_HOSTNAME,
-	"ingress_host": INGRESS_HOST,
 	"fleet_tls_cert": "-----BEGIN CERTIFICATE-----\nnot-a-real-one\n-----END CERTIFICATE-----\n",
 	"fleet_tls_key": "-----BEGIN PRIVATE KEY-----\nsecret-material\n-----END PRIVATE KEY-----\n",
 }
@@ -78,48 +75,31 @@ class TestPlaintextShape(unittest.TestCase):
 
 
 class TestTlsShape(unittest.TestCase):
-	"""With a Fleet Zone: two names, one wildcard, and the split between them is the point."""
+	"""With a Fleet Zone: one name under the fleet wildcard, serving everything."""
 
 	def setUp(self):
 		self.config = render(TLS)
-		self.shared = server_with(self.config, f"server_name {INGRESS_HOST};")
 		self.box = server_with(self.config, f"server_name {INGRESS_HOSTNAME};")
 
-	def test_the_control_plane_reaches_one_box_and_not_a_random_one(self):
-		# The whole reason there are two names. DNS picks an ingress out of the shared set, so a
-		# replica-table push sent there would land on whichever box answered that second.
-		self.assertIn("location /grove-admin/", self.box)
-		self.assertNotIn("location /grove-admin/", self.shared)
+	def test_everything_answers_on_the_one_name(self):
+		# A gateway dials /v1/ here and the control plane pushes a replica table to /grove-admin
+		# on the same name — there is no second name for either to have landed on.
+		for location in ("location /v1/", "location /grove-admin/", "location = /metrics/node"):
+			with self.subTest(location):
+				self.assertIn(location, self.box)
 
-	def test_the_scrape_reaches_one_box_too(self):
-		self.assertIn("location = /metrics/node", self.box)
-		self.assertNotIn("location = /metrics/node", self.shared)
-
-	def test_the_data_path_hangs_under_the_shared_name(self):
-		# The gateways dial the shared name; the per-box name exists so the control plane can
-		# reach ONE ingress. Serving /v1/ from the box name too would let a route table pin
-		# traffic to a single ingress and quietly undo the DNS balancing.
-		self.assertIn("location /v1/", self.shared)
-		self.assertNotIn("location /v1/", self.box)
+	def test_it_answers_the_health_check(self):
+		self.assertIn("location = /healthz", self.box)
 
 	def test_the_data_path_streams(self):
 		# proxy_buffering off is what makes SSE arrive token by token instead of at the end.
-		self.assertIn("proxy_buffering off;", self.shared)
-		self.assertIn("access_by_lua_file /etc/grove-gateway/lua/access.lua;", self.shared)
-		self.assertIn("log_by_lua_file /etc/grove-gateway/lua/log.lua;", self.shared)
+		self.assertIn("proxy_buffering off;", self.box)
+		self.assertIn("access_by_lua_file /etc/grove-gateway/lua/access.lua;", self.box)
+		self.assertIn("log_by_lua_file /etc/grove-gateway/lua/log.lua;", self.box)
 
-	def test_both_names_answer_the_health_check(self):
-		# The Route53 check behind the shared record asks this box by its OWN name, and a gateway
-		# checks the shared one. A block missing /healthz drops out of resolution permanently.
-		for block in (self.shared, self.box):
-			with self.subTest(block=block.splitlines()[1].strip()):
-				self.assertIn("location = /healthz", block)
-
-	def test_both_names_present_the_same_wildcard(self):
-		for block in (self.shared, self.box):
-			with self.subTest(block=block.splitlines()[1].strip()):
-				self.assertIn(f"ssl_certificate     {TLS['fleet_tls_cert_path']};", block)
-				self.assertIn(f"ssl_certificate_key {TLS['fleet_tls_key_path']};", block)
+	def test_it_presents_the_fleet_wildcard(self):
+		self.assertIn(f"ssl_certificate     {TLS['fleet_tls_cert_path']};", self.box)
+		self.assertIn(f"ssl_certificate_key {TLS['fleet_tls_key_path']};", self.box)
 
 	def test_nothing_but_a_redirect_stays_in_the_clear(self):
 		plaintext = server_with(self.config, "listen 80 default_server;")

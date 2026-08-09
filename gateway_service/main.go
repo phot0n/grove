@@ -35,6 +35,9 @@ type server struct {
 	gatewayID string // this gateway's id — the first part of every request-id
 	// How long a caller that names no session is pinned to one engine. 0 = not at all.
 	syntheticTTL time.Duration
+	// Ingress mode only: the bearer a gateway must present on /pick. Blank on a gateway, and
+	// blank on an ingress refuses every pick — see isGateway.
+	ingressToken string
 }
 
 func main() {
@@ -57,6 +60,7 @@ func main() {
 		rdb:          redis.NewClient(&redis.Options{Addr: redisAddr}),
 		gatewayID:    gatewayID(),
 		syntheticTTL: parseSyntheticTTL(os.Getenv("GROVE_SYNTHETIC_SESSION_TTL")),
+		ingressToken: strings.TrimSpace(os.Getenv("GROVE_INGRESS_TOKEN")),
 	}
 	if err := s.rdb.Ping(context.Background()).Err(); err != nil {
 		log.Fatalf("redis unreachable at %s: %v", redisAddr, err)
@@ -68,6 +72,10 @@ func main() {
 	mux.HandleFunc("/admin/routes", adminAuth(adminToken, s.handleAdminRoutes))
 
 	if ingressID != "" {
+		if s.ingressToken == "" {
+			log.Fatal("GROVE_INGRESS_TOKEN is empty — refusing to start an ingress that would " +
+				"refuse every gateway, which reads as a routing outage rather than a config fault")
+		}
 		// Deliberately NOT the gateway's surface with the tenant parts disabled: an ingress does
 		// not serve /decide, /meter or /models at all, so there is no handler on this box that
 		// could read a key store even if one were somehow pushed to it.

@@ -9,7 +9,6 @@ from frappe.model.document import Document
 from grove.cloud_provider.base import CloudClientError, build_cloud_client
 from grove.monitoring import BOX_HTTP_PORT, BOX_HTTPS_PORT
 from grove.net import reachable_ip
-from grove.utils import is_label_under, slugify
 
 # A proxy serves customers on 80/443 and its own admin API on 443 — both from anywhere, since
 # neither the client nor the control plane has a pinned address.
@@ -96,27 +95,6 @@ class Network(Document):
 		except ValueError as e:
 			frappe.throw(f"CIDR Block '{self.cidr_block}' on Network {self.name} is not valid: {e}")
 		return str(next(block.subnets(new_prefix=SUBNET_PREFIX)))
-
-	@property
-	def ingress_host(self):
-		"""The one name every ingress in this Network answers to, and the only ingress address a
-		gateway's route table ever holds — so how many ingresses sit behind it is a DNS fact, not
-		a control-plane one. Blank with no Fleet Zone set, like every other fleet name.
-
-		Exactly one label under the zone, because the fleet certificate is a wildcard and
-		`*.<zone>` covers nothing deeper. A Network named with a dot in it would produce one that
-		is not, and an ingress serving a name the certificate does not cover fails as a TLS error
-		in the gateway, long after this."""
-		zone = frappe.db.get_single_value("Grove Settings", "fleet_zone")
-		if not zone:
-			return ""
-		host = f"{slugify(self.name)}-ingress.{zone}"
-		if not is_label_under(host, zone):
-			frappe.throw(
-				f"Network {self.name} does not make a DNS label — '{host}' is more than one "
-				f"label under '{zone}', which the fleet wildcard does not cover."
-			)
-		return host
 
 	@property
 	def proxy_security_group_id_list(self):

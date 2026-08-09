@@ -20,6 +20,7 @@ class InferenceServer(AnsibleHost, Document):
 		from frappe.types import DF
 
 		data_path: DF.Data
+		ingress: DF.Link | None
 		is_provisioned: DF.Check
 		is_static_ip: DF.Check
 		machine: DF.Link
@@ -28,6 +29,26 @@ class InferenceServer(AnsibleHost, Document):
 		region: DF.Link | None
 		status: DF.Literal["Pending", "Installing", "Active", "Broken", "Terminated"]
 	# end: auto-generated types
+
+	def validate(self):
+		self.validate_ingress_network()
+
+	def validate_ingress_network(self):
+		"""An ingress can only reach this box privately if the two share a VPC.
+
+		Checked here because nothing downstream can say so: _replicas_for_ingress selects on this
+		link, so a mismatch produces an ingress with an empty table and a model that reads
+		unavailable — a silence, days after the save, with nothing pointing back at this field."""
+		if not self.ingress:
+			return
+		ingress_network = frappe.db.get_value("Ingress Server", self.ingress, "network")
+		box_network = frappe.db.get_value("Machine", self.machine, "network") if self.machine else None
+		if ingress_network != box_network:
+			frappe.throw(
+				f"Ingress Server {self.ingress} is in Network {ingress_network or 'none'}, but "
+				f"{self.name} is in {box_network or 'none'}. An ingress reaches only the boxes "
+				f"inside its own VPC."
+			)
 
 	def before_insert(self):
 		# This name reaches the gateway on every route as `server`, and a request id when a route

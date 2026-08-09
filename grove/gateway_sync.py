@@ -204,53 +204,59 @@ def _routes_for_proxy(proxy_name):
 	return routes
 
 
-def _replicas_for_ingress(ingress_name):
-	"""deploy:<model> for ONE ingress: every Active replica inside its Network, dialled privately.
+def _owned_boxes(ingress_name):
+	"""{Inference Server name: private ip} for the boxes that name this ingress.
 
-	The same shape the gateway's table has, so the agent's /admin/routes handler is reused whole —
-	what narrows is the scope. An ingress fronts one VPC, so it is told about that VPC's replicas
-	and no others, and a pod restarting in another region is not an event it ever sees. That is
-	the point of the split: replica topology never leaves its own Network.
+	Ownership is explicit rather than derived from the Network, and that is what keeps the
+	capacity gate honest. `inflight:<engine>` lives in each box's own Redis, so a replica counted
+	by two ingresses is admitted to twice its --max-num-seqs and vLLM starts queueing — silently.
+	One owner per replica means one authoritative count.
 
-	Seeded with EVERY Model, so a model with nothing local is sent as an empty list, the agent
-	DELs the key, and /pick answers 503 no-replica rather than the model quietly resolving
-	somewhere it should not.
-
-	Pods are absent by construction — they have no Machine and so no Network, and stay on the
-	gateway's `direct` route kind.
-
-	A replica in this Network with no private address is EXCLUDED, not dialled publicly. Fail
-	closed: the model reads unavailable here and someone syncs the Machine, rather than customer
-	traffic quietly crossing the internet to a box that was supposed to be private."""
-	network = frappe.db.get_value("Ingress Server", ingress_name, "network")
-	if not network:
-		frappe.throw(f"Ingress Server {ingress_name} has no Network — it fronts nothing.")
-
-	servers = frappe.get_all("Inference Server", fields=["name", "machine"])
+	A box with no private address is left out, not dialled publicly. Fail closed: the model reads
+	unavailable behind this ingress and someone syncs the Machine, rather than customer traffic
+	quietly crossing the internet to a box that was supposed to be private."""
+	servers = frappe.get_all("Inference Server", filters={"ingress": ingress_name}, fields=["name", "machine"])
 	machines = {
 		machine["name"]: machine
 		for machine in frappe.get_all(
 			"Machine",
 			filters={"name": ("in", [s["machine"] for s in servers if s["machine"]])},
-			fields=["name", "network", "private_ip"],
+			fields=["name", "private_ip"],
 		)
-	}
-	local = {
+	} if servers else {}
+	return {
 		server["name"]: machines[server["machine"]]["private_ip"]
 		for server in servers
-		if server["machine"] in machines
-		and machines[server["machine"]]["network"] == network
-		and machines[server["machine"]]["private_ip"]
+		if server["machine"] in machines and machines[server["machine"]]["private_ip"]
 	}
 
+
+def _replicas_for_ingress(ingress_name):
+	"""deploy:<model> for ONE ingress: every Active replica it owns, dialled privately.
+
+	The same shape the gateway's table has, so the agent's /admin/routes handler is reused whole —
+	what narrows is the scope. An ingress is told about its own boxes and no others, so a pod
+	restarting in another region is not an event it ever sees. That is the point of the split:
+	replica topology never leaves its own Network.
+
+	Seeded with EVERY Model, so a model with nothing here is sent as an empty list, the agent DELs
+	the key, and /pick answers 503 no-replica rather than the model quietly resolving somewhere it
+	should not.
+
+	Pods are absent by construction — they have no Machine and so no ingress, and stay on the
+	gateway's direct route kind."""
+	owned = _owned_boxes(ingress_name)
 	routes = {model: [] for model in frappe.get_all("Model", pluck="name")}
+	if not owned:
+		return routes
+
 	deployments = frappe.get_all(
 		"Model Deployment",
-		filters={"status": "Active", "inference_server": ("in", list(local))} if local else {"name": ("is", "not set")},
+		filters={"status": "Active", "inference_server": ("in", list(owned))},
 		fields=["name", "model", "engine_url", "inference_server", "max_num_seqs"],
 	)
 	for deployment in deployments:
-		engine_url = private_url(deployment.engine_url, local[deployment.inference_server])
+		engine_url = private_url(deployment.engine_url, owned[deployment.inference_server])
 		if not engine_url:
 			continue
 		routes.setdefault(deployment.model, [])

@@ -1,11 +1,14 @@
 # Copyright (c) 2026, Grove and contributors
 # See license.txt
-"""The table one ingress is given: every Active replica inside its Network, dialled privately.
+"""The table one ingress is given: every Active replica it OWNS, dialled privately.
 
-The rule that matters is what happens to a replica with no private address. It is left OUT, not
-dialled publicly — otherwise customer traffic quietly crosses the internet to a box that was
-supposed to be private, and nothing anywhere reports it. `test-aws-1` is that case on the fleet
-today: network = Mumbai, private_ip blank.
+Ownership is explicit — an Inference Server names its ingress — and that is what keeps the
+capacity gate honest. `inflight:<engine>` lives in each box's own Redis, so a replica counted by
+two ingresses is admitted to twice its --max-num-seqs and vLLM starts queueing, silently.
+
+The other rule that matters is what happens to a replica with no private address. It is left OUT,
+not dialled publicly, or customer traffic quietly crosses the internet to a box that was supposed
+to be private. `test-aws-1` is that case on the fleet today: private_ip blank.
 """
 
 import unittest
@@ -64,12 +67,15 @@ class FakeQuery:
 
 	def __call__(self, doctype, filters=None, fields=None, pluck=None, **kwargs):
 		rows = self.tables.get(doctype, [])
+		filters = dict(filters or {})
+		if doctype == "Inference Server" and "ingress" in filters:
+			rows = [r for r in rows if r.get("ingress") == filters["ingress"]]
 		if doctype == "Model Deployment":
-			wanted = dict(filters or {}).get("inference_server")
+			wanted = filters.get("inference_server")
 			names = list(wanted[1]) if wanted else []
 			rows = [r for r in rows if r["status"] == "Active" and r["inference_server"] in names]
 		if doctype == "Machine":
-			wanted = dict(filters or {}).get("name")
+			wanted = filters.get("name")
 			rows = [r for r in rows if r["name"] in list(wanted[1])] if wanted else rows
 		if pluck:
 			return [r[pluck] for r in rows]
@@ -78,20 +84,24 @@ class FakeQuery:
 
 MODELS = [{"name": "qwen3-35b"}, {"name": "llama-70b"}]
 SERVERS = [
-	{"name": "INF-local", "machine": "M-local"},
-	{"name": "INF-elsewhere", "machine": "M-elsewhere"},
-	{"name": "INF-noprivate", "machine": "M-noprivate"},
+	{"name": "INF-local", "machine": "M-local", "ingress": "ING-1"},
+	{"name": "INF-elsewhere", "machine": "M-elsewhere", "ingress": "ING-2"},
+	{"name": "INF-noprivate", "machine": "M-noprivate", "ingress": "ING-1"},
+	{"name": "INF-direct", "machine": "M-direct", "ingress": None},
 ]
 MACHINES = [
 	{"name": "M-local", "network": "Mumbai", "private_ip": "10.0.1.4"},
-	{"name": "M-elsewhere", "network": "Frankfurt", "private_ip": "10.1.1.4"},
+	{"name": "M-elsewhere", "network": "Mumbai", "private_ip": "10.1.1.4"},
 	{"name": "M-noprivate", "network": "Mumbai", "private_ip": ""},
+	{"name": "M-direct", "network": "Mumbai", "private_ip": "10.0.1.9"},
 ]
 DEPLOYMENTS = [
 	{"name": "MD-1", "model": "qwen3-35b", "engine_url": "https://203.0.113.7/e/md-1",
 	 "status": "Active", "inference_server": "INF-local", "max_num_seqs": 8},
 	{"name": "MD-2", "model": "llama-70b", "engine_url": "https://203.0.113.8/e/md-2",
 	 "status": "Active", "inference_server": "INF-elsewhere", "max_num_seqs": 4},
+	{"name": "MD-5", "model": "llama-70b", "engine_url": "https://203.0.113.10/e/md-5",
+	 "status": "Active", "inference_server": "INF-direct", "max_num_seqs": 4},
 	{"name": "MD-3", "model": "llama-70b", "engine_url": "https://203.0.113.9/e/md-3",
 	 "status": "Active", "inference_server": "INF-noprivate", "max_num_seqs": 4},
 	{"name": "MD-4", "model": "qwen3-35b", "engine_url": "https://203.0.113.7/e/md-4",
@@ -100,20 +110,18 @@ DEPLOYMENTS = [
 
 
 class TestReplicasForIngress(unittest.TestCase):
-	def routes(self, network="Mumbai"):
+	def routes(self, ingress="ING-1"):
 		from grove import gateway_sync
 
 		query = FakeQuery(SERVERS, MACHINES, DEPLOYMENTS, MODELS)
 		with (
 			patch.object(frappe, "get_all", side_effect=query),
-			patch.object(frappe, "db", frappe._dict(get_value=lambda *args: network)),
-			patch.object(gateway_sync, "frappe", frappe),
 			patch.object(
 				frappe, "get_doc",
 				side_effect=lambda *a, **k: frappe._dict(get_password=lambda *a, **k: "internal"),
 			),
 		):
-			return gateway_sync._replicas_for_ingress("ING-1")
+			return gateway_sync._replicas_for_ingress(ingress)
 
 	def test_a_local_replica_is_dialled_privately(self):
 		[route] = self.routes()["qwen3-35b"]
@@ -121,11 +129,19 @@ class TestReplicasForIngress(unittest.TestCase):
 		self.assertEqual(route["deployment"], "MD-1")
 		self.assertEqual(route["capacity"], 8)
 
-	def test_a_replica_in_another_network_is_not_in_the_table(self):
-		# The whole point of the split: a pod restarting in Frankfurt is invisible here.
+	def test_a_box_owned_by_another_ingress_is_not_in_this_table(self):
+		# Same Network, different owner. If both ingresses held it, each would count only its own
+		# half of the traffic and the replica would run at twice its --max-num-seqs.
 		urls = [r["engine_url"] for routes in self.routes().values() for r in routes]
 		self.assertNotIn("https://10.1.1.4/e/md-2", urls)
 		self.assertFalse([u for u in urls if "203.0.113.8" in u])
+
+	def test_a_box_that_names_no_ingress_is_nobodys(self):
+		# It stays on the gateway's direct path, so no ingress may claim it.
+		for ingress in ("ING-1", "ING-2"):
+			with self.subTest(ingress):
+				urls = [r["engine_url"] for routes in self.routes(ingress).values() for r in routes]
+				self.assertFalse([u for u in urls if "10.0.1.9" in u], urls)
 
 	def test_a_local_replica_with_no_private_address_is_excluded_not_dialled_publicly(self):
 		# Fail closed. The model reads unavailable in this network and someone syncs the Machine,
@@ -142,9 +158,9 @@ class TestReplicasForIngress(unittest.TestCase):
 		deployments = [r["deployment"] for routes in self.routes().values() for r in routes]
 		self.assertNotIn("MD-4", deployments)
 
-	def test_an_ingress_in_a_network_with_no_replicas_still_sends_every_model(self):
+	def test_an_ingress_that_owns_nothing_still_sends_every_model(self):
 		# Same reason: every model has to be named so its key is pruned rather than left stale.
-		routes = self.routes(network="Singapore")
+		routes = self.routes(ingress="ING-unused")
 		self.assertEqual(set(routes), {"qwen3-35b", "llama-70b"})
 		self.assertEqual([r for rows in routes.values() for r in rows], [])
 

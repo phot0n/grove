@@ -67,7 +67,9 @@ ngx.var.grove_deployment = decision.deployment or "-"
 ngx.var.grove_model = model
 ngx.var.grove_request_id = request_id
 
-ngx.var.upstream = decision.engine_url
+-- engine_url is a base (https://<private ip>/e/<slug>); the path the client asked for is
+-- appended here, exactly as the gateway does when it forwards to this box.
+ngx.var.upstream = decision.engine_url .. ngx.var.request_uri
 if decision.internal_key and decision.internal_key ~= "" then
 	ngx.req.set_header("Authorization", "Bearer " .. decision.internal_key)
 end

@@ -14,6 +14,7 @@
   "column_break_axpk",
   "region",
   "monitoring_agent",
+  "ingress",
   "is_provisioned",
   "section_gpus",
   "gpus_html"
@@ -68,6 +69,13 @@
    "fieldtype": "Link",
    "label": "Monitoring Agent",
    "options": "Monitoring Agent"
+  },
+  {
+   "description": "The ingress that fronts this box. Set it and the gateways reach this box's engines through that ingress, privately; leave it blank and they dial the box directly, as they always have. Must be an ingress in this box's own Network.",
+   "fieldname": "ingress",
+   "fieldtype": "Link",
+   "label": "Ingress Server",
+   "options": "Ingress Server"
   },
   {
    "default": "0",

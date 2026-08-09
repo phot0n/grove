@@ -2,7 +2,7 @@
 # Deploy & build the Go agent on an ALREADY-provisioned Ingress Server: push gateway_service
 # source, build on the box, install its env file + restart. Does NOT touch OpenResty or Redis
 # (use ingress.yml for a full provision).
-# extra-vars: agent_source, admin_token, ingress_id.
+# extra-vars: agent_source, admin_token, data_token, ingress_id.
 - hosts: all
   become: true
   gather_facts: true
@@ -27,6 +27,7 @@
         dest: /etc/grove-gateway/agent.env
         content: |
           GROVE_ADMIN_TOKEN={{ admin_token }}
+          GROVE_INGRESS_TOKEN={{ data_token | default('') }}
           GROVE_INGRESS_ID={{ ingress_id | default('') }}
         mode: "0600"
       no_log: true
