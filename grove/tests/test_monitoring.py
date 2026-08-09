@@ -172,7 +172,7 @@ class TestBoxesAreScrapedPrivatelyWhereTheyCanBe(unittest.TestCase):
 		)
 
 	def test_an_engine_on_a_private_box_keeps_its_public_identity(self):
-		# The `engine` label is the join back to the route gateway_sync pushes, and `instance` is
+		# The `engine` label is the join back to the route agent_sync pushes, and `instance` is
 		# what tells two engines on one box apart. Neither may follow the address.
 		entry = engine_entry(
 			"https://10.0.0.5/e/md-00007", {"deployment": "MD-00007"}, address="172.31.0.9"
@@ -264,7 +264,7 @@ class TestEngineTargets(unittest.TestCase):
 
 	def test_an_engine_without_a_url_is_not_a_target(self):
 		# Mid-provision deployments and still-loading pods hold "" — the same filter
-		# gateway_sync applies to routes.
+		# agent_sync applies to routes.
 		self.assertIsNone(engine_entry("", self.LABELS))
 		self.assertIsNone(engine_entry(None, self.LABELS))
 

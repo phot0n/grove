@@ -71,7 +71,7 @@ class FakeQuery:
 
 
 def routes(zone=ZONE):
-	from grove import gateway_sync
+	from grove import agent_sync
 
 	with (
 		patch.object(frappe, "get_all", side_effect=FakeQuery(zone)),
@@ -81,7 +81,7 @@ def routes(zone=ZONE):
 			side_effect=lambda *a, **k: frappe._dict(get_password=lambda *a, **k: "secret"),
 		),
 	):
-		return gateway_sync._routes_for_proxy("gw-1")
+		return agent_sync._routes_for_proxy("gw-1")
 
 
 def rows_for(model, zone=ZONE):

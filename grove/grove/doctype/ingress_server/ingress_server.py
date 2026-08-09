@@ -4,7 +4,7 @@
 import frappe
 from frappe.model.document import Document
 
-from grove import gateway_sync
+from grove import agent_sync
 from grove.cloud_provider.route53 import Route53Error
 from grove.fleet import FleetHost
 from grove.grove.doctype.network.network import sync_fleet_ingress
@@ -76,7 +76,7 @@ class IngressServer(GeneratedName, FleetHost, Document):
 		# scheduled run only ticks when a deployment moved.
 		if self.has_value_changed("status") and self.status == "Active" and self.admin_url:
 			frappe.enqueue(
-				"grove.gateway_sync.full_sync",
+				"grove.agent_sync.full_sync",
 				queue="short",
 				proxies=[],
 				ingresses=[self.name],
@@ -134,17 +134,17 @@ class IngressServer(GeneratedName, FleetHost, Document):
 		"""Button: push this ingress's replica table now — every Active replica it owns, dialled
 		privately.
 
-		Through full_sync rather than straight at the agent, so the push lands on a Gateway Sync
+		Through full_sync rather than straight at the agent, so the push lands on a Agent Sync
 		doc like every other. A button that reports "queued" and then leaves no record of whether
 		it worked is the one you end up debugging by ssh."""
 		frappe.enqueue(
-			"grove.gateway_sync.full_sync",
+			"grove.agent_sync.full_sync",
 			queue="short",
 			proxies=[],
 			ingresses=[self.name],
 			trigger="Manual",
 		)
-		frappe.msgprint(f"Replica table queued for {self.name} — watch its Gateway Sync.")
+		frappe.msgprint(f"Replica table queued for {self.name} — watch its Agent Sync.")
 
 	@frappe.whitelist()
 	def setup(self):
@@ -178,7 +178,7 @@ class IngressServer(GeneratedName, FleetHost, Document):
 			# provision writes status through db.set_value, so on_update never fires here — these
 			# two are what let a new ingress reach an engine and be let through to one.
 			sync_fleet_ingress()
-			gateway_sync.full_sync(proxies=[], ingresses=[self.name], trigger="Provision")
+			agent_sync.full_sync(proxies=[], ingresses=[self.name], trigger="Provision")
 		return play_name, rc
 
 	def provision_variables(self, settings):

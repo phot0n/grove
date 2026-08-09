@@ -11,10 +11,14 @@ import frappe
 
 
 def execute():
-	if not frappe.db.has_column("Gateway Sync Row", "proxy"):
+	# The doctype is renamed to Agent Sync Row by a later pre-model-sync patch, which therefore
+	# runs BEFORE this one on any site that has not migrated yet. Resolved rather than hardcoded,
+	# or this silently finds no column and skips the backfill it exists to do.
+	doctype = "Agent Sync Row" if frappe.db.exists("DocType", "Agent Sync Row") else "Gateway Sync Row"
+	if not frappe.db.has_column(doctype, "proxy"):
 		return
-	frappe.db.sql("""
-		UPDATE `tabGateway Sync Row`
+	frappe.db.sql(f"""
+		UPDATE `tab{doctype}`
 		SET server = proxy, server_type = 'Gateway Server'
 		WHERE proxy IS NOT NULL AND proxy != ''
 	""")

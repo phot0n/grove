@@ -169,5 +169,5 @@ class GroveSettings(Document):
 	@frappe.whitelist()
 	def full_sync_all(self):
 		"""Button: push the COMPLETE state to every Active proxy."""
-		frappe.enqueue("grove.gateway_sync.full_sync", queue="short", trigger="Manual")
+		frappe.enqueue("grove.agent_sync.full_sync", queue="short", trigger="Manual")
 		frappe.msgprint("Full sync queued for all Active proxies.")

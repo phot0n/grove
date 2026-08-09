@@ -111,7 +111,7 @@ DEPLOYMENTS = [
 
 class TestReplicasForIngress(unittest.TestCase):
 	def routes(self, ingress="ING-1"):
-		from grove import gateway_sync
+		from grove import agent_sync
 
 		query = FakeQuery(SERVERS, MACHINES, DEPLOYMENTS, MODELS)
 		with (
@@ -121,7 +121,7 @@ class TestReplicasForIngress(unittest.TestCase):
 				side_effect=lambda *a, **k: frappe._dict(get_password=lambda *a, **k: "internal"),
 			),
 		):
-			return gateway_sync._replicas_for_ingress(ingress)
+			return agent_sync._replicas_for_ingress(ingress)
 
 	def test_a_local_replica_is_dialled_privately(self):
 		[route] = self.routes()["qwen3-35b"]
@@ -189,18 +189,18 @@ class TestThePushIsMarkedComplete(unittest.TestCase):
 	and /pick would hand it out."""
 
 	def test_sync_replicas_sets_prune(self):
-		from grove import gateway_sync
+		from grove import agent_sync
 
 		sent = {}
 		with (
-			patch.object(gateway_sync, "_replicas_for_ingress", return_value={"m": []}),
-			patch.object(gateway_sync, "_conn", return_value=(None, "http://x", "t")),
+			patch.object(agent_sync, "_replicas_for_ingress", return_value={"m": []}),
+			patch.object(agent_sync, "_conn", return_value=(None, "http://x", "t")),
 			patch.object(
-				gateway_sync, "_post",
+				agent_sync, "_post",
 				side_effect=lambda url, token, path, payload: sent.update(payload) or {"models": 1},
 			),
 		):
-			gateway_sync.sync_replicas("ING-1")
+			agent_sync.sync_replicas("ING-1")
 		self.assertIs(sent.get("prune"), True)
 
 
@@ -213,7 +213,7 @@ class TestWhichIngressesAPushReaches(unittest.TestCase):
 	"""
 
 	def owners(self, servers, ingresses):
-		from grove import gateway_sync
+		from grove import agent_sync
 
 		def get_all(doctype, filters=None, pluck=None, **kwargs):
 			filters = dict(filters or {})
@@ -228,7 +228,7 @@ class TestWhichIngressesAPushReaches(unittest.TestCase):
 			]
 
 		with patch.object(frappe, "get_all", side_effect=get_all):
-			return gateway_sync.owning_ingresses([s["name"] for s in servers])
+			return agent_sync.owning_ingresses([s["name"] for s in servers])
 
 	def test_only_the_owner_is_pushed_to(self):
 		owners = self.owners(

@@ -46,7 +46,7 @@ class GroveUserGroup(Document):
 			# still exist. Nothing else dirties on a delete, so without this the models of a
 			# deleted group keep being advertised until some other group happens to change.
 			frappe.enqueue(
-				"grove.gateway_sync.full_sync", queue="short", trigger="Group Deleted"
+				"grove.agent_sync.full_sync", queue="short", trigger="Group Deleted"
 			)
 
 	@property

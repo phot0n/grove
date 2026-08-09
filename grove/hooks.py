@@ -160,7 +160,7 @@ fixtures = [{"dt": "Role", "filters": [["name", "in", ["Grove Control"]]]}]
 scheduler_events = {
 	"cron": {
 		"*/2 * * * *": [
-			"grove.gateway_sync.sync_dirty",
+			"grove.agent_sync.sync_dirty",
 		],
         "*/5 * * * *": [
 			"grove.usage_pull.pull_all",
@@ -263,11 +263,11 @@ export_python_type_annotations = True
 # Require all whitelisted methods to have type annotations
 require_type_annotated_api_methods = True
 
-# Gateway Sync is a log: the scheduled run writes one doc every two minutes whether or not
+# Agent Sync is a log: the scheduled run writes one doc every two minutes whether or not
 # anything moved, each with a row per box and the payload that box was sent. Registering it here
 # is what lets Log Settings clear it, and what puts it in that form for an operator to retune.
 default_log_clearing_doctypes = {
-	"Gateway Sync": 60,  # days to retain sync runs
+	"Agent Sync": 60,  # days to retain sync runs
 }
 
 # Translation

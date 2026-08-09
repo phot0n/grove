@@ -4,7 +4,7 @@
 import frappe
 from frappe.model.document import Document
 
-from grove import gateway_sync
+from grove import agent_sync
 from grove.cloud_provider.route53 import Route53Error
 from grove.fleet import FleetHost
 from grove.grove.doctype.network.network import sync_fleet_ingress
@@ -48,7 +48,7 @@ class GatewayServer(GeneratedName, FleetHost, Document):
 		# job only pushes dirty deltas, so full-sync this one immediately.
 		if self.has_value_changed("status") and self.status == "Active" and self.admin_url:
 			frappe.enqueue(
-				"grove.gateway_sync.full_sync",
+				"grove.agent_sync.full_sync",
 				queue="short",
 				proxies=[self.name],
 				trigger="Proxy Activated",
@@ -71,9 +71,9 @@ class GatewayServer(GeneratedName, FleetHost, Document):
 	@frappe.whitelist()
 	def full_sync(self):
 		"""Button: push the COMPLETE key set + routing table to this proxy now
-		(logged on a Gateway Sync doc)."""
+		(logged on a Agent Sync doc)."""
 		frappe.enqueue(
-			"grove.gateway_sync.full_sync",
+			"grove.agent_sync.full_sync",
 			queue="short",
 			proxies=[self.name],
 			trigger="Manual",
@@ -239,5 +239,5 @@ class GatewayServer(GeneratedName, FleetHost, Document):
 			# provision writes status and public_ip through db.set_value, so on_update never
 			# fires here — this is the only thing that lets a new proxy reach an engine.
 			sync_fleet_ingress()
-			gateway_sync.full_sync(proxies=[self.name], trigger="Provision")
+			agent_sync.full_sync(proxies=[self.name], trigger="Provision")
 		return play_name, rc

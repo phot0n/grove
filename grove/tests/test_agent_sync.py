@@ -13,7 +13,7 @@ import unittest.mock
 
 import frappe
 
-from grove import gateway_sync
+from grove import agent_sync
 from grove.serve_command import DEFAULT_MAX_NUM_SEQS
 
 
@@ -59,7 +59,7 @@ class TestRoutesForProxy(unittest.TestCase):
 			),
 			unittest.mock.patch.object(frappe, "get_doc", return_value=doc),
 		):
-			return gateway_sync._routes_for_proxy("PROXY-1")
+			return agent_sync._routes_for_proxy("PROXY-1")
 
 	def test_an_active_deployment_names_itself_and_its_box(self):
 		[route] = self.routes([deployment("MD-00007")])["qwen3-35b"]
@@ -124,7 +124,7 @@ class TestEffectiveGroups(unittest.TestCase):
 			raise AssertionError(f"unexpected get_all({doctype})")
 
 		with unittest.mock.patch.object(frappe, "get_all", side_effect=get_all):
-			return gateway_sync._effective_groups()
+			return agent_sync._effective_groups()
 
 	def test_a_group_carries_its_models_and_flipped_priority(self):
 		[group] = self.groups(
@@ -181,7 +181,7 @@ class TestPublicCatalog(unittest.TestCase):
 			raise AssertionError(f"unexpected get_all({doctype})")
 
 		with unittest.mock.patch.object(frappe, "get_all", side_effect=get_all):
-			return gateway_sync._public_catalog(), seen
+			return agent_sync._public_catalog(), seen
 
 	def test_only_groups_flagged_for_it_are_asked_for(self):
 		# The filter is the whole access story: a group nobody ticked must never be read here.
@@ -229,7 +229,7 @@ class TestEffectiveUsers(unittest.TestCase):
 			raise AssertionError(f"unexpected get_all({doctype})")
 
 		with unittest.mock.patch.object(frappe, "get_all", side_effect=get_all):
-			return gateway_sync._effective_users(only)
+			return agent_sync._effective_users(only)
 
 	def test_a_user_carries_their_group_their_deltas_and_their_budget_flag(self):
 		[user] = self.users(
@@ -295,7 +295,7 @@ class TestEffectiveKeys(unittest.TestCase):
 			raise AssertionError(f"unexpected get_all({doctype})")
 
 		with unittest.mock.patch.object(frappe, "get_all", side_effect=get_all):
-			projected = gateway_sync._effective_keys()
+			projected = agent_sync._effective_keys()
 		self.filters = seen.get("filters")
 		return projected
 
@@ -334,10 +334,10 @@ class TestPushDeletions(unittest.TestCase):
 			return {"count": len(payload.get("ids", []))}
 
 		with (
-			unittest.mock.patch.object(gateway_sync, "_conn", return_value=(None, "u", "t")),
-			unittest.mock.patch.object(gateway_sync, "_post", side_effect=post),
+			unittest.mock.patch.object(agent_sync, "_conn", return_value=(None, "u", "t")),
+			unittest.mock.patch.object(agent_sync, "_post", side_effect=post),
 		):
-			result = gateway_sync.push_deletions("PROXY-1", deletions)
+			result = agent_sync.push_deletions("PROXY-1", deletions)
 		return sent, result
 
 	def deletion(self, record_type, record_id):
@@ -364,24 +364,24 @@ class TestPushOrder(unittest.TestCase):
 	def pushes(self, *args):
 		calls = []
 		with (
-			unittest.mock.patch.object(gateway_sync, "push_groups", lambda *a: calls.append("groups") or {}),
-			unittest.mock.patch.object(gateway_sync, "push_users", lambda *a: calls.append("users") or {}),
-			unittest.mock.patch.object(gateway_sync, "push_keys", lambda *a: calls.append("keys") or {}),
-			unittest.mock.patch.object(gateway_sync, "push_deletions", lambda *a: calls.append("deletions") or {}),
-			unittest.mock.patch.object(gateway_sync, "sync_routes", lambda *a: calls.append("routes") or {}),
+			unittest.mock.patch.object(agent_sync, "push_groups", lambda *a: calls.append("groups") or {}),
+			unittest.mock.patch.object(agent_sync, "push_users", lambda *a: calls.append("users") or {}),
+			unittest.mock.patch.object(agent_sync, "push_keys", lambda *a: calls.append("keys") or {}),
+			unittest.mock.patch.object(agent_sync, "push_deletions", lambda *a: calls.append("deletions") or {}),
+			unittest.mock.patch.object(agent_sync, "sync_routes", lambda *a: calls.append("routes") or {}),
 		):
-			res = gateway_sync._push_and_classify("PROXY-1", *args)
+			res = agent_sync._push_and_classify("PROXY-1", *args)
 		return calls, res
 
 	def test_each_record_lands_before_the_one_that_names_it(self):
 		# A key resolves user:<name>, which resolves group:<name>. Pushed out of order, a record
 		# naming a brand-new one would 403 its holder until the next tick.
-		calls, res = self.pushes(["acme"], ["GU-1"], ["KEY-1"], [], gateway_sync._ALL)
+		calls, res = self.pushes(["acme"], ["GU-1"], ["KEY-1"], [], agent_sync._ALL)
 		self.assertEqual(calls, ["groups", "users", "keys", "routes"])
 		self.assertEqual(res["success"], 1)
 
 	def test_a_skipped_push_is_not_made(self):
-		calls, _res = self.pushes(None, None, None, [], gateway_sync._ALL)
+		calls, _res = self.pushes(None, None, None, [], agent_sync._ALL)
 		self.assertEqual(calls, ["routes"])
 
 	def test_records_are_removed_only_after_the_upserts(self):
@@ -389,7 +389,7 @@ class TestPushOrder(unittest.TestCase):
 		# write, and the window is a 401 for whoever holds it.
 		deletion = frappe._dict(name="GD-1", record_type="Key", record_id="abc")
 		calls, _res = self.pushes(
-			gateway_sync._ALL, gateway_sync._ALL, gateway_sync._ALL, [deletion], gateway_sync._ALL
+			agent_sync._ALL, agent_sync._ALL, agent_sync._ALL, [deletion], agent_sync._ALL
 		)
 		self.assertEqual(calls, ["groups", "users", "keys", "deletions", "routes"])
 
@@ -401,7 +401,7 @@ class TestPushOrder(unittest.TestCase):
 		# sync_dirty splats its per-doctype argument list into _push_and_classify positionally,
 		# so the tuple order IS the push order.
 		self.assertEqual(
-			gateway_sync._DIRTY_DOCTYPES, ("Grove User Group", "Grove User", "Grove API Key")
+			agent_sync._DIRTY_DOCTYPES, ("Grove User Group", "Grove User", "Grove API Key")
 		)
 
 

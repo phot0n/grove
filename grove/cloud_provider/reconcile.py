@@ -39,9 +39,9 @@ def sync_pods():
 			continue
 		moved = moved or frappe.db.get_value("Pod", pod.name, "status") != pod.status
 	if moved:
-		from grove import gateway_sync
+		from grove import agent_sync
 
-		gateway_sync.full_sync(trigger="Provision")
+		agent_sync.full_sync(trigger="Provision")
 
 
 def sync_machines():

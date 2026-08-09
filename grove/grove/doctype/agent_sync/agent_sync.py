@@ -10,8 +10,8 @@ from frappe.utils import add_days, cint, now_datetime
 RETENTION_DAYS = 60
 
 
-class GatewaySync(Document):
-	"""One row per sync run (a log). The work lives in grove.gateway_sync
+class AgentSync(Document):
+	"""One row per sync run (a log). The work lives in grove.agent_sync
 	(full_sync / sync_dirty) and grove.usage_pull, which build these docs, take
 	the doc's lock, run, then insert + finalize.
 
@@ -21,7 +21,7 @@ class GatewaySync(Document):
 
 	def lock_name(self):
 		# GET_LOCK is server-global.
-		return f"grove_gateway_sync:{self.sync_type}:{frappe.local.site}"
+		return f"grove_agent_sync:{self.sync_type}:{frappe.local.site}"
 
 	def acquire_lock(self, wait=0):
 		"""Try to take this sync_type's lock. wait=0 → non-blocking (scheduled
@@ -35,7 +35,7 @@ class GatewaySync(Document):
 	@staticmethod
 	def clear_old_logs(days=RETENTION_DAYS):
 		"""Drop runs older than `days`. Frappe's Log Settings calls this nightly; the signature is
-		its LogType protocol, which is also what puts Gateway Sync in that form's list.
+		its LogType protocol, which is also what puts Agent Sync in that form's list.
 
 		This table grows on a timer rather than on use — the scheduled run writes one doc every two
 		minutes whether or not anything moved, which is around 22,000 docs a quarter, each with a
@@ -47,9 +47,9 @@ class GatewaySync(Document):
 		one of them is the kind that gets killed halfway and leaves the table half cleared."""
 		cutoff = add_days(now_datetime(), -cint(days))
 		frappe.db.sql(
-			"""DELETE FROM `tabGateway Sync Row`
-			WHERE parenttype = 'Gateway Sync'
-			  AND parent IN (SELECT name FROM `tabGateway Sync` WHERE creation < %s)""",
+			"""DELETE FROM `tabAgent Sync Row`
+			WHERE parenttype = 'Agent Sync'
+			  AND parent IN (SELECT name FROM `tabAgent Sync` WHERE creation < %s)""",
 			(cutoff,),
 		)
-		frappe.db.delete("Gateway Sync", {"creation": ("<", cutoff)})
+		frappe.db.delete("Agent Sync", {"creation": ("<", cutoff)})

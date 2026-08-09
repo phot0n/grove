@@ -11,7 +11,10 @@ from frappe.model.utils.rename_field import rename_field
 
 
 def execute():
-	frappe.reload_doctype("Gateway Sync")
+	# Resolved, not hardcoded: the doctype is renamed to Agent Sync by a pre-model-sync patch,
+	# which runs before this one on a site that has not migrated yet.
+	doctype = "Agent Sync" if frappe.db.exists("DocType", "Agent Sync") else "Gateway Sync"
+	frappe.reload_doctype(doctype)
 	for old, new in (("proxies_total", "targets_total"), ("proxies_ok", "targets_ok")):
-		if frappe.db.has_column("Gateway Sync", old):
-			rename_field("Gateway Sync", old, new)
+		if frappe.db.has_column(doctype, old):
+			rename_field(doctype, old, new)

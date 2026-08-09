@@ -1,6 +1,6 @@
 # Copyright (c) 2026, Grove and contributors
 # See license.txt
-"""What a Gateway Sync Row records about a push. Pure — no site, no network.
+"""What a Agent Sync Row records about a push. Pure — no site, no network.
 
 The row is readable by anyone who can open the Desk, and the payloads carry live credentials: the
 engine's own key on a replica row, the ingress's data token on a gateway row, and the hash a
@@ -10,7 +10,7 @@ gateway looks a customer's key up by. So redaction is the feature, not a nicety 
 import json
 import unittest
 
-from grove.gateway_sync import _redact
+from grove.agent_sync import _redact
 
 SECRET = "a05749bce74d4e162f98339d3889f3483052d39957a0f3fc"
 

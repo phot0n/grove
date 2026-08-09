@@ -26,7 +26,7 @@ Two paths:
     retried on the next tick. Routes and replica tables are not dirty-gated; they go every tick,
     which is what makes this the repair pass for both planes.
 
-Both log one Gateway Sync doc per run with a child row per TARGET — naming the doctype as well as
+Both log one Agent Sync doc per run with a child row per TARGET — naming the doctype as well as
 the box, because the two planes take different pushes — and both serialize against each other via
 a MariaDB advisory lock so a slow run can't land a stale write after a newer one. Every path that
 reaches a box goes through here, so a push that left no row did not happen."""
@@ -727,7 +727,7 @@ def _active_ingresses():
 
 
 def _new_run(sync_type, trigger):
-	doc = frappe.new_doc("Gateway Sync")
+	doc = frappe.new_doc("Agent Sync")
 	doc.run_at = frappe.utils.now_datetime()
 	doc.sync_type = sync_type
 	doc.trigger = trigger

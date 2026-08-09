@@ -57,7 +57,7 @@ class ModelDeployment(Document):
 		tensor_parallel_size: DF.Int
 	# end: auto-generated types
 
-	# Routes are not dirty-gated: grove.gateway_sync.sync_dirty pushes the full
+	# Routes are not dirty-gated: grove.agent_sync.sync_dirty pushes the full
 	# route table for every deployment each run (idempotent), so no on_update
 	# hook is needed for routing.
 
@@ -510,14 +510,14 @@ def deploy_model(model_deployment):
 	sync_published(md.model)
 	frappe.db.commit()
 	if rc == 0:
-		from grove import gateway_sync
+		from grove import agent_sync
 
 		# Gateway routes are global — every gateway holds a row for every model — so all of them.
 		# The replica table is not: only the ingress that OWNS this box has changed, and the rest
 		# of the fleet already holds the table this push would hand them.
-		gateway_sync.full_sync(
+		agent_sync.full_sync(
 			trigger="Provision",
-			ingresses=gateway_sync.owning_ingresses([md.inference_server]),
+			ingresses=agent_sync.owning_ingresses([md.inference_server]),
 		)
 	return play_name, rc
 

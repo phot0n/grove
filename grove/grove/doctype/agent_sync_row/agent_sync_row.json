@@ -99,7 +99,7 @@
  "modified": "2026-07-02 00:00:00",
  "modified_by": "Administrator",
  "module": "Grove",
- "name": "Gateway Sync Row",
+ "name": "Agent Sync Row",
  "owner": "Administrator",
  "permissions": [],
  "sort_field": "modified",

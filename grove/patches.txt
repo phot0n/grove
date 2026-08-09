@@ -3,6 +3,7 @@
 # Read docs to understand patches: https://docs.frappe.io/framework/user/en/database-migrations
 grove.patches.rename_api_key_to_grove_api_key
 grove.patches.rename_proxy_server_to_gateway_server
+grove.patches.rename_gateway_sync_to_agent_sync
 
 [post_model_sync]
 # Patches added in this section will be executed after doctypes are migrated

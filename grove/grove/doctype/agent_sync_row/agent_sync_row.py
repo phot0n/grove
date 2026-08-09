@@ -4,5 +4,5 @@
 from frappe.model.document import Document
 
 
-class GatewaySyncRow(Document):
+class AgentSyncRow(Document):
 	pass
