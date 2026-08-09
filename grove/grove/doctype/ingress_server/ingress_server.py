@@ -76,7 +76,11 @@ class IngressServer(GeneratedName, FleetHost, Document):
 		# scheduled run only ticks when a deployment moved.
 		if self.has_value_changed("status") and self.status == "Active" and self.admin_url:
 			frappe.enqueue(
-				"grove.gateway_sync.sync_replicas", queue="short", ingress=self.name
+				"grove.gateway_sync.full_sync",
+				queue="short",
+				proxies=[],
+				ingresses=[self.name],
+				trigger="Ingress Activated",
 			)
 		if self.has_value_changed("status") and self.status == "Terminated":
 			self.remove_dns_records()
@@ -127,10 +131,20 @@ class IngressServer(GeneratedName, FleetHost, Document):
 
 	@frappe.whitelist()
 	def sync_replicas(self):
-		"""Button: push this ingress's replica table now — every Active replica in its Network,
-		dialled privately."""
-		frappe.enqueue("grove.gateway_sync.sync_replicas", queue="short", ingress=self.name)
-		frappe.msgprint(f"Replica table queued for {self.name}.")
+		"""Button: push this ingress's replica table now — every Active replica it owns, dialled
+		privately.
+
+		Through full_sync rather than straight at the agent, so the push lands on a Gateway Sync
+		doc like every other. A button that reports "queued" and then leaves no record of whether
+		it worked is the one you end up debugging by ssh."""
+		frappe.enqueue(
+			"grove.gateway_sync.full_sync",
+			queue="short",
+			proxies=[],
+			ingresses=[self.name],
+			trigger="Manual",
+		)
+		frappe.msgprint(f"Replica table queued for {self.name} — watch its Gateway Sync.")
 
 	@frappe.whitelist()
 	def setup(self):
@@ -164,7 +178,7 @@ class IngressServer(GeneratedName, FleetHost, Document):
 			# provision writes status through db.set_value, so on_update never fires here — these
 			# two are what let a new ingress reach an engine and be let through to one.
 			sync_fleet_ingress()
-			gateway_sync.sync_replicas(self.name)
+			gateway_sync.full_sync(proxies=[], ingresses=[self.name], trigger="Provision")
 		return play_name, rc
 
 	def provision_variables(self, settings):

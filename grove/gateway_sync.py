@@ -12,16 +12,24 @@ carries only whose it is and whether it has been revoked. So a group edit is ONE
 many members, a budget flip is ONE record however many keys, and the gateway resolves the three at
 request time.
 
-Two paths:
-  * full_sync(proxies)  — push the COMPLETE group + user + key set + routing table. Manual
-    (buttons), proxy activation, and provisioning use this.
-  * sync_dirty()        — background job (cron): push ONLY the groups/users/keys
-    flagged `dirty` since the last sync, then clear their flag. Failures stay
-    dirty and are retried on the next tick.
+Two planes, and what each is given is what keeps them apart. A GATEWAY takes groups, users, keys
+and a global route table. An INGRESS takes one thing — the replica table for the boxes it owns —
+and there is no endpoint on it to send anything else to.
 
-Both log one Gateway Sync doc per run with a per-proxy
-child row, and both serialize against each other via a MariaDB advisory lock so
-a slow run can't land a stale write after a newer one."""
+Two paths:
+  * full_sync(proxies, ingresses)  — push the COMPLETE state to the named boxes, or to every
+    Active one when a list is not given. Manual (buttons), activation, and provisioning use this.
+    An empty list means "none of that kind", which is how an ingress-only run asks for no gateway
+    work.
+  * sync_dirty()                   — background job (cron): push ONLY the groups/users/keys
+    flagged `dirty` since the last sync, then clear their flag. Failures stay dirty and are
+    retried on the next tick. Routes and replica tables are not dirty-gated; they go every tick,
+    which is what makes this the repair pass for both planes.
+
+Both log one Gateway Sync doc per run with a child row per TARGET — naming the doctype as well as
+the box, because the two planes take different pushes — and both serialize against each other via
+a MariaDB advisory lock so a slow run can't land a stale write after a newer one. Every path that
+reaches a box goes through here, so a push that left no row did not happen."""
 
 import time
 
@@ -431,7 +439,10 @@ def full_sync(proxies=None, trigger="Manual", ingresses=None):
 		return None
 	try:
 		all_active = _active_proxies()
-		active = proxies or all_active
+		# `is None` and not truthiness: an empty list is a caller saying "no boxes of this kind",
+		# which is how an ingress-only run asks for no gateway work. `or` would read that as
+		# "unspecified" and push to the whole fleet.
+		active = all_active if proxies is None else proxies
 		if ingresses is None:
 			ingresses = [] if proxies else _active_ingresses()
 		if not (active or ingresses):
@@ -661,10 +672,11 @@ def _new_run(sync_type, trigger):
 	return doc
 
 
-def _finalize(doc, proxies, ok):
-	doc.proxies_total = len(proxies)
-	doc.proxies_ok = ok
-	doc.status = "Success" if ok == len(proxies) else ("Failed" if ok == 0 else "Partial")
+def _finalize(doc, targets, ok):
+	"""Both planes counted together — a run's targets are its gateways plus its ingresses."""
+	doc.targets_total = len(targets)
+	doc.targets_ok = ok
+	doc.status = "Success" if ok == len(targets) else ("Failed" if ok == 0 else "Partial")
 	doc.insert(ignore_permissions=True)
 
 
