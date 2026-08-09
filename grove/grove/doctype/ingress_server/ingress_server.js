@@ -18,6 +18,11 @@ frappe.ui.form.on('Ingress Server', {
 
 			frm.add_custom_button(__('Install Exporters'), () => frm.call('install_exporters'));
 
+			// The replica table: every Active replica in this ingress's Network, dialled privately.
+			frm.add_custom_button(__('Sync Replicas'), () => {
+				frm.call('sync_replicas');
+			}, __('Ingress'));
+
 			frm.add_custom_button(__('Sync DNS Records'), () => {
 				frm.call('sync_dns_records');
 			}, __('TLS'));

@@ -30,6 +30,7 @@ import requests
 import frappe
 
 from grove.access import model_rows, vllm_priority
+from grove.net import private_url
 from grove.serve_command import DEFAULT_MAX_NUM_SEQS
 
 TIMEOUT = 10
@@ -40,10 +41,12 @@ _ALL = object()  # sentinel: push the complete set (vs. a subset list, vs. None 
 _DIRTY_DOCTYPES = ("Grove User Group", "Grove User", "Grove API Key")
 
 
-def _conn(proxy_name):
-	p = frappe.get_doc("Gateway Server", proxy_name)
+def _conn(name, doctype="Gateway Server"):
+	"""The admin API of one box, whichever plane it is on. Both kinds derive admin_url the same
+	way and both gate /admin on the same token — what differs is which pushes they are sent."""
+	p = frappe.get_doc(doctype, name)
 	if not p.admin_url:
-		frappe.throw(f"Gateway Server {proxy_name} has no admin_url")
+		frappe.throw(f"{doctype} {name} has no admin_url")
 	return p, p.admin_url.rstrip("/"), (p.get_password("admin_token") or "")
 
 
@@ -201,6 +204,75 @@ def _routes_for_proxy(proxy_name):
 	return routes
 
 
+def _replicas_for_ingress(ingress_name):
+	"""deploy:<model> for ONE ingress: every Active replica inside its Network, dialled privately.
+
+	The same shape the gateway's table has, so the agent's /admin/routes handler is reused whole —
+	what narrows is the scope. An ingress fronts one VPC, so it is told about that VPC's replicas
+	and no others, and a pod restarting in another region is not an event it ever sees. That is
+	the point of the split: replica topology never leaves its own Network.
+
+	Seeded with EVERY Model, so a model with nothing local is sent as an empty list, the agent
+	DELs the key, and /pick answers 503 no-replica rather than the model quietly resolving
+	somewhere it should not.
+
+	Pods are absent by construction — they have no Machine and so no Network, and stay on the
+	gateway's `direct` route kind.
+
+	A replica in this Network with no private address is EXCLUDED, not dialled publicly. Fail
+	closed: the model reads unavailable here and someone syncs the Machine, rather than customer
+	traffic quietly crossing the internet to a box that was supposed to be private."""
+	network = frappe.db.get_value("Ingress Server", ingress_name, "network")
+	if not network:
+		frappe.throw(f"Ingress Server {ingress_name} has no Network — it fronts nothing.")
+
+	servers = frappe.get_all("Inference Server", fields=["name", "machine"])
+	machines = {
+		machine["name"]: machine
+		for machine in frappe.get_all(
+			"Machine",
+			filters={"name": ("in", [s["machine"] for s in servers if s["machine"]])},
+			fields=["name", "network", "private_ip"],
+		)
+	}
+	local = {
+		server["name"]: machines[server["machine"]]["private_ip"]
+		for server in servers
+		if server["machine"] in machines
+		and machines[server["machine"]]["network"] == network
+		and machines[server["machine"]]["private_ip"]
+	}
+
+	routes = {model: [] for model in frappe.get_all("Model", pluck="name")}
+	deployments = frappe.get_all(
+		"Model Deployment",
+		filters={"status": "Active", "inference_server": ("in", list(local))} if local else {"name": ("is", "not set")},
+		fields=["name", "model", "engine_url", "inference_server", "max_num_seqs"],
+	)
+	for deployment in deployments:
+		engine_url = private_url(deployment.engine_url, local[deployment.inference_server])
+		if not engine_url:
+			continue
+		routes.setdefault(deployment.model, [])
+		internal_key = frappe.get_doc("Model Deployment", deployment.name).get_password("internal_api_key") or ""
+		routes[deployment.model].append({
+			"engine_url": engine_url,
+			"internal_key": internal_key,
+			"healthy": True,
+			"capacity": int(deployment.max_num_seqs or DEFAULT_MAX_NUM_SEQS),
+			"deployment": deployment.name,
+			"server": deployment.inference_server,
+		})
+	return routes
+
+
+def sync_replicas(ingress):
+	"""Replace one ingress's replica table. The only push an ingress ever takes — there is no
+	keys, users, groups or usage endpoint on that plane to send anything else to."""
+	_doc, admin_url, token = _conn(ingress, "Ingress Server")
+	return _post(admin_url, token, "routes", {"routes": _replicas_for_ingress(ingress)})
+
+
 def push_groups(proxy, groups=_ALL):
 	"""Upsert user groups to one proxy. groups=_ALL → every group; a list of Grove User Group
 	names → just those (the agent HSETs each; other groups are left untouched).
@@ -263,15 +335,20 @@ def sync_routes(proxy, models=_ALL):
 # --- Sync runs -------------------------------------------------------------
 
 def full_sync(proxies=None, trigger="Manual"):
-	"""Push the COMPLETE group + user + key set + routing table to each target proxy.
-	proxies=None → all Active. Used by buttons, proxy activation, provisioning."""
+	"""Push the COMPLETE group + user + key set + routing table to each target proxy, and the
+	replica table to each Active ingress. proxies=None → all Active. Used by buttons, proxy
+	activation, provisioning.
+
+	Naming a subset of proxies leaves the ingresses alone: that call means "this one box missed
+	something", and an ingress's table has nothing to do with a gateway's."""
 	doc = _new_run("Projection", trigger)
 	if not doc.acquire_lock(wait=60):  # forced → queue behind an in-flight run
 		return None
 	try:
 		all_active = _active_proxies()
 		active = proxies or all_active
-		if not active:
+		ingresses = [] if proxies else _active_ingresses()
+		if not (active or ingresses):
 			return None
 
 		snaps = {d: _snapshot_dirty(d) for d in _DIRTY_DOCTYPES}
@@ -281,9 +358,13 @@ def full_sync(proxies=None, trigger="Manual"):
 		ok = 0
 		for proxy in active:
 			res = _push_and_classify(proxy, _ALL, _ALL, _ALL, deletions, _ALL)
-			doc.append("results", {"proxy": proxy, **res})
+			doc.append("results", {"server_type": "Gateway Server", "server": proxy, **res})
 			ok += res["success"]
-		_finalize(doc, active, ok)
+		for ingress in ingresses:
+			res = _push_replicas_and_classify(ingress)
+			doc.append("results", {"server_type": "Ingress Server", "server": ingress, **res})
+			ok += res["success"]
+		_finalize(doc, list(active) + ingresses, ok)
 
 		# A full run that reached every Active proxy has projected all current
 		# groups, users and keys, so the dirty ones it covered can clear. (Subset runs
@@ -324,8 +405,11 @@ def sync_dirty(trigger="Scheduled"):
 			return None
 
 		all_active = set(_active_proxies())
-		if not all_active:
-			return None  # work exists but no Active proxy can receive it yet
+		# Ingresses take the same tick. Their table is derived from the same deployments, so
+		# whatever moved a route on a gateway moved one here too.
+		ingresses = _active_ingresses() if has_deps else []
+		if not (all_active or ingresses):
+			return None  # work exists but no Active box can receive it yet
 
 		# Everything here is global — no record is scoped to one proxy — so a doctype with
 		# anything dirty goes to every Active proxy, and routes go every tick regardless.
@@ -343,10 +427,14 @@ def sync_dirty(trigger="Scheduled"):
 			]
 			models_arg = _ALL if proxy in route_targets else None
 			res = _push_and_classify(proxy, *args, deletions, models_arg)
-			doc.append("results", {"proxy": proxy, **res})
+			doc.append("results", {"server_type": "Gateway Server", "server": proxy, **res})
 			ok_by_proxy[proxy] = bool(res["success"])
 			total_ok += res["success"]
-		_finalize(doc, list(targets), total_ok)
+		for ingress in ingresses:
+			res = _push_replicas_and_classify(ingress)
+			doc.append("results", {"server_type": "Ingress Server", "server": ingress, **res})
+			total_ok += res["success"]
+		_finalize(doc, list(targets) + ingresses, total_ok)
 
 		# Each doctype clears only once every proxy it targeted accepted the push.
 		for doctype, rows in dirty.items():
@@ -359,6 +447,33 @@ def sync_dirty(trigger="Scheduled"):
 		return doc.name
 	finally:
 		doc.release_lock()
+
+
+def _push_replicas_and_classify(ingress):
+	"""One ingress's replica table, reported in the same shape a gateway push is, so a run's log
+	reads as one list of targets rather than two."""
+	start = time.monotonic()
+	reachable, success, http_status, error = 1, 0, 0, None
+	detail = []
+	try:
+		result = sync_replicas(ingress)
+		detail.append(f"replicas:{result.get('models', '?')}")
+		success = 1
+	except (requests.ConnectionError, requests.Timeout) as e:
+		reachable, error = 0, f"{type(e).__name__}: {e}"[:2000]
+	except requests.HTTPError as e:
+		http_status = e.response.status_code if e.response is not None else 0
+		error = f"HTTP {http_status}: {e}"[:2000]
+	except Exception as e:
+		error = f"{type(e).__name__}: {e}"[:2000]
+	return {
+		"reachable": reachable,
+		"success": success,
+		"http_status": http_status,
+		"error": error,
+		"duration_ms": int((time.monotonic() - start) * 1000),
+		"detail": " ".join(detail),
+	}
 
 
 def _push_and_classify(proxy, groups, users, keys, deletions, models):
@@ -411,6 +526,14 @@ def _push_and_classify(proxy, groups, users, keys, deletions, models):
 
 def _active_proxies():
 	return frappe.get_all("Gateway Server", filters={"status": "Active"}, pluck="name")
+
+
+def _active_ingresses():
+	"""Ingresses ready to take a replica table. One with no Network is skipped rather than thrown
+	on — a scheduled run must not die over one misconfigured box."""
+	return frappe.get_all(
+		"Ingress Server", filters={"status": "Active", "network": ("is", "set")}, pluck="name"
+	)
 
 
 def _new_run(sync_type, trigger):

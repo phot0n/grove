@@ -95,6 +95,19 @@ class TestTlsShape(unittest.TestCase):
 		self.assertIn("location = /metrics/node", self.box)
 		self.assertNotIn("location = /metrics/node", self.shared)
 
+	def test_the_data_path_hangs_under_the_shared_name(self):
+		# The gateways dial the shared name; the per-box name exists so the control plane can
+		# reach ONE ingress. Serving /v1/ from the box name too would let a route table pin
+		# traffic to a single ingress and quietly undo the DNS balancing.
+		self.assertIn("location /v1/", self.shared)
+		self.assertNotIn("location /v1/", self.box)
+
+	def test_the_data_path_streams(self):
+		# proxy_buffering off is what makes SSE arrive token by token instead of at the end.
+		self.assertIn("proxy_buffering off;", self.shared)
+		self.assertIn("access_by_lua_file /etc/grove-gateway/lua/access.lua;", self.shared)
+		self.assertIn("log_by_lua_file /etc/grove-gateway/lua/log.lua;", self.shared)
+
 	def test_both_names_answer_the_health_check(self):
 		# The Route53 check behind the shared record asks this box by its OWN name, and a gateway
 		# checks the shared one. A block missing /healthz drops out of resolution permanently.

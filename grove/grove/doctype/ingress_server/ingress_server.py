@@ -4,6 +4,7 @@
 import frappe
 from frappe.model.document import Document
 
+from grove import gateway_sync
 from grove.cloud_provider.route53 import Route53Error
 from grove.fleet import FleetHost
 from grove.utils import gateway_service_source
@@ -48,6 +49,12 @@ class IngressServer(FleetHost, Document):
 			self.ingress_host = frappe.get_cached_doc("Network", self.network).ingress_host
 
 	def on_update(self):
+		# A newly-Active ingress has an empty replica table until something fills it, and the
+		# scheduled run only ticks when a deployment moved.
+		if self.has_value_changed("status") and self.status == "Active" and self.admin_url:
+			frappe.enqueue(
+				"grove.gateway_sync.sync_replicas", queue="short", ingress=self.name
+			)
 		if self.has_value_changed("status") and self.status == "Terminated":
 			self.remove_dns_records()
 
@@ -106,6 +113,13 @@ class IngressServer(FleetHost, Document):
 		return change
 
 	@frappe.whitelist()
+	def sync_replicas(self):
+		"""Button: push this ingress's replica table now — every Active replica in its Network,
+		dialled privately."""
+		frappe.enqueue("grove.gateway_sync.sync_replicas", queue="short", ingress=self.name)
+		frappe.msgprint(f"Replica table queued for {self.name}.")
+
+	@frappe.whitelist()
 	def setup(self):
 		"""Provision this ingress (OpenResty + Redis + the agent) via ingress.yml."""
 		frappe.enqueue_doc(self.doctype, self.name, "provision", queue="long", timeout=1800)
@@ -131,7 +145,12 @@ class IngressServer(FleetHost, Document):
 		frappe.db.commit()
 
 		if rc == 0:
+			# DNS before the table: the push goes to admin_url, which is this box's own name the
+			# moment a zone is set, and nothing resolves it until this runs.
 			self.sync_dns_records()
+			# provision writes status through db.set_value, so on_update never fires here — this
+			# is the only thing that gives a new ingress a replica to route to.
+			gateway_sync.sync_replicas(self.name)
 		return play_name, rc
 
 	def provision_variables(self, settings):

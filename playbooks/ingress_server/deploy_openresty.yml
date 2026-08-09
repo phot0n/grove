@@ -36,6 +36,13 @@
           Ingress Server's Deploy OpenResty Config button, or pass the same extra-vars it does.
       when: existing_fleet_cert.stat.exists
 
+    - name: lua files
+      ansible.builtin.copy:
+        src: "{{ grove_dir }}/lua/"
+        dest: /etc/grove-gateway/lua/
+        mode: "0644"
+      notify: reload openresty
+
     - name: nginx.conf
       ansible.builtin.template:
         src: "{{ grove_dir }}/nginx.conf.j2"
