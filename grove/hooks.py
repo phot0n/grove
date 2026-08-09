@@ -160,16 +160,22 @@ fixtures = [{"dt": "Role", "filters": [["name", "in", ["Grove Control"]]]}]
 scheduler_events = {
 	"cron": {
 		"*/2 * * * *": [
-			"grove.gateway_sync.sync_dirty",
+			"grove.agent_sync.sync_dirty",
 		],
         "*/5 * * * *": [
 			"grove.usage_pull.pull_all",
+			# The provider owns whether a pod/instance is up; lifecycle jobs only see it while
+			# they run. This closes the drift they leave behind.
+			"grove.cloud_provider.reconcile.sync_all",
 		],
 		# Daily: reactivate rate_limited keys whose current-month usage is back
 		# under budget (month rollover / raised budget). Over-budget keys stay
 		# blocked for the rest of the month — the monthly cap is hard.
 		"0 0 * * *": [
 			"grove.usage_pull.reactivate_rate_limited",
+			# Renews the fleet wildcard when certbot says it is due (inside 30 days of expiry)
+			# and pushes it to every Active proxy only if the certificate actually changed.
+			"grove.tls.renew_fleet_certificate",
 		],
 	},
 }
@@ -257,9 +263,12 @@ export_python_type_annotations = True
 # Require all whitelisted methods to have type annotations
 require_type_annotated_api_methods = True
 
-# default_log_clearing_doctypes = {
-# 	"Logging DocType Name": 30  # days to retain logs
-# }
+# Agent Sync is a log: the scheduled run writes one doc every two minutes whether or not
+# anything moved, each with a row per box and the payload that box was sent. Registering it here
+# is what lets Log Settings clear it, and what puts it in that form for an operator to retune.
+default_log_clearing_doctypes = {
+	"Agent Sync": 60,  # days to retain sync runs
+}
 
 # Translation
 # ------------

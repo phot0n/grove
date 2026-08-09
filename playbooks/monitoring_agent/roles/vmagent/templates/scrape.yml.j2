@@ -22,12 +22,27 @@
   How often the lists are re-fetched is NOT here: vmagent rejects Prometheus's per-config
   `refresh_interval` on an http_sd_config and takes -promscrape.httpSDCheckInterval instead,
   set in the unit. Both jobs therefore share one interval.
+
+  Every target is https now, on each box's TLS front, and every certificate there is self-signed
+  — so both jobs skip verification. That encrypts the scrape; it does not authenticate the box.
+
+  Only the host job authenticates: /metrics/node and /metrics/gpu sit behind basic auth, because
+  an exporter answers anyone who reaches it. An engine's /metrics is inside its own
+  /e/<slug>/ location and is guarded by nothing, exactly as it was when the engine port itself
+  was open — vLLM's auth middleware covers /v1 and not /metrics.
 #}
 global:
   scrape_interval: {{ monitoring_scrape_interval }}
 
 scrape_configs:
   - job_name: grove-host
+    tls_config:
+      insecure_skip_verify: true
+    basic_auth:
+      username: {{ monitoring_scrape_username }}
+      # Not inline: /proc/<pid>/cmdline is world-readable and Ansible records what it runs on the
+      # Ansible Task doc. The file is 0600.
+      password_file: {{ vmagent_config_dir }}/scrape.password
 {% if monitoring_static_targets %}
     file_sd_configs:
       - files: ["{{ vmagent_config_dir }}/targets_host.json"]
@@ -38,6 +53,8 @@ scrape_configs:
 
   - job_name: grove-engine
     scrape_interval: {{ monitoring_engine_scrape_interval }}
+    tls_config:
+      insecure_skip_verify: true
 {% if monitoring_static_targets %}
     file_sd_configs:
       - files: ["{{ vmagent_config_dir }}/targets_engine.json"]

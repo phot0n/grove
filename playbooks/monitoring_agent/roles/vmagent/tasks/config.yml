@@ -23,6 +23,16 @@
   no_log: true
   notify: restart vmagent
 
+# What the host job presents to each box's /metrics/*. Same reasoning as the token above: a
+# password_file, never a value in the scrape config or the argv.
+- name: Write the metrics scrape password
+  ansible.builtin.copy:
+    content: "{{ monitoring_scrape_password }}"
+    dest: "{{ vmagent_config_dir }}/scrape.password"
+    mode: "0600"
+  no_log: true
+  notify: restart vmagent
+
 # The SD token is in the URL (see scrape.yml.j2), so this file holds a live credential and
 # gets the same 0600 the token files do. Boxes built before that carry a now-unread sd.token.
 - name: Drop the superseded service-discovery token file

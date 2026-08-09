@@ -6,7 +6,7 @@
 # engines and pods that name this agent, and re-asks on the http_sd interval — so a deploy or
 # a new box appears here with nothing to re-run.
 #
-# node_exporter comes with it: this box is not an Inference or Proxy Server, so nothing else
+# node_exporter comes with it: this box is not an Inference or Gateway Server, so nothing else
 # would ever install one here, and an agent whose own disk fills has no way to say so. Grove
 # hands it back its own node_exporter and vmagent as localhost targets.
 - name: Install the metrics agent
@@ -33,6 +33,17 @@
           This agent has nowhere to push. Grove does not run the metrics backend — set a Remote
           Write URL on this agent's Region (or the fleet-wide one in Grove Settings) and a
           Metrics Token on the agent itself before installing it.
+
+    # Checked whichever way the targets arrive: the credential is for the boxes, not for Grove.
+    # Only the password — the username is a role constant that cannot be unset.
+    - name: Check what to scrape the boxes as
+      ansible.builtin.assert:
+        that:
+          - monitoring_scrape_password | length > 0
+        fail_msg: >-
+          No metrics scrape password. Every box serves /metrics/node and /metrics/gpu behind
+          basic auth, so without it this agent installs and is then refused by every host
+          target it has — set Metrics Scrape Password in Grove Settings.
 
     # Skipped when Grove pushes the lists instead: file_sd reads neither, and demanding an SD
     # token would block the one case that exists because the box cannot reach Grove at all.

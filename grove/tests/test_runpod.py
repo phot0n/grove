@@ -10,7 +10,8 @@ from unittest.mock import patch
 import requests
 
 from grove.cloud_provider.provisioner import PodProvisioner
-from grove.cloud_provider.runpod import RunPodClient, RunPodError
+from grove.grove.doctype.pod.pod import Pod
+from grove.cloud_provider.runpod import RunPodClient, RunPodError, pod_status
 
 
 class FakeClient(RunPodClient):
@@ -220,6 +221,103 @@ def live(gpu_count=2, gpu_type_id="NVIDIA L40S", status="RUNNING"):
 	return {"status": status, "gpu_count": gpu_count, "gpu_type_id": gpu_type_id}
 
 
+def serving_pod(
+	protocol="http",
+	pod_id="abc123",
+	public_ip="1.2.3.4",
+	external_port=41234,
+	health_path=None,
+	is_custom_engine=False,
+):
+	return SimpleNamespace(
+		name="POD-1",
+		pod_id=pod_id,
+		serve_port=8080,
+		public_ip=public_ip,
+		model="Qwen/Qwen3-35B",
+		health_path=health_path,
+		is_custom_engine=is_custom_engine,
+		ports=[
+			SimpleNamespace(internal_port=22, protocol="tcp", external_port=22001),
+			SimpleNamespace(internal_port=8080, protocol=protocol, external_port=external_port),
+		],
+	)
+
+
+class TestEngineEndpoint(unittest.TestCase):
+	"""Which address the gateway is handed for a serving pod."""
+
+	def test_an_http_port_is_reached_through_the_provider_tls_proxy(self):
+		# The point of the whole arrangement: https, so the vLLM key is not on the wire in
+		# clear, and no certificate on the pod.
+		endpoint = PodProvisioner(serving_pod()).engine_endpoint
+		self.assertEqual(endpoint, "https://abc123-8080.proxy.runpod.net")
+
+	def test_the_proxy_address_ignores_the_mapping_that_moves_on_restart(self):
+		# Keyed on the pod id alone, so a restart that re-maps every direct port leaves the
+		# gateway route valid.
+		moved = serving_pod(public_ip="9.9.9.9", external_port=50999)
+		self.assertEqual(
+			PodProvisioner(moved).engine_endpoint, "https://abc123-8080.proxy.runpod.net"
+		)
+
+	def test_a_tcp_port_keeps_its_direct_mapping(self):
+		# The escape hatch for work that cannot start streaming inside Cloudflare's 100s cap.
+		endpoint = PodProvisioner(serving_pod(protocol="tcp")).engine_endpoint
+		self.assertEqual(endpoint, "http://1.2.3.4:41234")
+
+	def test_no_address_before_the_provider_has_published_one(self):
+		# A blank endpoint keeps the pod Loading, which is what stops a route reaching a cold
+		# engine — so each half-known state has to stay blank rather than render something.
+		self.assertEqual(PodProvisioner(serving_pod(pod_id="")).engine_endpoint, "")
+		self.assertEqual(
+			PodProvisioner(serving_pod(protocol="tcp", public_ip="")).engine_endpoint, ""
+		)
+		self.assertEqual(
+			PodProvisioner(serving_pod(protocol="tcp", external_port=0)).engine_endpoint, ""
+		)
+
+	def test_a_serve_port_missing_from_the_ports_table_has_no_address(self):
+		pod = serving_pod()
+		pod.serve_port = 9999
+		self.assertEqual(PodProvisioner(pod).engine_endpoint, "")
+
+
+class TestHealthPath(unittest.TestCase):
+	"""Which pods wait for their engine before reading Running."""
+
+	def test_a_vllm_pod_gates_on_its_own_health(self):
+		self.assertEqual(PodProvisioner(serving_pod()).health_path, "/health")
+
+	def test_a_custom_image_gates_on_the_path_it_names(self):
+		# The bug this exists for: an ASR container read Running the moment RunPod said the
+		# container was up, minutes before anything answered on the port.
+		pod = serving_pod(is_custom_engine=True, health_path="/v1/health/ready")
+		self.assertEqual(PodProvisioner(pod).health_path, "/v1/health/ready")
+
+	def test_a_custom_image_that_names_none_is_not_gated(self):
+		# vLLM's /health must not be assumed onto an image that has never heard of it — that
+		# would leave the pod Loading forever.
+		self.assertEqual(PodProvisioner(serving_pod(is_custom_engine=True)).health_path, "")
+
+	def test_a_vllm_pod_may_override_the_path(self):
+		pod = serving_pod(health_path="/v1/models")
+		self.assertEqual(PodProvisioner(pod).health_path, "/v1/models")
+
+
+class TestPodStatus(unittest.TestCase):
+	def test_running_and_the_stopped_states(self):
+		self.assertEqual(pod_status("RUNNING"), "Running")
+		for state in ("EXITED", "PAUSED", "DEAD"):
+			self.assertEqual(pod_status(state), "Stopped")
+		self.assertEqual(pod_status("TERMINATED"), "Terminated")
+
+	def test_a_pod_still_coming_up_is_never_stopped(self):
+		# The bug this exists for: a slow bring-up reported as Stopped, which drops its route.
+		for state in ("CREATED", "RESTARTING", "SOME_NEW_STATE", None, ""):
+			self.assertEqual(pod_status(state), "Provisioning")
+
+
 class TestRestartBlocker(unittest.TestCase):
 	def test_matching_config_is_applied_in_place(self):
 		self.assertIsNone(restart_blocker(pod(), live()))
@@ -247,6 +345,27 @@ class TestRestartBlocker(unittest.TestCase):
 
 	def test_gpu_fields_the_provider_omits_are_not_treated_as_a_change(self):
 		self.assertIsNone(restart_blocker(pod(), live(gpu_count=None, gpu_type_id=None)))
+
+
+class TestServePortIsOpened(unittest.TestCase):
+	"""A serve port the provider was never asked to open is refused at validate."""
+
+	def test_a_custom_image_is_checked_too(self):
+		# The bug this exists for: an ASR pod served on 8000 while its Serve Port stayed at the
+		# 8080 default. engine_endpoint found no row for 8080, so the health gate had nothing to
+		# poll and the pod sat Loading forever with a live container behind it.
+		unopened = serving_pod(is_custom_engine=True)
+		unopened.serve_port = 8000
+		with patch("grove.grove.doctype.pod.pod.frappe.throw") as throw:
+			Pod.validate(unopened)
+		self.assertIn("8000", throw.call_args.args[0])
+
+	def test_a_serve_port_in_the_ports_table_passes(self):
+		custom = serving_pod(is_custom_engine=True)
+		with patch("grove.grove.doctype.pod.pod.frappe.throw") as throw:
+			Pod.validate(custom)
+		throw.assert_not_called()
+		self.assertEqual(custom.serve_command, "")
 
 
 if __name__ == "__main__":

@@ -31,20 +31,24 @@ class Pod(Document):
 		attention_backend: DF.Literal["auto", "FLASH_ATTN", "XFORMERS", "FLASHINFER"]
 		cloud_provider: DF.Link
 		container_disk_gb: DF.Int
-		dtype: DF.Literal["auto", "bfloat16", "float16", "float32"]
-		engine_image: DF.Link | None
+		engine_image: DF.Link
+		engine_kind: DF.Data | None
 		engine_url: DF.Data | None
 		env: DF.Table[PodEnv]
 		extra_serve_args: DF.SmallText | None
 		gpu_count: DF.Int
 		gpu_memory_utilization: DF.Float
 		gpu_type_id: DF.Data | None
-		image_name: DF.Data | None
+		health_path: DF.Data | None
+		kv_cache_dtype: DF.Literal["auto", "fp8"]
 		max_model_len: DF.Int
-		model: DF.Link | None
+		max_num_seqs: DF.Int
+		model: DF.Link
+		monitoring_agent: DF.Link | None
 		pipeline_parallel_size: DF.Int
 		pod_id: DF.Data | None
 		ports: DF.Table[PodPort]
+		provider_type: DF.Data | None
 		public_ip: DF.Data | None
 		serve_command: DF.Code | None
 		serve_port: DF.Int
@@ -52,47 +56,56 @@ class Pod(Document):
 		ssh_user: DF.Data | None
 		startup_command: DF.SmallText | None
 		status: DF.Literal["Pending", "Provisioning", "Loading", "Running", "Stopped", "Terminated"]
-		template_id: DF.Data | None
 		volume_in_gb: DF.Int
 		volume_mount_path: DF.Data | None
 	# end: auto-generated types
 
 	"""A cloud GPU pod (e.g. RunPod), modelled on the provider's pod-create request: GPU
-	list, port pool, image/template, startup command, volume, SSH, env.
+	list, port pool, Engine Image, startup command, volume, SSH, env. The pod IS the
+	deployment — it serves its Model directly, with no Model Deployment behind it, and is
+	operated from its own Spawn / Sync / Restart / Terminate buttons.
 
-	Two modes:
-	- Machine-backed (Model blank): base image + Ansible process runtime. Backs a Machine
-	  1:1; the provisioner cascades flat mirrors (port_map / GPUs / IP) onto the Machine and
-	  Inference Server / Model Deployment / Ansible read the Machine.
-	- Standalone serving (Model set): a vLLM image serves the linked Model directly. The
-	  vLLM params below are translated into serve_command (the container's dockerStartCmd);
-	  the pod IS the deployment. Operate it from its own Spawn / Sync / Restart / Terminate
-	  buttons. Model-intrinsic flags come from the Model; the Pod holds per-box tuning."""
+	The image decides how it is started. A vllm-kind image takes `vllm serve` arguments, so
+	they are derived here into serve_command (the container's dockerStartCmd) — model-intrinsic
+	flags off the Model, per-box tuning off the Pod. A custom-kind image serves on its own and
+	gets no derived arguments, only its own entrypoint plus startup_command."""
+
+	@property
+	def is_custom_engine(self):
+		"""True when the image serves itself and no vLLM arguments may be derived for it. Guards
+		a blank Engine Image so validate can read this before the mandatory check has run."""
+		if not self.engine_image:
+			return False
+		return frappe.get_cached_value("Engine Image", self.engine_image, "engine_kind") == "custom"
 
 	def before_insert(self):
-		# Seed a sensible port pool: 22 (SSH — Ansible/ops connect over it) + a pool of vLLM
-		# engine ports. Opened at spawn since the provider can't hot-add ports later.
+		# Opened at spawn since the provider can't hot-add ports later. The engine is exposed as
+		# http so it rides the provider's HTTPS proxy and the pod needs no certificate of its
+		# own; SSH has to stay direct tcp.
 		if not self.ports:
 			self.append("ports", {"internal_port": 22, "protocol": "tcp"})
-			self.append("ports", {"internal_port": _ENGINE_PORT, "protocol": "tcp"})
+			self.append("ports", {"internal_port": _ENGINE_PORT, "protocol": "http"})
 
 	def validate(self):
-		if not self.template_id and not (self.engine_image or self.image_name):
-			frappe.throw("Set an Engine Image or a manual Image — the pod needs one to spawn.")
-		if self.model:
-			if not self.api_key:
-				self.api_key = secrets.token_hex(24)  # vLLM --api-key via VLLM_API_KEY env
-			serve_port = int(self.serve_port or _ENGINE_PORT)
-			if not any(int(p.internal_port) == serve_port for p in self.ports or []):
-				frappe.throw(
-					f"Serve Port {serve_port} is not in the Ports table — add it so it's opened at spawn."
-				)
-			serve = ServeCommand.for_pod(self)
-			if errors := serve.placement_errors:
-				frappe.throw("<br>".join(errors))
-			self.serve_command = serve.command
-		else:
+		# Every kind of pod is reached on its serve port — it is what the health gate polls and
+		# what the gateway route is built from — so a port the provider never opened leaves the
+		# pod Loading forever with a blank endpoint. Checked before the custom branch returns.
+		serve_port = int(self.serve_port or _ENGINE_PORT)
+		if not any(int(p.internal_port) == serve_port for p in self.ports or []):
+			frappe.throw(
+				f"Serve Port {serve_port} is not in the Ports table — add it so it's opened at spawn."
+			)
+		if self.is_custom_engine:
+			# Nothing to derive: the image's own entrypoint serves, and its flags (if any) are
+			# the operator's startup_command. The vLLM knobs and the api key are all vLLM's.
 			self.serve_command = ""
+			return
+		if not self.api_key:
+			self.api_key = secrets.token_hex(24)  # vLLM --api-key via VLLM_API_KEY env
+		serve = ServeCommand.for_pod(self)
+		if errors := serve.placement_errors:
+			frappe.throw("<br>".join(errors))
+		self.serve_command = serve.command
 
 	@property
 	def gpu_vram_gb(self):
@@ -108,13 +121,10 @@ class Pod(Document):
 
 	@property
 	def resolved_image(self):
-		"""Image ref to spawn from: the Engine Image (registry host included) if linked, else
-		the manual field. None when a Template supplies the image."""
-		if self.engine_image:
-			return frappe.get_cached_doc("Engine Image", self.engine_image).full_image
-		return self.image_name or None
+		"""Image ref to spawn from — the Engine Image's, registry host included."""
+		return frappe.get_cached_doc("Engine Image", self.engine_image).full_image
 
-	# ── Standalone lifecycle (Model-serving pods; also usable for machine-less base pods) ──
+	# ── Standalone lifecycle ──
 	@frappe.whitelist()
 	def spawn(self):
 		"""Spawn this pod on its provider (long job)."""

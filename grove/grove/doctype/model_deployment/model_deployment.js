@@ -7,6 +7,9 @@ const LOG_PING_INTERVAL = 15000;
 
 frappe.ui.form.on('Model Deployment', {
 	fetch_engine_logs(frm) {
+		// Both readers write the same pane, so each starts from an empty one — otherwise a fetch
+		// after a stream (or the other way round) reads as one log with a jump in the middle.
+		clear_logs(frm);
 		frm.call('get_engine_logs', { lines: frm.doc.log_lines || 200 }).then((r) => {
 			const text = r.message || __('Nothing came back — the engine has not started on the box.');
 			frm.log_lines = text.split('\n');
@@ -20,6 +23,7 @@ frappe.ui.form.on('Model Deployment', {
 			frm.call('stop_engine_logs');
 			set_log_button(frm, false);
 		} else {
+			clear_logs(frm);
 			frm.call('stream_engine_logs').then(() => set_log_button(frm, true));
 		}
 	},
@@ -27,51 +31,58 @@ frappe.ui.form.on('Model Deployment', {
 	refresh(frm) {
 		if (frm.is_new()) return;
 		setup_log_view(frm);
-		if (frm.doc.model && frm.doc.inference_server) {
+		if (!(frm.doc.model && frm.doc.inference_server)) return;
+		const status = frm.doc.status;
+		const served = status === 'Active' || status === 'Broken';
+		// Provisioning: a play already owns this instance, and a second one would race it over
+		// the same files. Terminated: teardown took the container, the port and the GPU claims
+		// off the box for good — a new deployment is how the model comes back.
+		if (status !== 'Provisioning' && status !== 'Terminated') {
 			frm.add_custom_button(__('Deploy'), () => {
 				frm.call('setup').then(() => frm.reload_doc());
 			});
-			const served = frm.doc.status === 'Active' || frm.doc.status === 'Broken';
-			// Fast re-render of the container's config (dtype / gpu mem / attention backend /
-			// port / env rows) without the weights download. Only meaningful once served.
-			if (served) {
-				frm.add_custom_button(__('Update Engine Config'), () => {
-					frappe.confirm(
-						__('Restart the engine to apply config changes? In-flight requests will be dropped.'),
-						() => frm.call('apply_engine_config').then(() => frm.reload_doc()),
-					);
-				});
-			}
-			// Pause without giving the box back: the container, its config, its port and its
-			// GPUs stay claimed, so Start is a `docker start` rather than a redeploy.
-			if (served) {
-				frm.add_custom_button(__('Stop'), () => {
-					frappe.confirm(
-						__('Stop this engine? It stops serving and stays on the box until you start it again.'),
-						() => frm.call('stop').then(() => frm.reload_doc()),
-					);
-				});
-			}
-			if (frm.doc.status === 'Inactive') {
-				frm.add_custom_button(__('Start'), () => {
-					frm.call('start').then(() => frm.reload_doc());
-				});
-			}
-			// Multi-tenant box: remove just THIS instance's container + key (shared
-			// weights and image stay for other instances). Also the cleanup for a failed deploy —
-			// a container carries --restart unless-stopped, so a crash-looping engine keeps
-			// coming back until this removes it. Offered while Provisioning too: that is
-			// where a deploy whose worker died leaves the doc, with the container still up.
-			if (served || frm.doc.status === 'Provisioning' || frm.doc.status === 'Inactive') {
-				frm.add_custom_button(__('Tear Down'), () => {
-					frappe.confirm(
-						frm.doc.status === 'Provisioning'
-							? __('Remove this instance from its box? Check its Ansible Play first — if a deploy is still running, this will race it.')
-							: __('Stop and remove this instance from its box? The model will stop serving here.'),
-						() => frm.call('teardown').then(() => frm.reload_doc()),
-					);
-				}).addClass('btn-danger');
-			}
+		}
+		// Fast re-render of the container's config (kv cache dtype / gpu mem / batch caps /
+		// attention backend / env rows) with none of the deploy around it. Offered while
+		// Provisioning as well, because that is where a wrong flag shows up: the deploy is
+		// stuck on its health gate and this restarts the engine with the corrected argv
+		// instead of waiting the gate out.
+		if (served || status === 'Provisioning') {
+			frm.add_custom_button(__('Update Engine Config'), () => {
+				frappe.confirm(
+					status === 'Provisioning'
+						? __('Restart the engine with the current config while its deploy is still running? The deploy keeps waiting for the engine to answer, and will pass or fail on this one.')
+						: __('Restart the engine to apply config changes? In-flight requests will be dropped.'),
+					() => frm.call('apply_engine_config').then(() => frm.reload_doc()),
+				);
+			});
+		}
+		// Pause without giving the box back: the container, its config, its port and its
+		// GPUs stay claimed, so Start is a `docker start` rather than a redeploy.
+		if (served) {
+			frm.add_custom_button(__('Stop'), () => {
+				frappe.confirm(
+					__('Stop this engine? It stops serving and stays on the box until you start it again.'),
+					() => frm.call('stop').then(() => frm.reload_doc()),
+				);
+			});
+		}
+		if (status === 'Inactive') {
+			frm.add_custom_button(__('Start'), () => {
+				frm.call('start').then(() => frm.reload_doc());
+			});
+		}
+		// Multi-tenant box: remove just THIS instance's container + key (shared weights and
+		// image stay for other instances). Also the cleanup for a failed deploy — a container
+		// carries --restart unless-stopped, so a crash-looping engine keeps coming back until
+		// this removes it. Not while Provisioning: it would race the running play.
+		if (served || status === 'Inactive') {
+			frm.add_custom_button(__('Tear Down'), () => {
+				frappe.confirm(
+					__('Stop and remove this instance from its box? The model stops serving here, and this deployment cannot be redeployed — make a new one.'),
+					() => frm.call('teardown').then(() => frm.reload_doc()),
+				);
+			}).addClass('btn-danger');
 		}
 	},
 });
@@ -88,6 +99,11 @@ function setup_log_view(frm) {
 		render_logs(frm);
 		if (done) set_log_button(frm, false);
 	});
+}
+
+function clear_logs(frm) {
+	frm.log_lines = [];
+	render_logs(frm, true);
 }
 
 function render_logs(frm, force_scroll) {

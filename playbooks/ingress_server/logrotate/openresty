@@ -1,0 +1,15 @@
+# Grove ingress — rotate OpenResty access/error logs. OpenResty (openresty.org
+# apt package) ships no logrotate config, so we provide one. nginx reopens its
+# log files on USR1; postrotate signals the master via its pid file.
+/var/log/openresty/*.log {
+	daily
+	rotate 14
+	missingok
+	notifempty
+	compress
+	delaycompress
+	sharedscripts
+	postrotate
+		test -s /usr/local/openresty/nginx/logs/nginx.pid && kill -USR1 "$(cat /usr/local/openresty/nginx/logs/nginx.pid)"
+	endscript
+}

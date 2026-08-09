@@ -14,6 +14,7 @@ import hmac
 import frappe
 
 from grove.grove.doctype.grove_user.grove_user import for_email
+from grove.grove.doctype.usage_record.usage_record import billable
 
 CONTROL_ROLE = "Grove Control"
 ALLOWED_ROLES = [CONTROL_ROLE]
@@ -50,16 +51,19 @@ def provision_key(name: str, email: str, token_limit: int=None, allowed_models: 
 	if not host:
 		frappe.throw("Gateway Host is not found")
 
+	# With a scheme, because the host alone is not a base URL an SDK can take. https always: a
+	# proxy with a certificate 301s port 80, and one without has no business handing out keys.
 	return {
-		"gateway_url": host,
+		"gateway_url": f"https://{host}",
 		"api_key": key.get_password("api_secret"),
 	}
 
 
 @frappe.whitelist()
 def revoke_key(api_key: str):
-	"""Revoke by the full key (not the doc name): hash it → find by key_hash →
-	flip status → revoked. Gateways drop it within the cache TTL."""
+	"""Revoke by the full key (not the doc name): hash it → find by key_hash → flip to revoked.
+	The row stays as the record it existed; a Gateway Deletion is written alongside and the next
+	sync drops the record from every proxy, so the key stops working within a tick."""
 	frappe.only_for(ALLOWED_ROLES)
 	from grove.grove.doctype.grove_api_key.grove_api_key import hash_secret
 
@@ -130,10 +134,12 @@ def usage(users: list[str] | str, month: str = None):
 	for r in records:
 		# A user holds several keys and so several records a month — accumulate, don't
 		# overwrite.
-		totals = usage.setdefault(emails[r.user], dict.fromkeys(_fields, 0))
+		totals = usage.setdefault(emails[r.user], {"billable_tokens": 0, **dict.fromkeys(_fields, 0)})
 		for f in _fields:
 			totals[f] += r.get(f) or 0
-		totals["billable_tokens"] = totals["total_tokens"] - totals["cached_tokens"]
+		# Accumulated per record, not derived from the running totals: billable has a floor, and
+		# applying it once at the end would let one malformed record cancel another key's usage.
+		totals["billable_tokens"] += billable(r.get("total_tokens"), r.get("cached_tokens"))
 
 	# Same tokens, split by which model spent them. The gateway meters per model
 	# (m:<metric>:<model>), so every record carries the breakdown as child rows.
@@ -155,7 +161,7 @@ def available_models():
 	return frappe.get_all(
 		"Model",
 		{"published": 1},
-		["name", "display_name", "is_embedding"],
+		["name", "display_name", "modality"],
 	)
 
 
@@ -197,13 +203,12 @@ def _totals_by_model(rows, fields):
 	a model is summed across all of them rather than overwritten."""
 	per_model = {}
 	for row in rows:
-		totals = per_model.setdefault(row["model"], {"model": row["model"], **dict.fromkeys(fields, 0)})
+		totals = per_model.setdefault(
+			row["model"], {"model": row["model"], "billable_tokens": 0, **dict.fromkeys(fields, 0)}
+		)
 		for f in fields:
 			totals[f] += row.get(f) or 0
+		# Per row, for the same reason as above and so this agrees with usage_record.billable_tokens.
+		totals["billable_tokens"] += billable(row.get("total_tokens"), row.get("cached_tokens"))
 
-	summary = []
-	for totals in per_model.values():
-		totals["billable_tokens"] = totals["total_tokens"] - totals["cached_tokens"]
-		summary.append(totals)
-	summary.sort(key=lambda t: t["total_tokens"], reverse=True)
-	return summary
+	return sorted(per_model.values(), key=lambda t: t["total_tokens"], reverse=True)

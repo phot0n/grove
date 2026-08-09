@@ -1,17 +1,27 @@
 {
  "actions": [],
- "allow_rename": 1,
  "autoname": "prompt",
  "creation": "2026-07-29 00:00:00",
  "doctype": "DocType",
  "engine": "InnoDB",
  "field_order": [
   "description",
+  "dirty",
+  "column_break_sfxr",
   "priority",
+  "public_catalog",
   "section_models",
   "models"
  ],
  "fields": [
+  {
+   "default": "0",
+   "description": "Set on change; cleared once a sync run has pushed this group's grant to every Active proxy.",
+   "fieldname": "dirty",
+   "fieldtype": "Check",
+   "label": "Pending Sync",
+   "read_only": 1
+  },
   {
    "description": "What this group is for, e.g. \"internal staff\" or \"acme early access\".",
    "fieldname": "description",
@@ -37,10 +47,21 @@
    "fieldtype": "Table",
    "label": "Models",
    "options": "Grove Model Row"
+  },
+  {
+   "default": "0",
+   "description": "List these models at /v1/models for callers with no API key",
+   "fieldname": "public_catalog",
+   "fieldtype": "Check",
+   "label": "Show in Public Catalogue"
+  },
+  {
+   "fieldname": "column_break_sfxr",
+   "fieldtype": "Column Break"
   }
  ],
  "links": [],
- "modified": "2026-07-29 00:00:00",
+ "modified": "2026-08-08 02:51:05.965803",
  "modified_by": "Administrator",
  "module": "Grove",
  "name": "Grove User Group",

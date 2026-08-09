@@ -8,6 +8,10 @@
   hosts: all
   become: true
   gather_facts: false
+  vars:
+    # Restated from the engine_proxy role's defaults: this play runs no roles, so nothing puts
+    # them in scope. Pulling the role in for one path would install nginx during a teardown.
+    engine_proxy_engines_dir: /etc/grove/nginx/engines
   tasks:
     - name: Remove the instance container
       ansible.builtin.command: "docker rm -f vllm-{{ vllm_instance }}"
@@ -28,3 +32,24 @@
       ansible.builtin.file:
         path: "{{ vllm_home }}/keys/{{ vllm_instance }}.key"
         state: absent
+
+    - name: Remove the instance's engine proxy location
+      ansible.builtin.file:
+        path: "{{ engine_proxy_engines_dir }}/{{ vllm_instance }}.conf"
+        state: absent
+      register: engine_proxy_location
+
+    # Only when something was actually removed, which is also what keeps this play working on a
+    # box that predates the engine proxy: no file, no change, no nginx to reload. Validated
+    # before the reload so a broken sibling config cannot take the other engines down with it.
+    - name: Reload the engine proxy without this instance
+      when: engine_proxy_location.changed
+      block:
+        - name: Check the engine proxy config
+          ansible.builtin.command: /usr/local/openresty/bin/openresty -t
+          changed_when: false
+
+        - name: Reload the engine proxy
+          ansible.builtin.systemd:
+            name: openresty
+            state: reloaded

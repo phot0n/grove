@@ -21,9 +21,6 @@ MANIFEST_TYPES = (
 	"application/vnd.oci.image.manifest.v1+json",
 	"application/vnd.docker.distribution.manifest.v2+json",
 )
-# Every box Grove provisions is x86_64, so a multi-arch tag resolves to this one. Read the
-# box's architecture instead if that stops being true.
-IMAGE_ARCHITECTURE = "amd64"
 
 
 class EngineImage(Document):
@@ -75,17 +72,19 @@ class EngineImage(Document):
 		registry = self.api_registry_host
 		manifest = self.get_manifest(registry, repository, reference)
 		# A multi-arch tag points at one manifest per platform; the layers live one level down.
+		# Which one is this image's own architecture — the size is what a box of that shape
+		# downloads, and the variants differ.
 		if manifests := manifest.get("manifests"):
 			digest = next(
 				(
 					entry["digest"]
 					for entry in manifests
-					if (entry.get("platform") or {}).get("architecture") == IMAGE_ARCHITECTURE
+					if (entry.get("platform") or {}).get("architecture") == self.cpu_architecture
 				),
 				None,
 			)
 			if not digest:
-				frappe.throw(f"{self.full_image} publishes no {IMAGE_ARCHITECTURE} image.")
+				frappe.throw(f"{self.full_image} publishes no {self.cpu_architecture} image.")
 			manifest = self.get_manifest(registry, repository, digest)
 
 		layers = manifest.get("layers") or []

@@ -35,7 +35,6 @@ class ModelDeployment(Document):
 		aliases: DF.SmallText | None
 		allow_long_max_model_len: DF.Check
 		attention_backend: DF.Literal["auto", "FLASH_ATTN", "XFORMERS", "FLASHINFER"]
-		dtype: DF.Literal["auto", "float16", "bfloat16"]
 		engine_image: DF.Link
 		engine_port: DF.Int
 		engine_url: DF.Data | None
@@ -45,16 +44,20 @@ class ModelDeployment(Document):
 		gpus: DF.Table[ModelDeploymentGPU]
 		inference_server: DF.Link
 		internal_api_key: DF.Password | None
+		kv_cache_dtype: DF.Literal["auto", "fp8"]
 		log_lines: DF.Int
 		max_model_len: DF.Int
+		max_num_batched_tokens: DF.Int
+		max_num_seqs: DF.Int
 		model: DF.Link
 		pipeline_parallel_size: DF.Int
 		region: DF.Link | None
+		serve_command: DF.Code | None
 		status: DF.Literal["Draft", "Provisioning", "Active", "Inactive", "Terminated", "Broken"]
 		tensor_parallel_size: DF.Int
 	# end: auto-generated types
 
-	# Routes are not dirty-gated: grove.gateway_sync.sync_dirty pushes the full
+	# Routes are not dirty-gated: grove.agent_sync.sync_dirty pushes the full
 	# route table for every deployment each run (idempotent), so no on_update
 	# hook is needed for routing.
 
@@ -76,11 +79,28 @@ class ModelDeployment(Document):
 				f"Engine Image cannot change after deployment (this one is {self.status}). "
 				"Create a new Model Deployment to serve from a different image."
 			)
+		self._validate_engine_architecture()
 		for row in self.env or []:
 			if not is_env_key(row.key):
 				frappe.throw(f"'{row.key}' is not a valid environment variable name.")
 			if not is_env_value(row.value):
 				frappe.throw(f"Value for '{row.key}' cannot contain a newline or a double quote.")
+
+	def _validate_engine_architecture(self):
+		"""The image and the box it runs on have to be the same architecture. Docker pulls the
+		wrong one happily and fails at exec, deep inside a play, with nothing that names the
+		cause. A box with no architecture recorded is on-prem — nothing to check it against."""
+		machine = frappe.db.get_value("Inference Server", self.inference_server, "machine")
+		box_architecture = frappe.db.get_value("Machine", machine, "cpu_architecture") if machine else None
+		if not box_architecture:
+			return
+		image_architecture = frappe.db.get_value("Engine Image", self.engine_image, "cpu_architecture")
+		if image_architecture != box_architecture:
+			frappe.throw(
+				f"Engine Image {self.engine_image} is {image_architecture}, but "
+				f"{self.inference_server} runs on {box_architecture}. Pick an "
+				f"{box_architecture} image."
+			)
 
 	# ── GPU pinning ───────────────────────────────────────────────────────────
 	# The box's cards come from its Inference Server. A deployment names the CUDA indices it
@@ -96,8 +116,8 @@ class ModelDeployment(Document):
 		return min(sizes) if sizes else None
 
 	def _validate_gpus(self):
-		"""Derive tensor_parallel_size, reject duplicate/unknown GPUs, and fill each row's
-		display columns from the box's GPU inventory."""
+		"""Derive tensor_parallel_size and the serve command preview, reject duplicate/unknown
+		GPUs, and fill each row's display columns from the box's GPU inventory."""
 		seen = set()
 		for r in self.gpus or []:
 			if r.gpu_index in seen:
@@ -124,6 +144,8 @@ class ModelDeployment(Document):
 		if errors := serve.placement_errors:
 			frappe.throw("<br>".join(errors))
 		self.tensor_parallel_size = serve.tensor_parallel_size
+		# The preview, from the same builder the deploy uses — so what is shown is what runs.
+		self.serve_command = serve.command
 
 	def reject_claimed_gpus(self):
 		"""A GPU backs one engine at a time — two vLLMs on one card split its VRAM and both
@@ -190,23 +212,30 @@ class ModelDeployment(Document):
 			port += 1
 		self.engine_port = port
 
-	def _derive_engine_url(self):
-		"""engine_url is where the gateway forwards — this deployment's OWN vLLM
-		instance, i.e. http://<machine public ip>:<engine_port>. No LiteLLM front:
-		vLLM 0.24+ serves /v1/messages natively + reports the prefix cache. Derived
-		(read-only) from the box IP + the auto-allocated engine_port, never hand-typed.
-		Runs AFTER _assign_engine_port and before the mandatory check, so both the
-		port and this reqd field are satisfied here."""
-		if not self.inference_server:
-			return  # no box yet → let the reqd check flag engine_url
+	@property
+	def derived_engine_url(self):
+		"""Where the gateway forwards: this deployment's location on its box's engine proxy,
+		https://<machine public ip>/e/<slug>. No LiteLLM front — vLLM 0.24+ serves /v1/messages
+		natively and reports the prefix cache — but nginx does front it, so a box exposes one
+		TLS port however many models it serves, and engine_port stops being public.
+
+		Derived, never hand-typed, and the one owner of the formula: deploy_model and
+		reconfigure_deployment persist it after a successful play, which is how an existing
+		deployment migrates without its URL moving before its box has the route."""
 		machine_ip = frappe.db.get_value("Inference Server", self.inference_server, "machine_ip")
 		if not machine_ip:
 			frappe.throw(
 				f"Inference Server {self.inference_server} has no machine IP "
 				"(set its Machine's public IP) — cannot derive Engine URL."
 			)
-		port = self.engine_port or ENGINE_PORT_BASE
-		self.engine_url = f"http://{machine_ip}:{port}"
+		return f"https://{machine_ip}/e/{_instance_slug(self.name)}"
+
+	def _derive_engine_url(self):
+		"""Runs AFTER _assign_engine_port and before the mandatory check, so both the port and
+		this reqd field are satisfied here."""
+		if not self.inference_server:
+			return  # no box yet → let the reqd check flag engine_url
+		self.engine_url = self.derived_engine_url
 
 	def on_update(self):
 		# A model is "published" only while it has a live deployment — keep the
@@ -239,9 +268,9 @@ class ModelDeployment(Document):
 	@frappe.whitelist()
 	def apply_engine_config(self):
 		"""Button: re-render this deployment's engine config and restart it to apply edited
-		per-box tuning (dtype / gpu_memory_utilization / attention_backend / engine_port /
-		env rows). Fast path — skips the heavy weights predownload. Replaces the container,
-		so it drops in-flight requests."""
+		per-box tuning (kv cache dtype / gpu_memory_utilization / batch caps / attention backend
+		/ env rows). Fast path — its own playbook, which is the config + restart tasks and
+		nothing else. Replaces the container, so it drops in-flight requests."""
 		frappe.enqueue(
 			"grove.grove.doctype.model_deployment.model_deployment.reconfigure_deployment",
 			queue="long",
@@ -412,6 +441,10 @@ def _vllm_extravars(md, m, inf, key):
 		# What the role checks the box's free space against, before either download starts.
 		# 0 means the figure was never fetched, which the role reads as "cannot check".
 		"vllm_weights_gb": serve.weights_gb,
+		# serve.yml runs grove_https and engine_proxy ahead of the vllm role, so that play
+		# writes the box's htpasswd too — from the same source provision.yml reads. Unused by
+		# reconfigure.yml, which runs neither role.
+		**frappe.get_single("Grove Settings").scrape_auth_variables,
 	}
 	# The image is what the box serves from: the role pulls it and Docker owns the container.
 	# Credentials only exist for a private registry; a public pull skips the login task.
@@ -469,7 +502,7 @@ def deploy_model(model_deployment):
 		reference_docname=md.name,
 	)
 
-	frappe.db.set_value("Model Deployment", md.name, "status", "Active" if rc == 0 else "Broken")
+	frappe.db.set_value("Model Deployment", md.name, _post_play_state(md, rc))
 	# db.set_value skips the controller on_update — recompute the model's
 	# published flag (Active deployment → publishable, Broken → maybe unpublish).
 	from grove.grove.doctype.model.model import sync_published
@@ -477,23 +510,32 @@ def deploy_model(model_deployment):
 	sync_published(md.model)
 	frappe.db.commit()
 	if rc == 0:
-		from grove import gateway_sync
+		from grove import agent_sync
 
-		# Routes are global (no per-deployment proxy) → push to every Active proxy.
-		gateway_sync.full_sync(trigger="Provision")
+		# Gateway routes are global — every gateway holds a row for every model — so all of them.
+		# The replica table is not: only the ingress that OWNS this box has changed, and the rest
+		# of the fleet already holds the table this push would hand them.
+		agent_sync.full_sync(
+			trigger="Provision",
+			ingresses=agent_sync.owning_ingresses([md.inference_server]),
+		)
 	return play_name, rc
 
 
 def reconfigure_deployment(model_deployment):
-	"""Re-render the engine config and restart it for an already-served
-	deployment, applying edited per-box tuning (dtype / gpu_memory_utilization /
-	attention_backend / engine_port / env rows) WITHOUT the heavy weights predownload.
-	Runs serve.yml with skip_tags=["heavy"] — every config/replace/health task still
-	runs (identical to a full serve minus the download), just faster. The image pull is
-	not heavy, so a moved tag lands here too. Assumes the box is provisioned and the
-	weights are already in its shared cache.
-	Restarts the engine → drops in-flight requests, so it's button-triggered, not
-	automatic."""
+	"""Re-render the engine config and restart it for an already-served deployment, applying
+	edited per-box tuning (kv cache dtype / gpu_memory_utilization / batch caps /
+	attention backend / env rows).
+
+	Runs reconfigure.yml — the vllm role's config tasks and nothing else: no disk check, no
+	image pull, no weights predownload, no proxy/TLS roles. Assumes the box is provisioned, the
+	image is on it and the weights are in its shared cache, which a deploy already saw to. That
+	is what makes this runnable while a deploy is still sitting on the health gate: a flag typo
+	is fixed by re-rendering the run script and restarting, not by waiting the gate out.
+
+	Replaces the engine container when the rendered config actually moved → drops in-flight
+	requests, so it's button-triggered, not automatic. The deployment stays Active for the run;
+	see the note below the extra-vars."""
 	md = frappe.get_doc("Model Deployment", model_deployment)
 	m = frappe.get_doc("Model", md.model)
 	inf = md.server
@@ -509,20 +551,41 @@ def reconfigure_deployment(model_deployment):
 
 	extravars = _vllm_extravars(md, m, inf, key)
 
-	frappe.db.set_value("Model Deployment", md.name, "status", "Provisioning")
-	frappe.db.commit()
-
+	# Status is deliberately NOT moved to Provisioning here, unlike deploy_model.
+	#
+	# It is read as "is this engine serving?" — _routes_for_proxy only routes Active — and the
+	# scheduler pushes the full route table every 2 minutes. Flipping it for the duration of the
+	# play therefore takes the model out of the gateway for MINUTES, and this play usually does
+	# not stop the engine at all: the container is replaced only when the run script or env file
+	# renders differently, so a re-run that changes nothing leaves it serving throughout. Paying a
+	# guaranteed multi-minute outage to cover a restart that is seconds long and often does not
+	# happen is the wrong trade. A run that does replace the container has a gap no route table
+	# could have hidden anyway.
 	play_name, rc = inf.run_playbook(
-		"serve.yml",
+		"reconfigure.yml",
 		extravars=extravars,
-		skip_tags=["heavy"],
 		reference_doctype="Model Deployment",
 		reference_docname=md.name,
 	)
 
-	frappe.db.set_value("Model Deployment", md.name, "status", "Active" if rc == 0 else "Broken")
+	frappe.db.set_value("Model Deployment", md.name, _post_play_state(md, rc))
 	frappe.db.commit()
 	return play_name, rc
+
+
+def _post_play_state(md, rc):
+	"""What a finished serve play leaves on the doc. engine_url moves only on success: a failed
+	play may not have written the box's nginx location, and the gateway would then forward to a
+	route that is not there.
+
+	This is also the migration. A deployment served before the engine proxy existed keeps its
+	old http://<ip>:<port> until its next Deploy or Update Engine Config — the same run that puts
+	the location on the box — so the URL never moves ahead of the route it names. Not md.save():
+	a full validate can throw on drift unrelated to this deploy (a sibling that claimed a GPU)
+	after the play already succeeded."""
+	if rc != 0:
+		return {"status": "Broken"}
+	return {"status": "Active", "engine_url": md.derived_engine_url}
 
 
 def teardown_deployment(model_deployment):

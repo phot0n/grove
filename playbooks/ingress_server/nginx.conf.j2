@@ -1,0 +1,164 @@
+{#
+  Grove ingress — OpenResty in front of one VPC's engines. Rendered by ingress.yml and
+  deploy_openresty.yml; do not edit on the box.
+
+  One name, unlike the gateway. A gateway answers to Gateway Host as well, which GeoDNS points at
+  whichever box is nearest; nothing resolves to a set of ingresses, because a gateway addresses one
+  by name out of its own route table. So /v1/, /grove-admin and the scrape all hang under this
+  box's <name>.<zone>.
+
+  /v1/ hangs under the shared name only. access.lua asks the agent for a replica in this Network
+  and rewrites the upstream; nothing here reads or rewrites the body, because the gateway already
+  parsed the model out and stamped priority on it. That is also why lua_need_request_body is left
+  off: forcing nginx to buffer every request body before the access phase would buy this hop
+  nothing at all.
+#}
+{% set tls = ingress_hostname and fleet_tls_cert %}
+{% set certificate = fleet_tls_cert_path if tls else grove_tls_cert %}
+{% set certificate_key = fleet_tls_key_path if tls else grove_tls_key %}
+{% macro healthz() %}
+		# Answered on every name this box has: the Route53 health check behind the shared record
+		# asks for it by this box's own name, and a gateway checks the shared one.
+		location = /healthz {
+			content_by_lua_block { ngx.say("ok") }
+		}
+{% endmacro %}
+{% macro grove_variables() %}
+		# Declared server-wide so every location has them (access.lua fills the /v1 ones);
+		# avoids "uninitialized variable" warnings on admin/healthz.
+		set $grove_engine "-";
+		set $grove_deployment "-";
+		set $grove_model "-";
+		set $grove_request_id "-";
+{% endmacro %}
+{% macro data_locations() %}
+		location /v1/ {
+			set $upstream "";
+			access_by_lua_file /etc/grove-gateway/lua/access.lua;
+
+			proxy_pass $upstream;
+			proxy_http_version 1.1;
+			proxy_set_header Connection "";
+			# The gateway is the edge and already overwrote these with the client's address; this
+			# hop is inside the fleet, so what arrives here is a fact rather than a claim.
+			proxy_set_header X-Forwarded-For $http_x_forwarded_for;
+			proxy_set_header X-Real-IP $http_x_real_ip;
+			# $upstream is a variable, so nginx resolves it per request. The engines are dialled
+			# by private IP, but the resolver and SNI cost nothing and keep this identical to the
+			# gateway's block.
+			resolver 127.0.0.53 valid=30s ipv6=off;
+			proxy_ssl_server_name on;
+			proxy_buffering off;          # stream SSE straight through
+			proxy_read_timeout 600s;
+			proxy_send_timeout 600s;
+
+			log_by_lua_file /etc/grove-gateway/lua/log.lua;
+		}
+{% endmacro %}
+{% macro admin_locations() %}
+		# Control-plane replica-table push → Go agent (token-gated inside the agent).
+		location /grove-admin/ {
+			proxy_pass http://127.0.0.1:9090/admin/;
+			proxy_read_timeout 30s;
+		}
+{% endmacro %}
+{% macro metrics_locations() %}
+		# No GPU target here — an ingress box has no cards.
+		location = /metrics/node {
+			auth_basic "grove metrics";
+			auth_basic_user_file /etc/grove/nginx/metrics.htpasswd;
+			proxy_pass http://127.0.0.1:9100/metrics;
+		}
+{% endmacro %}
+worker_processes auto;
+error_log /var/log/openresty/error.log warn;
+
+events {
+	worker_connections 8192;
+}
+
+http {
+	lua_package_path "/etc/grove-gateway/lua/?.lua;;";
+	client_body_buffer_size 8m;
+	client_max_body_size 32m;
+	default_type application/json;
+
+	# The gateway's format, deliberately: correlating gateway → ingress → vLLM is one grep for
+	# rid= across three logs, and that only works while the three agree on the shape. This is the
+	# durable record of WHICH replica served a request — the ingress knows natively, where the
+	# gateway only ever learns it from a response header.
+	log_format grove escape=json
+		'$remote_addr $time_iso8601 "$request" '
+		'bytes=$body_bytes_sent '
+		'rt=$request_time urt=$upstream_response_time '
+		'upstream=$upstream_addr deployment=$grove_deployment '
+		'model=$grove_model rid=$grove_request_id';
+
+	# Only the data path. /healthz is asked by every Route53 checker every 30 seconds and by the
+	# gateway besides, and nothing is learned from recording it.
+	access_log off;
+
+{% if tls %}
+	# Nothing but the redirect. No ACME challenge location: the fleet certificate is issued on the
+	# control plane over DNS-01.
+	server {
+
+		listen 80 default_server;
+		server_name _;
+
+{{ healthz() }}
+		location / {
+			return 301 https://$host$request_uri;
+		}
+
+	}
+
+	# This box. The gateways dial it here by the name on the Ingress Server doc, verified against
+	# the fleet wildcard, and the control plane pushes its replica table to the same name.
+	#
+	# default_server so the Monitoring Agent's scrape, which connects to the bare IP and sends no
+	# SNI, still lands on /metrics/node.
+	server {
+
+		listen 443 ssl default_server;
+		http2 on;
+		server_name {{ ingress_hostname }};
+
+		ssl_certificate     {{ certificate }};
+		ssl_certificate_key {{ certificate_key }};
+
+		access_log /var/log/openresty/access.log grove;
+
+{{ grove_variables() }}
+{{ healthz() }}
+{{ admin_locations() }}
+{{ metrics_locations() }}
+{{ data_locations() }}
+	}
+{% else %}
+	server {
+
+		listen 80 default_server;
+		server_name _;
+
+		access_log /var/log/openresty/access.log grove;
+
+{{ grove_variables() }}
+{{ healthz() }}
+{{ admin_locations() }}
+{{ data_locations() }}
+	}
+
+	# Metrics only, on their own TLS listener: basic auth over plaintext would put the scrape
+	# password on the wire every 15 seconds. The certificate and htpasswd come from grove_https.
+	server {
+		listen 443 ssl default_server;
+		server_name _;
+
+		ssl_certificate     {{ certificate }};
+		ssl_certificate_key {{ certificate_key }};
+
+{{ metrics_locations() }}
+	}
+{% endif %}
+}

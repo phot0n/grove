@@ -30,7 +30,7 @@ class AnsibleHost:
 
 		The playbook comes from this doctype's own folder. `project` names another doctype's
 		when the play is shared — exporters.yml belongs to Monitoring Agent but runs against
-		Inference and Proxy Server boxes."""
+		Inference and Gateway Server boxes."""
 		ansible = Ansible(project_root=ansible_project_dir(project or self.doctype))
 		return ansible.run_playbook(
 			playbook_name=playbook,
@@ -141,7 +141,7 @@ class Ansible:
 
 		Args:
 			playbook_name: Name of the playbook (e.g. "bootstrap.yml", "inference-host")
-			server_type: DocType of the server (Machine, Proxy Server, etc.)
+			server_type: DocType of the server (Machine, Gateway Server, etc.)
 			server_name: Name of the server doc
 			machine_name: Name of the Machine doc (same as server_name for Machine, different for role servers)
 			extravars: Optional dict of extra variables to pass to Ansible

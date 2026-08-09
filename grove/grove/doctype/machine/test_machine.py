@@ -153,12 +153,24 @@ class TestBuildIpPermission(unittest.TestCase):
 			"IpProtocol": "tcp", "FromPort": 22, "ToPort": 22, "IpRanges": [{"CidrIp": "0.0.0.0/0"}],
 		})
 
-	def test_source_group_rule(self):
+	def test_a_single_address_rule(self):
+		# The shape sync_ingress writes: one proxy's public IP allowed on the engine proxy's port.
 		permission = build_ip_permission(
-			{"protocol": "tcp", "from_port": 8080, "to_port": 8085, "source_group_id": "sg-proxy"}
+			{"protocol": "tcp", "from_port": 443, "to_port": 443, "cidr": "54.251.169.42/32"}
 		)
 		self.assertEqual(permission, {
-			"IpProtocol": "tcp", "FromPort": 8080, "ToPort": 8085,
+			"IpProtocol": "tcp", "FromPort": 443, "ToPort": 443,
+			"IpRanges": [{"CidrIp": "54.251.169.42/32"}],
+		})
+
+	def test_source_group_rule(self):
+		# No rule Grove writes uses this branch today, but sync_ingress revokes through it: a
+		# group-to-group rule somebody added by hand on the port it owns is not in its desired set.
+		permission = build_ip_permission(
+			{"protocol": "tcp", "from_port": 443, "to_port": 443, "source_group_id": "sg-proxy"}
+		)
+		self.assertEqual(permission, {
+			"IpProtocol": "tcp", "FromPort": 443, "ToPort": 443,
 			"UserIdGroupPairs": [{"GroupId": "sg-proxy"}],
 		})
 
@@ -414,11 +426,11 @@ class TestSyncDependentServers(IntegrationTestCase):
 		}).insert(ignore_permissions=True)
 		self.addCleanup(self.inference_server.delete, ignore_permissions=True)
 
-		self.proxy_server = frappe.get_doc({
-			"doctype": "Proxy Server", "name": "test-sync-dependents-proxy",
+		self.gateway_server = frappe.get_doc({
+			"doctype": "Gateway Server", "name": "test-sync-dependents-proxy",
 			"machine": self.machine.name, "status": "Active",
 		}).insert(ignore_permissions=True)
-		self.addCleanup(self.proxy_server.delete, ignore_permissions=True)
+		self.addCleanup(self.gateway_server.delete, ignore_permissions=True)
 
 	def test_terminated_machine_breaks_active_servers(self):
 		self.machine.status = "Terminated"
@@ -427,7 +439,7 @@ class TestSyncDependentServers(IntegrationTestCase):
 			frappe.db.get_value("Inference Server", self.inference_server.name, "status"), "Terminated"
 		)
 		self.assertEqual(
-			frappe.db.get_value("Proxy Server", self.proxy_server.name, "status"), "Terminated"
+			frappe.db.get_value("Gateway Server", self.gateway_server.name, "status"), "Terminated"
 		)
 
 	def test_stopped_machine_marks_servers_broken_not_terminated(self):
@@ -505,7 +517,7 @@ class TestNetworkResolution(IntegrationTestCase):
 	def test_proxy_role_picks_proxy_security_groups(self):
 		machine = frappe.get_doc({
 			"doctype": "Machine", "machine_name": "test-net-role-proxy", "cloud_provider": self.provider.name,
-			"network": self.network.name, "machine_type": "Proxy Server",
+			"network": self.network.name, "machine_type": "Gateway Server",
 		}).insert(ignore_permissions=True)
 		self.addCleanup(machine.delete, ignore_permissions=True)
 		self.assertEqual(machine.get_security_group_ids(machine.network_doc), ["sg-proxy"])

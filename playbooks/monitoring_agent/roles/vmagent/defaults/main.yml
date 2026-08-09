@@ -10,6 +10,9 @@ vmagent_listen_address: 127.0.0.1:8429
 # disk here instead of being dropped. This queue covers every box this agent scrapes, not one.
 vmagent_buffer_path: /var/lib/vmagent
 vmagent_max_disk_usage: 4GiB
+# How long samples are held before a push. Lower gets them to the remote sooner and costs more
+# requests; the queue above is what covers the remote being down either way.
+vmagent_flush_interval: 10s
 
 # ── Remote write (Grove Settings → extra-vars) ──────────────────────────────
 # The ingestion service takes a bearer token that carries the tenant and source; there is no
@@ -35,4 +38,11 @@ monitoring_engine_targets: []
 
 # ── Scraping ────────────────────────────────────────────────────────────────
 monitoring_scrape_interval: 15s
-monitoring_engine_scrape_interval: 5s
+monitoring_engine_scrape_interval: 10s
+
+# Basic auth for the host job: every box's /metrics/* is behind it, since an exporter answers
+# whoever reaches it. The username is a constant that must equal scrape_username in the
+# grove_https role, which writes the htpasswd the boxes check against; only the password is
+# fleet-wide config, from Grove Settings.
+monitoring_scrape_username: grove
+monitoring_scrape_password: ""

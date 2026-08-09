@@ -3,6 +3,12 @@
 # the T4). Must be new enough for vLLM's torch CUDA build (cu13 → driver >= 580).
 nvidia_driver_pkg: nvidia-driver-580-server
 
+# How long to wait for the box to come back after the driver reboot. A virtualized instance is
+# up in well under a minute; a bare metal one POSTs real firmware and takes ten to twenty, so
+# Inference Server raises this for those. Too low does not just fail the reboot — it fails the
+# play midway and leaves the box with a driver installed and nothing configured on top of it.
+gpu_reboot_timeout: 600
+
 # Container runtime that gives `docker run --gpus` its GPU access. Pinned because it comes
 # from NVIDIA's own repo rather than the distro, so it moves independently of the Ubuntu
 # release, and a toolkit change breaks every container placement at once. NVIDIA publishes

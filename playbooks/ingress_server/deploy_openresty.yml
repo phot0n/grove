@@ -1,0 +1,62 @@
+---
+# Update ONLY the OpenResty config on an already-provisioned Ingress Server: push nginx.conf,
+# validate, graceful reload. Does NOT touch the Go agent, Redis, or packages — use ingress.yml for
+# a full provision, deploy_agent.yml for just the binary. Safe on a live ingress: reload (not
+# restart) drops no connections, and Redis is left alone so the replica table survives.
+- hosts: all
+  become: true
+  gather_facts: false
+  vars:
+    grove_dir: "{{ playbook_dir }}"
+    ingress_hostname: ""
+
+  # Roles run before tasks, which is what this needs: nginx.conf declares a `listen 443 ssl`
+  # server, and OpenResty will not start with no certificate on disk. Re-running it is also how a
+  # rotated scrape password reaches this box.
+  roles:
+    - grove_https
+    - fleet_tls
+
+  tasks:
+    # Refuse to render the plaintext config over a box that is already serving TLS: the play is
+    # hand-runnable, the vars come from the command line, and forgetting them would take
+    # /grove-admin back onto port 80 with nothing to say it had happened.
+    - name: look for a certificate this box is already serving
+      ansible.builtin.stat:
+        path: "{{ fleet_tls_cert_path }}"
+      register: existing_fleet_cert
+
+    - name: refuse to downgrade a box that already has a certificate
+      ansible.builtin.assert:
+        that: ingress_hostname | length > 0
+        fail_msg: >-
+          {{ fleet_tls_cert_path }} exists, so this box serves TLS, but no ingress_hostname was
+          passed — rendering now would put /grove-admin back on plaintext :80. Re-run from the
+          Ingress Server's Deploy OpenResty Config button, or pass the same extra-vars it does.
+      when: existing_fleet_cert.stat.exists
+
+    - name: lua files
+      ansible.builtin.copy:
+        src: "{{ grove_dir }}/lua/"
+        dest: /etc/grove-gateway/lua/
+        mode: "0644"
+      notify: reload openresty
+
+    - name: nginx.conf
+      ansible.builtin.template:
+        src: "{{ grove_dir }}/nginx.conf.j2"
+        dest: /usr/local/openresty/nginx/conf/nginx.conf
+        mode: "0644"
+      notify: reload openresty
+
+    # Validates the config we just pushed. A failure aborts the play BEFORE the reload handler
+    # flushes, so a broken config never gets loaded — openresty keeps serving the old one.
+    - name: nginx config test
+      ansible.builtin.command: /usr/local/openresty/bin/openresty -t
+      changed_when: false
+
+  handlers:
+    - name: reload openresty
+      ansible.builtin.systemd:
+        name: openresty
+        state: reloaded

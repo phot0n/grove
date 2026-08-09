@@ -24,6 +24,15 @@ INSTANCE_STATUS = {
 	"terminated": "Terminated",
 }
 
+# AWS spells x86 its own way. Everywhere else in Grove — Engine Image manifests, monitoring_arch
+# in the playbooks, Docker's own platform strings — it is amd64, and these values are compared
+# against those. arm64 is spelled the same on both sides.
+ARCHITECTURE = {"x86_64": "amd64"}
+# What Grove will actually run a box as — the Machine's cpu_architecture Select, in Grove's own
+# names. Anything else AWS reports for a type (i386, on the older burstable families) is a mode
+# nothing here builds images for.
+RUNNABLE_ARCHITECTURES = ("amd64", "arm64")
+
 
 class AWSError(CloudClientError):
 	"""Carries AWS's own error code, so a caller can tell "the instance is gone"
@@ -68,6 +77,31 @@ def parse_gpus(instance_type_info):
 	return gpus
 
 
+def normalize_architecture(aws_architecture):
+	"""An AWS architecture name → Grove's own. Anything AWS adds passes through unmapped rather
+	than becoming a wrong answer; a blank stays blank, which is how an on-prem box reads."""
+	return ARCHITECTURE.get(aws_architecture, aws_architecture or "")
+
+
+def parse_architecture(instance_type_info):
+	"""describe_instance_types → the architecture Grove will run this type as.
+
+	AWS returns a LIST, and not only for museum pieces: t2.micro answers
+	["i386", "x86_64"] to this day. Taking the first entry picked i386 there, which is not a value
+	the Machine's Select accepts, so provisioning the cheapest instance type in the catalogue failed
+	validation before it ever reached EC2.
+
+	So the first entry Grove actually supports wins, and the list order is not trusted. Anything
+	unrecognised still passes through unmapped rather than becoming a wrong answer — a new AWS
+	architecture should surface as itself, not as x86."""
+	architectures = [
+		normalize_architecture(a)
+		for a in (instance_type_info.get("ProcessorInfo") or {}).get("SupportedArchitectures") or []
+	]
+	runnable = [a for a in architectures if a in RUNNABLE_ARCHITECTURES]
+	return (runnable or architectures or [""])[0]
+
+
 def machine_status(ec2_state):
 	"""EC2 instance state → Machine status. An unknown state leaves the box Pending rather
 	than crashing a sync — AWS can add states, and a stale status is not worth an exception."""
@@ -97,6 +131,11 @@ def build_ip_permission(rule):
 	else:
 		permission["UserIdGroupPairs"] = [{"GroupId": rule["source_group_id"]}]
 	return permission
+
+
+def _port_rule(port, **source):
+	"""One single-port TCP rule from its source — {"cidr": ...} or {"source_group_id": ...}."""
+	return {"protocol": "tcp", "from_port": port, "to_port": port, **source}
 
 
 class EC2Client(CloudClient):
@@ -138,7 +177,7 @@ class EC2Client(CloudClient):
 			"MinCount": 1,
 			"MaxCount": 1,
 			"BlockDeviceMappings": [{
-				"DeviceName": self.get_root_device_name(image_id),
+				"DeviceName": self.get_image_info(image_id)["root_device_name"],
 				"Ebs": {"VolumeSize": int(root_volume_gb), "VolumeType": "gp3",
 						"DeleteOnTermination": True},
 			}],
@@ -156,13 +195,20 @@ class EC2Client(CloudClient):
 			raise AWSError(f"RunInstances returned no instance for {name}")
 		return self._parse_instance(instances[0])
 
-	def get_root_device_name(self, ami_id):
-		"""The AMI's own root device (/dev/sda1 on most Ubuntu images, /dev/xvda on some).
-		BlockDeviceMappings only resizes the root volume if it names the same device."""
+	def get_image_info(self, ami_id):
+		"""What launching from this AMI needs to agree with: {root_device_name, cpu_architecture}.
+
+		BlockDeviceMappings only resizes the root volume if it names the AMI's own root device
+		(/dev/sda1 on most Ubuntu images, /dev/xvda on some). The architecture is what an arm64
+		instance type has to be checked against — an AMI built for the other one launches without
+		complaint and then never boots."""
 		images = self._call(self.ec2.describe_images, ImageIds=[ami_id]).get("Images") or []
 		if not images:
 			raise AWSError(f"AMI {ami_id} not found in {self.region}")
-		return images[0].get("RootDeviceName") or "/dev/sda1"
+		return {
+			"root_device_name": images[0].get("RootDeviceName") or "/dev/sda1",
+			"cpu_architecture": normalize_architecture(images[0].get("Architecture")),
+		}
 
 	def get_instance(self, instance_id):
 		"""Fetch one instance → parsed (status, public_ip, private_ip, instance_type, image_id,
@@ -176,27 +222,60 @@ class EC2Client(CloudClient):
 		raise AWSError(f"Instance {instance_id} not found")
 
 	def get_instance_type_info(self, instance_type):
-		"""This instance type's local storage and GPUs, already in Grove's own shape — a
-		single describe_instance_types call carries both."""
+		"""This instance type's local storage, GPUs, architecture and whether it is bare metal,
+		already in Grove's own shape — one describe_instance_types call carries all four."""
 		types = self._call(
 			self.ec2.describe_instance_types, InstanceTypes=[instance_type]
 		).get("InstanceTypes") or []
 		if not types:
 			raise AWSError(f"Instance type {instance_type} not available in {self.region}")
 		info = types[0]
-		return {"instance_store": parse_instance_store(info), "gpus": parse_gpus(info)}
+		return {
+			"instance_store": parse_instance_store(info),
+			"gpus": parse_gpus(info),
+			"is_bare_metal": bool(info.get("BareMetal")),
+			"cpu_architecture": parse_architecture(info),
+		}
 
-	def poll_instance_ready(self, instance_id, timeout_sec=300, poll_interval_sec=5):
-		"""Poll until the instance is running and has a public IP, so Ansible can connect."""
+	def poll_instance_ready(self, instance_id, timeout_sec=900, poll_interval_sec=10):
+		"""Poll until the instance is reachable: running, addressed, and past both of EC2's own
+		status checks.
+
+		Running is not reachable. A bare metal instance reports running with a public IP about a
+		minute in and then spends another ten to twenty in firmware POST with nothing listening —
+		returning on the state alone hands Ansible a box that refuses the connection. Every
+		instance has the same gap; metal only makes it wide enough to always lose."""
 		start = time.time()
 		while time.time() - start < timeout_sec:
 			instance = self.get_instance(instance_id)
-			if instance["_ec2_state"] == "running" and instance["public_ip"]:
-				return instance
 			if instance["_ec2_state"] in ("terminated", "shutting-down"):
 				raise AWSError(f"Instance {instance_id} went {instance['_ec2_state']} while starting")
+			if (
+				instance["_ec2_state"] == "running"
+				and instance["public_ip"]
+				and self.is_instance_reachable(instance_id)
+			):
+				return instance
 			time.sleep(poll_interval_sec)
 		raise AWSError(f"Instance {instance_id} was not reachable within {timeout_sec}s")
+
+	def is_instance_reachable(self, instance_id):
+		"""Whether EC2 reports both of an instance's status checks passing — the system one for
+		the host under it, the instance one for the box itself.
+
+		IncludeAllInstances is load-bearing: without it the response silently omits any instance
+		that is not already running, and an empty list would be indistinguishable from an answer."""
+		statuses = self._call(
+			self.ec2.describe_instance_status,
+			InstanceIds=[instance_id],
+			IncludeAllInstances=True,
+		).get("InstanceStatuses") or []
+		if not statuses:
+			return False
+		return all(
+			(statuses[0].get(check) or {}).get("Status") == "ok"
+			for check in ("SystemStatus", "InstanceStatus")
+		)
 
 	def allocate_static_ip(self, instance_id):
 		"""Allocate an Elastic IP and put it on the instance. Returns {public_ip, allocation_id}
@@ -295,6 +374,60 @@ class EC2Client(CloudClient):
 			GroupId=security_group_id,
 			IpPermissions=[build_ip_permission(rule) for rule in rules],
 		)
+
+	def revoke_ingress(self, security_group_id, rules):
+		"""Close the given ingress rules on an existing security group."""
+		self._call(
+			self.ec2.revoke_security_group_ingress,
+			GroupId=security_group_id,
+			IpPermissions=[build_ip_permission(rule) for rule in rules],
+		)
+
+	def get_ingress_permissions(self, security_group_id, port):
+		"""This group's ingress permissions for exactly this port, as AWS reports them."""
+		groups = self._call(
+			self.ec2.describe_security_groups, GroupIds=[security_group_id]
+		).get("SecurityGroups") or []
+		if not groups:
+			raise AWSError(f"Security group {security_group_id} does not exist")
+		return [
+			permission
+			for permission in groups[0].get("IpPermissions", [])
+			if permission.get("FromPort") == port and permission.get("ToPort") == port
+		]
+
+	def sync_ingress(self, security_group_id, port, cidrs):
+		"""Make this port's ingress exactly `cidrs`. Returns {opened, closed}.
+
+		Scoped to the one port: every other rule on the group is left alone. A diff that revoked
+		everything it did not recognise would take 22 with it and lock Grove out of the box.
+
+		Security-group sources are revoked too, not just CIDRs that fell out of the set — the
+		desired state is a list of addresses, so any group-to-group rule on this port is by
+		definition not in it."""
+		permissions = self.get_ingress_permissions(security_group_id, port)
+		current = {
+			ip_range["CidrIp"]
+			for permission in permissions
+			for ip_range in permission.get("IpRanges", [])
+		}
+		source_groups = [
+			pair["GroupId"]
+			for permission in permissions
+			for pair in permission.get("UserIdGroupPairs", [])
+		]
+
+		desired = set(cidrs)
+		opened, closed = sorted(desired - current), sorted(current - desired)
+		if opened:
+			self.authorize_ingress(security_group_id, [_port_rule(port, cidr=c) for c in opened])
+		if closed or source_groups:
+			self.revoke_ingress(
+				security_group_id,
+				[_port_rule(port, cidr=c) for c in closed]
+				+ [_port_rule(port, source_group_id=g) for g in source_groups],
+			)
+		return {"opened": opened, "closed": closed + source_groups}
 
 	def resize_root_volume(self, instance_id, size_gb, timeout_sec=600, poll_interval_sec=10):
 		"""Grow the instance's root volume, waiting until the new size is visible to the OS.

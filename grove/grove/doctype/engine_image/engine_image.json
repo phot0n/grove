@@ -8,6 +8,8 @@
  "field_order": [
   "image_provider",
   "image_path",
+  "engine_kind",
+  "cpu_architecture",
   "full_image",
   "size_gb"
  ],
@@ -28,6 +30,26 @@
    "reqd": 1,
    "in_list_view": 1,
    "description": "Repository path and tag within the registry, e.g. 'vllm/vllm-openai:v0.11.0'. The registry host is prefixed automatically."
+  },
+  {
+   "fieldname": "engine_kind",
+   "fieldtype": "Select",
+   "label": "Engine Kind",
+   "options": "vllm\ncustom",
+   "default": "vllm",
+   "reqd": 1,
+   "in_list_view": 1,
+   "description": "What is inside the image. 'vllm' — the entrypoint takes `vllm serve` arguments, so a placement derives them from the Model. 'custom' — the image serves on its own (an ASR container, say); no serve arguments are derived and the placement runs the image's own entrypoint plus whatever Startup Command is set."
+  },
+  {
+   "fieldname": "cpu_architecture",
+   "fieldtype": "Select",
+   "label": "CPU Architecture",
+   "options": "amd64\narm64",
+   "default": "amd64",
+   "reqd": 1,
+   "in_list_view": 1,
+   "description": "Architecture this image is built for. Matched against the box's at deployment, and used to pick the right entry out of a multi-arch tag when reading the size."
   },
   {
    "fieldname": "full_image",

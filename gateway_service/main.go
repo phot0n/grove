@@ -33,34 +33,89 @@ const (
 type server struct {
 	rdb       *redis.Client
 	gatewayID string // this gateway's id — the first part of every request-id
+	// How long a caller that names no session is pinned to one engine. 0 = not at all.
+	syntheticTTL time.Duration
+	// Ingress mode only: the bearer a gateway must present on /pick. Blank on a gateway, and
+	// blank on an ingress refuses every pick — see isGateway.
+	ingressToken string
+	// This gateway's own region, which pickRoute prefers. Blank puts every route in one tier,
+	// which is what a single-region fleet already was.
+	region string
 }
 
 func main() {
 	addr := env("GROVE_AGENT_ADDR", "127.0.0.1:9090")
 	redisAddr := env("GROVE_REDIS_ADDR", "127.0.0.1:6379")
 
-	s := &server{rdb: redis.NewClient(&redis.Options{Addr: redisAddr}), gatewayID: gatewayID()}
+	// Before Redis: a missing token is a config fault, and needing a reachable Redis to hear
+	// about it would report the wrong one.
+	adminToken, err := requireAdminToken(os.Getenv("GROVE_ADMIN_TOKEN"))
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	ingressID, err := resolveMode(os.Getenv("GROVE_GATEWAY_ID"), os.Getenv("GROVE_INGRESS_ID"))
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	s := &server{
+		rdb:          redis.NewClient(&redis.Options{Addr: redisAddr}),
+		gatewayID:    gatewayID(),
+		syntheticTTL: parseSyntheticTTL(os.Getenv("GROVE_SYNTHETIC_SESSION_TTL")),
+		ingressToken: strings.TrimSpace(os.Getenv("GROVE_INGRESS_TOKEN")),
+		region:       strings.TrimSpace(os.Getenv("GROVE_GATEWAY_REGION")),
+	}
 	if err := s.rdb.Ping(context.Background()).Err(); err != nil {
 		log.Fatalf("redis unreachable at %s: %v", redisAddr, err)
 	}
 
-	adminToken := os.Getenv("GROVE_ADMIN_TOKEN")
-
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) { w.Write([]byte("ok\n")) })
+	// The replica table is the one thing both planes hold, so both take this push.
+	mux.HandleFunc("/admin/routes", adminAuth(adminToken, s.handleAdminRoutes))
+
+	if ingressID != "" {
+		if s.ingressToken == "" {
+			log.Fatal("GROVE_INGRESS_TOKEN is empty — refusing to start an ingress that would " +
+				"refuse every gateway, which reads as a routing outage rather than a config fault")
+		}
+		// Deliberately NOT the gateway's surface with the tenant parts disabled: an ingress does
+		// not serve /decide, /meter or /models at all, so there is no handler on this box that
+		// could read a key store even if one were somehow pushed to it.
+		mux.HandleFunc("/pick", s.handlePick)
+		mux.HandleFunc("/release", s.handleRelease)
+		log.Printf("grove-gateway agent listening on %s as INGRESS %s (redis %s)", addr, ingressID, redisAddr)
+		log.Fatal(http.ListenAndServe(addr, mux))
+	}
+
 	mux.HandleFunc("/decide", s.handleDecide)
 	mux.HandleFunc("/meter", s.handleMeter)
 	mux.HandleFunc("/models", s.handleModels)
 	// Control-plane push/pull surface (token-gated; reached via OpenResty /grove-admin/).
 	mux.HandleFunc("/admin/keys", adminAuth(adminToken, s.handleAdminKeys))
-	mux.HandleFunc("/admin/routes", adminAuth(adminToken, s.handleAdminRoutes))
+	mux.HandleFunc("/admin/users", adminAuth(adminToken, s.handleAdminUsers))
+	mux.HandleFunc("/admin/groups", adminAuth(adminToken, s.handleAdminGroups))
 	mux.HandleFunc("/admin/usage", adminAuth(adminToken, s.handleAdminUsage))
-	if adminToken == "" {
-		log.Print("WARNING: GROVE_ADMIN_TOKEN empty — /admin endpoints disabled")
-	}
 
 	log.Printf("grove-gateway agent listening on %s (redis %s)", addr, redisAddr)
 	log.Fatal(http.ListenAndServe(addr, mux))
+}
+
+// resolveMode reads the two id variables and returns the ingress id, or "" for a gateway.
+//
+// One binary, two planes, and which one this box is is decided entirely by what it was given. Both
+// ids set is refused rather than resolved by precedence: it would be a box serving customer keys
+// from inside a VPC, and the whole point of the split is that no box does both. Neither set is a
+// gateway, which is what every box was before ingresses existed.
+func resolveMode(gatewayID, ingressID string) (string, error) {
+	gatewayID, ingressID = strings.TrimSpace(gatewayID), strings.TrimSpace(ingressID)
+	if gatewayID != "" && ingressID != "" {
+		return "", errors.New(
+			"GROVE_GATEWAY_ID and GROVE_INGRESS_ID are both set — a box is one plane or the other, " +
+				"and one serving tenant keys from inside a VPC is what this split exists to prevent")
+	}
+	return ingressID, nil
 }
 
 func env(k, def string) string {
@@ -87,7 +142,15 @@ type decideResp struct {
 	MeterID     string `json:"meter_id,omitempty"` // = sha256(secret); Lua echoes it to /meter
 	Prefix      string `json:"prefix,omitempty"`
 	Session     string `json:"session,omitempty"`
-	RequestID   string `json:"request_id,omitempty"` // gr-<gateway>-<server>-<keyprefix>-<rand>
+	// Which placement was picked. Lua puts it on the access line, because the engine proxy made
+	// $upstream_addr the box's :443 for every engine on it.
+	Deployment string `json:"deployment,omitempty"`
+	RequestID  string `json:"request_id,omitempty"` // gr-<gateway>-<deployment>-<keyprefix>-<rand>
+	// Set only when the chosen route hands off to an ingress. Lua forwards them as headers; the
+	// ingress needs the model because it does not read the body, and the session key because it
+	// is the only tier that must not learn who is calling.
+	Kind       string `json:"kind,omitempty"`
+	SessionKey string `json:"session_key,omitempty"`
 	// Never omitempty: Lua stamps this on every admitted body, and a missing 0 would let a
 	// client's own `priority` stand and elevate itself.
 	Priority int `json:"priority"`
@@ -119,15 +182,34 @@ func (s *server) handleDecide(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Admission gates: key status (revoked / over monthly budget) + allowed models.
-	if status, reason := evaluate(rec, req.Model); status != 200 {
+	// Who holds the key: their group, their own allow/deny, and whether they are over budget.
+	usr, err := s.resolveUser(ctx, rec)
+	if err != nil {
+		writeJSON(w, decideResp{Allow: false, Status: 503, Reason: "user store error"})
+		return
+	}
+
+	// What their group grants. Skipped for an ungrouped user, who reaches only their own Allow
+	// list, so that request costs no third round trip.
+	grp, err := s.loadGroup(ctx, usr.Group)
+	if err != nil {
+		writeJSON(w, decideResp{Allow: false, Status: 503, Reason: "group store error"})
+		return
+	}
+
+	// Admission gates: key revoked, holder over monthly budget, then allowed models.
+	if status, reason := evaluate(rec, usr, grp, req.Model); status != 200 {
 		writeJSON(w, decideResp{Allow: false, Status: status, Reason: reason})
 		return
 	}
 
-	session := req.Session
-	if session == "" {
+	// A caller that names a session keeps its engine, so its prefix cache stays warm. One that
+	// names none is balanced — unless the operator asked for the synthetic session back, which
+	// pins a whole key to one engine and is what a single-placement fleet always did.
+	session, ttl := req.Session, stickyTTL
+	if session == "" && s.syntheticTTL > 0 {
 		session = sha256hex(meterID + "|" + req.Model)[:24]
+		ttl = s.syntheticTTL
 	}
 
 	routes, err := s.loadRoutes(ctx, req.Model)
@@ -135,15 +217,32 @@ func (s *server) handleDecide(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, decideResp{Allow: false, Status: 503, Reason: "model unavailable"})
 		return
 	}
-	stickyURL, _ := s.rdb.Get(ctx, "sticky:"+session).Result()
-	route, ok := pickRoute(routes, stickyURL)
-	if !ok {
+	var stickyURL string
+	if session != "" {
+		stickyURL, _ = s.rdb.Get(ctx, "sticky:"+session).Result()
+	}
+	s.fillInFlight(ctx, routes)
+	s.markUnhealthy(ctx, routes)
+
+	route, status := pickRoute(routes, stickyURL, s.region)
+	if status == 429 {
+		writeJSON(w, decideResp{
+			Allow: false, Status: 429,
+			Reason: "every replica of " + req.Model + " is at capacity",
+		})
+		return
+	}
+	if status != 200 {
 		writeJSON(w, decideResp{Allow: false, Status: 503, Reason: "no healthy server for model"})
 		return
 	}
-	s.rdb.Set(ctx, "sticky:"+session, route.EngineURL, stickyTTL)
+	if session != "" {
+		s.rdb.Set(ctx, "sticky:"+session, route.EngineURL, ttl)
+	}
+	requestID := s.buildRequestID(route, rec.KeyPrefix)
+	s.claim(ctx, route.EngineURL, requestID)
 
-	writeJSON(w, decideResp{
+	resp := decideResp{
 		Allow:       true,
 		Status:      200,
 		EngineURL:   route.EngineURL,
@@ -151,23 +250,36 @@ func (s *server) handleDecide(w http.ResponseWriter, r *http.Request) {
 		MeterID:     meterID,
 		Prefix:      rec.KeyPrefix,
 		Session:     session,
-		RequestID:   s.buildRequestID(route, rec.KeyPrefix),
-		Priority:    rec.Priority,
-	})
+		Deployment:  route.Deployment,
+		RequestID:   requestID,
+		Priority:    priorityOf(usr, grp),
+	}
+	if route.isIngress() {
+		resp.Kind = route.Kind
+		resp.SessionKey = sessionKey(meterID, req.Model, time.Now())
+	}
+	writeJSON(w, resp)
 }
 
 // buildRequestID stamps a traceable id on every admitted request:
-// gr-<gateway>-<inference server>-<key prefix>-<random>. The key prefix is the API Key's
-// unique doc name (already unique per key); the random tail makes each request unique. Parts
-// are sanitized so the only '-' is the separator. Server falls back to a short hash of the
-// engine URL for legacy routes pushed without a server id.
+// gr-<gateway>-<deployment>-<key prefix>-<random>. The key prefix is the API Key's unique doc
+// name (already unique per key); the random tail makes each request unique. Parts are sanitized
+// so the only '-' is the separator.
+//
+// The target is the Model Deployment, not the box: a box can serve one model from two
+// deployments, and naming the box makes those two requests indistinguishable. Falls back to the
+// server for routes pushed before the deployment field existed, then to a short hash of the
+// engine URL — each tier a strictly worse name, none of them wrong.
 func (s *server) buildRequestID(route Route, keyPrefix string) string {
-	srv := route.Server
-	if srv == "" {
-		srv = sha256hex(route.EngineURL)[:8]
+	target := route.Deployment
+	if target == "" {
+		target = route.Server
+	}
+	if target == "" {
+		target = sha256hex(route.EngineURL)[:8]
 	}
 	return fmt.Sprintf("gr-%s-%s-%s-%s",
-		cleanIDPart(s.gatewayID), cleanIDPart(srv), cleanIDPart(keyPrefix), randHex(6))
+		cleanIDPart(s.gatewayID), cleanIDPart(target), cleanIDPart(keyPrefix), randHex(16))
 }
 
 // ---- /meter --------------------------------------------------------------
@@ -177,12 +289,33 @@ type meterReq struct {
 	Prefix  string `json:"prefix"`
 	Model   string `json:"model"` // model from the request body; buckets per-model usage
 	Usage   string `json:"usage"` // raw JSON captured from the response (may be empty)
+	// Which engine served it and under what request id — together they name the in-flight slot
+	// this request claimed at /decide.
+	EngineURL string `json:"engine_url"`
+	RequestID string `json:"request_id"`
+	// Which placement actually served it. On a direct route the gateway already knows; on an
+	// ingress route only the ingress does, and it says so in a response header Lua reads back.
+	Deployment string `json:"deployment"`
+	// How the hop went, for passive ejection — nginx's $upstream_status and, when an ingress set
+	// one, its X-Grove-Reason.
+	UpstreamStatus string `json:"upstream_status"`
+	Reason         string `json:"reason"`
 }
 
 func (s *server) handleMeter(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	var req meterReq
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Prefix == "" {
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		return
+	}
+	// Released before the prefix check: a slot outlives the usage record it came with, and a key
+	// record missing its prefix must not leave the engine counted as busy for the whole window.
+	s.release(ctx, req.EngineURL, req.RequestID)
+	// Before the prefix check, like the release: how a target is behaving is not contingent on
+	// the usage record that happened to ride along with the report.
+	s.recordOutcome(ctx, req.EngineURL, req.UpstreamStatus, req.Reason)
+	if req.Prefix == "" {
 		w.WriteHeader(http.StatusBadRequest)
 		return
 	}
@@ -191,6 +324,7 @@ func (s *server) handleMeter(w http.ResponseWriter, r *http.Request) {
 	// own clock when it pulls, then drains this hash. Key is just usage:<prefix>.
 	usageKey := "usage:" + req.Prefix
 	model := strings.TrimSpace(req.Model)
+	deployment := strings.TrimSpace(req.Deployment)
 	u, hasUsage := ParseUsage([]byte(req.Usage))
 
 	// One atomic bump per request (so the control-plane's atomic drain never sees a
@@ -205,6 +339,12 @@ func (s *server) handleMeter(w http.ResponseWriter, r *http.Request) {
 			p.HIncrBy(ctx, usageKey, metric, n)
 			if model != "" {
 				p.HIncrBy(ctx, usageKey, "m:"+metric+":"+model, n)
+			}
+			// Beside the per-model bucket, in the same hash, so one drain carries both. This is
+			// the only path by which usage reaches a placement the gateway never chose — on an
+			// ingress route the replica was picked a tier below.
+			if deployment != "" {
+				p.HIncrBy(ctx, usageKey, "m:"+metric+":"+deployment, n)
 			}
 		}
 		bump("request_count", 1)
@@ -223,9 +363,9 @@ func (s *server) handleMeter(w http.ResponseWriter, r *http.Request) {
 
 // ---- /models -------------------------------------------------------------
 // GET /v1/models (proxied here by OpenResty): the gateway answers directly with
-// the models THIS key may use — deployed models ∩ the key's allowed set — instead
-// of proxying to a single engine (which only knows its own model). Key-gated via
-// the Authorization header, same as /decide.
+// the models THIS key may use — deployed models ∩ what its group and its own
+// allow/deny resolve to — instead of proxying to a single engine (which only knows
+// its own model). Key-gated via the Authorization header, same as /decide.
 
 type modelObj struct {
 	ID      string `json:"id"`
@@ -238,7 +378,10 @@ func (s *server) handleModels(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	secret := bearer(r.Header.Get("Authorization"))
 	if secret == "" {
-		writeErrJSON(w, 401, "missing api key")
+		// No key at all → the public catalogue, so a prospect can see what is on offer before
+		// signing up. A key that is present but wrong still 401s below: answering it with the
+		// anonymous list would hide a broken key behind a shorter, plausible one.
+		s.writePublicCatalog(w, r)
 		return
 	}
 	rec, ok, err := s.loadKey(ctx, sha256hex(secret))
@@ -246,13 +389,23 @@ func (s *server) handleModels(w http.ResponseWriter, r *http.Request) {
 		writeErrJSON(w, 503, "key store error")
 		return
 	}
-	// Revoked/inactive can't list; active + rate_limited can (over-budget still shows
-	// what the key is entitled to — only inference is blocked).
-	if !ok || (rec.Status != "active" && rec.Status != "rate_limited") {
+	// Revoked/inactive can't list. Over budget still can: it shows what the key is entitled to,
+	// and that lives on the user, so only inference is blocked.
+	if !ok || rec.Status != "active" {
 		writeErrJSON(w, 401, "unknown or revoked api key")
 		return
 	}
 
+	usr, err := s.resolveUser(ctx, rec)
+	if err != nil {
+		writeErrJSON(w, 503, "user store error")
+		return
+	}
+	grp, err := s.loadGroup(ctx, usr.Group)
+	if err != nil {
+		writeErrJSON(w, 503, "group store error")
+		return
+	}
 	deployed, err := s.listModels(ctx)
 	if err != nil {
 		writeErrJSON(w, 503, "route store error")
@@ -261,12 +414,60 @@ func (s *server) handleModels(w http.ResponseWriter, r *http.Request) {
 	created := time.Now().Unix()
 	data := []modelObj{}
 	for _, m := range deployed {
-		if !rec.Models[m] { // same flat set the inference path uses (matches evaluate)
+		if !canUse(usr, grp, m) { // same decision the inference path makes (matches evaluate)
 			continue
 		}
 		data = append(data, modelObj{ID: m, Object: "model", Created: created, OwnedBy: "frappe"})
 	}
 	writeJSON(w, map[string]any{"object": "list", "data": data})
+}
+
+// catalogKey holds the pooled public catalogue: the comma list of models every group flagged
+// Show in Public Catalogue names, assembled by the control plane and replaced whole on each
+// groups push. Absent = no group is public, which is the default and answers an empty list.
+const catalogKey = "catalog:public"
+
+// writePublicCatalog answers an unauthenticated /v1/models with the models on offer.
+//
+// Names only, and still intersected with what is actually deployed — a catalogue that advertises
+// a model no engine serves sends people to a 503. It grants nothing: canUse is untouched, so
+// calling any of these without a key is still a 403 on the inference path.
+func (s *server) writePublicCatalog(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	catalog, err := s.rdb.Get(ctx, catalogKey).Result()
+	if err == redis.Nil {
+		writeJSON(w, map[string]any{"object": "list", "data": []modelObj{}})
+		return
+	}
+	if err != nil {
+		writeErrJSON(w, 503, "catalog store error")
+		return
+	}
+	public := modelSet(catalog)
+	if len(public) == 0 {
+		writeJSON(w, map[string]any{"object": "list", "data": []modelObj{}})
+		return
+	}
+
+	deployed, err := s.listModels(ctx)
+	if err != nil {
+		writeErrJSON(w, 503, "route store error")
+		return
+	}
+	writeJSON(w, map[string]any{"object": "list", "data": catalogObjects(public, deployed, time.Now().Unix())})
+}
+
+// catalogObjects is what an anonymous /v1/models answers: the advertised set intersected with
+// what is deployed, in the order listModels already sorted them. Pure, so the rule that a
+// catalogue never names a model no engine serves is testable without Redis.
+func catalogObjects(public map[string]bool, deployed []string, created int64) []modelObj {
+	data := []modelObj{}
+	for _, m := range deployed {
+		if public[m] {
+			data = append(data, modelObj{ID: m, Object: "model", Created: created, OwnedBy: "frappe"})
+		}
+	}
+	return data
 }
 
 // listModels returns every currently-deployed model (a deploy:<model> route key
@@ -312,22 +513,83 @@ func (s *server) loadKey(ctx context.Context, meterID string) (KeyRecord, bool, 
 	if len(h) == 0 {
 		return KeyRecord{}, false, nil
 	}
-	priority, _ := strconv.Atoi(strings.TrimSpace(h["priority"])) // absent/garbage → baseline 0
+	group, hasGroup := h["group"] // present-but-blank = ungrouped; absent = a pre-group record
 	rec := KeyRecord{
 		Status:    h["status"],
 		User:      h["user"],
 		KeyPrefix: h["prefix"],
-		Priority:  priority,
+		Legacy: legacyKey{
+			HasGroup: hasGroup,
+			Group:    strings.TrimSpace(group),
+			Allow:    modelSet(h["allow"]),
+			Deny:     modelSet(h["deny"]),
+			Models:   modelSet(h["models"]),
+		},
 	}
-	if am := strings.TrimSpace(h["models"]); am != "" {
-		rec.Models = map[string]bool{}
-		for _, m := range strings.Split(am, ",") {
-			if m = strings.TrimSpace(m); m != "" {
-				rec.Models[m] = true
-			}
-		}
+	rec.Legacy.Priority, _ = strconv.Atoi(strings.TrimSpace(h["priority"])) // absent/garbage → 0
+	// Status used to carry the holder's budget flag as a third value. Lift it off here, so
+	// Status means only "is this credential live" — which is all a current record puts there.
+	if rec.Status == "rate_limited" {
+		rec.Status, rec.Legacy.Limited = "active", true
 	}
 	return rec, true, nil
+}
+
+// resolveUser is the second hop of the request path: key → user → group. A key whose user record
+// is missing falls back to what the key itself carries, which is how a box still holding pre-split
+// records keeps serving. A key with nothing to fall back to reaches nothing.
+func (s *server) resolveUser(ctx context.Context, rec KeyRecord) (UserRecord, error) {
+	if rec.User != "" {
+		h, err := s.rdb.HGetAll(ctx, "user:"+rec.User).Result()
+		if err != nil {
+			return UserRecord{}, err
+		}
+		if len(h) > 0 {
+			return UserRecord{
+				Email:   h["email"],
+				Group:   strings.TrimSpace(h["group"]),
+				Allow:   modelSet(h["allow"]),
+				Deny:    modelSet(h["deny"]),
+				Limited: strings.TrimSpace(h["limited"]) == "1",
+			}, nil
+		}
+	}
+	if !rec.Legacy.hasProjection() {
+		return UserRecord{}, nil
+	}
+	return synthUser(rec), nil
+}
+
+// loadGroup reads what a group grants. A group with no record — never pushed, or deleted — reads
+// back as the zero value rather than an error, so a key pointing at one falls back to its own
+// Allow list instead of 503ing.
+func (s *server) loadGroup(ctx context.Context, name string) (GroupRecord, error) {
+	if name == "" {
+		return GroupRecord{}, nil
+	}
+	h, err := s.rdb.HGetAll(ctx, "group:"+name).Result()
+	if err != nil {
+		return GroupRecord{}, err
+	}
+	grp := GroupRecord{Models: modelSet(h["models"])}
+	grp.Priority, _ = strconv.Atoi(strings.TrimSpace(h["priority"]))
+	return grp, nil
+}
+
+// modelSet parses one of the comma-joined model lists the control plane writes. Blank → nil, which
+// is a map that answers false to everything — the fail-closed default.
+func modelSet(csv string) map[string]bool {
+	csv = strings.TrimSpace(csv)
+	if csv == "" {
+		return nil
+	}
+	out := map[string]bool{}
+	for _, m := range strings.Split(csv, ",") {
+		if m = strings.TrimSpace(m); m != "" {
+			out[m] = true
+		}
+	}
+	return out
 }
 
 func (s *server) loadRoutes(ctx context.Context, model string) ([]Route, error) {
@@ -356,9 +618,11 @@ func bearer(h string) string {
 }
 
 func sha256hex(s string) string {
-	sum := sha256.Sum256([]byte(s))
+	sum := sha256sum(s)
 	return hex.EncodeToString(sum[:])
 }
+
+func sha256sum(s string) [32]byte { return sha256.Sum256([]byte(s)) }
 
 // gatewayID names this gateway for request-ids: GROVE_GATEWAY_ID (set at deploy to the Proxy
 // Server name) else the host's short name, else "gw".
@@ -370,6 +634,36 @@ func gatewayID() string {
 		return strings.SplitN(h, ".", 2)[0]
 	}
 	return "gw"
+}
+
+// requireAdminToken reads GROVE_ADMIN_TOKEN, which the agent refuses to start without. /admin is
+// the only path the control plane has to this box, and treating a blank token as "admin off" left
+// a box serving the keys and routes it last had, with nothing but one startup line to say why the
+// pushes stopped landing. Whitespace is blank: an env file written from an empty template renders
+// the value as spaces, and that is the same missing token.
+func requireAdminToken(raw string) (string, error) {
+	token := strings.TrimSpace(raw)
+	if token == "" {
+		return "", errors.New("GROVE_ADMIN_TOKEN is empty — refusing to start with an unguarded admin plane")
+	}
+	return token, nil
+}
+
+// parseSyntheticTTL reads GROVE_SYNTHETIC_SESSION_TTL: how long a caller that names no session of
+// its own is pinned to the engine it first reached. Blank, zero or unparseable → 0, meaning no
+// synthetic session at all and every such request balanced. Set it (30m restores what a
+// single-placement fleet always did) to trade that balance for a warm prefix cache per key.
+func parseSyntheticTTL(raw string) time.Duration {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return 0
+	}
+	ttl, err := time.ParseDuration(raw)
+	if err != nil || ttl < 0 {
+		log.Printf("GROVE_SYNTHETIC_SESSION_TTL %q is not a duration — synthetic sessions off", raw)
+		return 0
+	}
+	return ttl
 }
 
 // cleanIDPart keeps a request-id part parseable: alnum stays, '-' becomes '_' (so the only

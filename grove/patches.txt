@@ -2,6 +2,8 @@
 # Patches added in this section will be executed before doctypes are migrated
 # Read docs to understand patches: https://docs.frappe.io/framework/user/en/database-migrations
 grove.patches.rename_api_key_to_grove_api_key
+grove.patches.rename_proxy_server_to_gateway_server
+grove.patches.rename_gateway_sync_to_agent_sync
 
 [post_model_sync]
 # Patches added in this section will be executed after doctypes are migrated
@@ -11,3 +13,8 @@ grove.patches.name_grove_user_by_hash
 grove.patches.terminate_torn_down_deployments
 grove.patches.restate_ansible_tasks
 grove.patches.move_metrics_token_to_agents
+grove.patches.open_http_on_inference_groups
+grove.patches.rename_gateway_server_references
+grove.patches.name_sync_rows_by_server
+grove.patches.move_gateway_server_passwords
+grove.patches.count_sync_targets_not_proxies

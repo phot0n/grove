@@ -1,9 +1,12 @@
 ---
 # One-time host bootstrap for an Inference Server: NVIDIA driver + data volume (gpu_host
-# role), then its metrics exporters -- one Setup click leaves the box both serving-ready and
-# scrape-ready. Run by inference_server.setup via ansible_runner against a single-host
-# inventory (hosts: all). Separate lifecycle from serve.yml -- a box is provisioned once, then
-# serves many models. site.yml still bundles this role for a manual full bring-up.
+# role), then its metrics exporters and the engine proxy that publishes them -- one Setup click
+# leaves the box both serving-ready and scrape-ready. Run by inference_server.setup via
+# ansible_runner against a single-host inventory (hosts: all). Separate lifecycle from serve.yml
+# -- a box is provisioned once, then serves many models.
+#
+# The exporters install before engine_proxy because it proxies to them, and grove_https before
+# engine_proxy because a `listen 443 ssl` block with no certificate on disk stops nginx starting.
 - name: Provision a GPU inference host
   hosts: all
   become: true
@@ -15,3 +18,6 @@
     - node_exporter
     - role: dcgm_exporter
       when: monitoring_has_gpu | bool
+    - openresty
+    - grove_https
+    - engine_proxy

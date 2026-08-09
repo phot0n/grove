@@ -72,13 +72,13 @@ class TestRunPlaybook(unittest.TestCase):
 		self.assertEqual(called["machine_name"], "MACHINE-1")
 
 	def test_a_shared_play_is_taken_from_the_doctype_that_owns_it(self):
-		# exporters.yml is a Monitoring Agent play; it runs against Inference and Proxy Server
+		# exporters.yml is a Monitoring Agent play; it runs against Inference and Gateway Server
 		# boxes, which is what `project` is for.
 		called = self.run_playbook(
-			host("Proxy Server", "PROXY-1", "MACHINE-2"), "exporters.yml", project="Monitoring Agent"
+			host("Gateway Server", "PROXY-1", "MACHINE-2"), "exporters.yml", project="Monitoring Agent"
 		)
 		self.assertTrue(called["project_dir"].endswith("/playbooks/monitoring_agent"))
-		self.assertEqual(called["server_type"], "Proxy Server", "the play still belongs to the box")
+		self.assertEqual(called["server_type"], "Gateway Server", "the play still belongs to the box")
 
 	def test_a_playbook_that_is_not_there_fails_before_anything_is_queued(self):
 		with self.assertRaises(FileNotFoundError):
@@ -97,7 +97,8 @@ class TestEveryRoleAPlaybookNamesResolves(unittest.TestCase):
 		# The walk below proves nothing if the glob quietly matched nothing.
 		folders = {path.parent.name for path in self.playbooks()}
 		self.assertEqual(
-			folders, {"machine", "inference_server", "proxy_server", "monitoring_agent"}
+			folders,
+			{"machine", "inference_server", "gateway_server", "ingress_server", "monitoring_agent"},
 		)
 
 	def test_every_role_resolves_in_its_own_folder_or_the_shared_one(self):

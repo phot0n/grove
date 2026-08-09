@@ -1,0 +1,206 @@
+{#
+  Grove gateway — OpenResty data path (§6). Overwrites the OpenResty default nginx.conf. The Go
+  agent (127.0.0.1:9090) is the brain; this just forwards + streams and calls the agent in the
+  access/log phases. Rendered by proxy.yml and deploy_openresty.yml; do not edit on the box.
+
+  Two shapes, one variable. With a Fleet Zone set the box has two names — Gateway Host, which
+  GeoDNS points at whichever proxy is nearest the client, and its own <name>.<zone>, which reaches
+  this box and no other — and one wildcard certificate covering both. Without one it renders what
+  every proxy served before TLS: everything in the clear on :80.
+
+  The locations themselves are macros so the two shapes cannot drift apart. Which server they hang
+  under is the entire difference.
+#}
+{% set tls = gateway_host and proxy_hostname and fleet_tls_cert %}
+{% set certificate = fleet_tls_cert_path if tls else grove_tls_cert %}
+{% set certificate_key = fleet_tls_key_path if tls else grove_tls_key %}
+{% macro grove_variables() %}
+		# Declared server-wide so every location has them (access.lua fills the
+		# /v1 ones); avoids "uninitialized variable" warnings on admin/healthz.
+		set $grove_prefix "-";
+		set $grove_model "-";
+		set $grove_deployment "-";
+		set $grove_request_id "-";
+{% endmacro %}
+{% macro healthz() %}
+		location = /healthz {
+			content_by_lua_block { ngx.say("ok") }
+		}
+{% endmacro %}
+{% macro data_locations() %}
+		# Gateway-answered model list (per-key allow-list). Exact match → wins over
+		# the /v1/ proxy below, so it's never forwarded to an engine. Auth is done
+		# in the agent from the Authorization header (forwarded as-is).
+		location = /v1/models {
+			proxy_pass http://127.0.0.1:9090/models;
+			proxy_read_timeout 30s;
+		}
+
+		location /v1/ {
+			set $upstream "";
+			access_by_lua_file /etc/grove-gateway/lua/access.lua;
+
+			proxy_pass $upstream;
+			proxy_http_version 1.1;
+			proxy_set_header Connection "";
+			# Overwrite with $remote_addr rather than appending to what arrived: this is the
+			# edge, so there is no trusted hop in front and a client-sent value is a claim, not
+			# a fact. The appending variant would leave the caller's entries ahead of ours.
+			proxy_set_header X-Forwarded-For $remote_addr;
+			proxy_set_header X-Real-IP $remote_addr;
+			# $upstream is a variable, so nginx resolves it per request: a hostname backend (a
+			# cloud provider's TLS proxy) needs both of these, where every IP backend needs
+			# neither. proxy_ssl_server_name is off by default and no SNI means no handshake.
+			resolver 127.0.0.53 valid=30s ipv6=off;
+			proxy_ssl_server_name on;
+			proxy_buffering off;          # stream SSE straight through
+			proxy_read_timeout 600s;
+			proxy_send_timeout 600s;
+
+			body_filter_by_lua_file /etc/grove-gateway/lua/body_filter.lua;
+			log_by_lua_file /etc/grove-gateway/lua/log.lua;
+		}
+
+		location = / {
+			return 200 '{"status":"ok","message":"Grove Gateway Service","usage":"POST /v1/messages or /v1/chat/completions"}\n';
+		}
+{% endmacro %}
+{% macro admin_locations() %}
+		# Control-plane admin push/pull → Go agent (token-gated inside the agent).
+		location /grove-admin/ {
+			proxy_pass http://127.0.0.1:9090/admin/;
+			proxy_read_timeout 30s;
+		}
+{% endmacro %}
+{% macro metrics_locations() %}
+		# No GPU target here — a proxy box has no cards, so Grove never asks for /metrics/gpu.
+		location = /metrics/node {
+			auth_basic "grove metrics";
+			auth_basic_user_file /etc/grove/nginx/metrics.htpasswd;
+			proxy_pass http://127.0.0.1:9100/metrics;
+		}
+{% endmacro %}
+worker_processes auto;
+error_log /var/log/openresty/error.log warn;
+
+events {
+	worker_connections 8192;
+}
+
+http {
+	lua_package_path "/etc/grove-gateway/lua/?.lua;;";
+	lua_need_request_body on;
+	client_body_buffer_size 8m;
+	client_max_body_size 32m;
+	default_type application/json;
+
+	# Grove access format: status, bytes, total + upstream latency, and the grove
+	# key/model/deployment (set in access.lua). "-" where not applicable.
+	#
+	# deployment= is the chosen engine; upstream= is only the box it sits behind. They were the
+	# same thing when each engine had its own public port, but every engine on a box is now
+	# reached through that box's engine proxy, so $upstream_addr is <ip>:443 for all of them.
+	# engine= is the placement an INGRESS chose, read straight off its response header — nginx
+	# exposes upstream response headers as variables, so no Lua is involved on this side.
+	# deployment= is what the gateway picked, which on an ingress route names the ingress. Both,
+	# because on a direct route they are the same thing and on an ingress route the pair is the
+	# only place the two halves of the decision appear together.
+	log_format grove escape=json
+		'$remote_addr $time_iso8601 "$request" '
+		'bytes=$body_bytes_sent '
+		'rt=$request_time urt=$upstream_response_time '
+		'upstream=$upstream_addr deployment=$grove_deployment '
+		'engine=$upstream_http_x_grove_engine '
+		'key=$grove_prefix model=$grove_model rid=$grove_request_id';
+
+	access_log /var/log/openresty/access.log grove;
+
+{% if tls %}
+	# Nothing but the redirect. No ACME challenge location: the fleet certificate is issued on the
+	# control plane over DNS-01, which is the only thing that works when Gateway Host resolves to
+	# a different box depending on where the client asks from.
+	server {
+
+		listen 80 default_server;
+		server_name _;
+
+{{ grove_variables() }}
+{{ healthz() }}
+		location / {
+			return 301 https://$host$request_uri;
+		}
+
+	}
+
+	# Customer traffic. Reached through GeoDNS, so every proxy in the fleet answers to this exact
+	# name with this exact certificate — which is why it is a wildcard issued once, centrally,
+	# rather than one per box.
+	server {
+
+		listen 443 ssl;
+		http2 on;
+		server_name {{ gateway_host }};
+
+		ssl_certificate     {{ certificate }};
+		ssl_certificate_key {{ certificate_key }};
+
+{{ grove_variables() }}
+{{ healthz() }}
+{{ data_locations() }}
+	}
+
+	# This box specifically. /grove-admin has to reach ONE proxy — Gateway Host names them all —
+	# and admin_url on the Gateway Server doc is this name, verified against the same wildcard.
+	#
+	# default_server so the Monitoring Agent's scrape, which connects to the bare IP and sends no
+	# SNI, still lands on /metrics/node exactly as it did before there were two names.
+	server {
+
+		listen 443 ssl default_server;
+		server_name {{ proxy_hostname }};
+
+		ssl_certificate     {{ certificate }};
+		ssl_certificate_key {{ certificate_key }};
+
+		# The `grove` format's $grove_* variables are only set on the customer server above;
+		# inherited here they would warn on every scrape, four times, every 15 seconds.
+		access_log off;
+
+{{ healthz() }}
+{{ admin_locations() }}
+{{ metrics_locations() }}
+	}
+{% else %}
+	server {
+
+		listen 80 default_server;
+		server_name _;
+
+{{ grove_variables() }}
+{{ healthz() }}
+{{ admin_locations() }}
+{{ data_locations() }}
+	}
+
+	# Metrics only, on their own TLS listener. The Monitoring Agent scrapes node_exporter through
+	# here instead of over :9100, so this box needs nothing open beyond 22/80/443 — 443 was
+	# already in the proxy security group with nothing behind it. Separate from the :80 server
+	# above rather than another location on it: basic auth over plaintext would put the scrape
+	# password on the wire every 15 seconds. The certificate and htpasswd come from grove_https.
+	server {
+		listen 443 ssl default_server;
+		server_name _;
+
+		ssl_certificate     {{ certificate }};
+		ssl_certificate_key {{ certificate_key }};
+
+		# The http-level access_log uses the `grove` format, whose $grove_* variables only the
+		# /v1/ server sets — inherited here it would warn "uninitialized variable" on every
+		# scrape, four times, every 15 seconds. Nothing is lost by dropping it: a scrape that
+		# fails shows up as a down target, which is the signal that matters.
+		access_log off;
+
+{{ metrics_locations() }}
+	}
+{% endif %}
+}

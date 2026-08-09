@@ -1,0 +1,18 @@
+---
+# The fleet's wildcard certificate as it lands on a proxy. Its own paths, separate from
+# grove_https's box.crt: that one is self-signed and per-box, issued so OpenResty can start before
+# this one has ever arrived, and it stays what a box with no Fleet Zone serves.
+fleet_tls_dir: /etc/grove/tls
+fleet_tls_cert_path: "{{ fleet_tls_dir }}/fleet.crt"
+fleet_tls_key_path: "{{ fleet_tls_dir }}/fleet.key"
+
+# Pushed from Grove Settings, which is where the certificate is issued and stored. Blank on a
+# fleet with no zone: the role then writes nothing and nginx.conf renders its plaintext form.
+fleet_tls_cert: ""
+fleet_tls_key: ""
+
+# The two names the certificate above covers, and what nginx.conf keys its shape on. Defaulted
+# here rather than in the playbook so a play that forgets them renders the plaintext config
+# instead of failing on an undefined variable halfway through a template.
+gateway_host: ""
+proxy_hostname: ""

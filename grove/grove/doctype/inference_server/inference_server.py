@@ -5,11 +5,14 @@
 import frappe
 from frappe.model.document import Document
 
+from grove import agent_sync
 from grove.ansible import AnsibleHost
 from grove.monitoring import run_exporters_play
+from grove.naming import GeneratedName
+from grove.utils import validate_id_safe_name
 
 
-class InferenceServer(AnsibleHost, Document):
+class InferenceServer(GeneratedName, AnsibleHost, Document):
 	# begin: auto-generated types
 	# This code is auto-generated. Do not modify anything in this block.
 
@@ -19,13 +22,64 @@ class InferenceServer(AnsibleHost, Document):
 		from frappe.types import DF
 
 		data_path: DF.Data
+		ingress: DF.Link | None
 		is_provisioned: DF.Check
 		is_static_ip: DF.Check
 		machine: DF.Link
 		machine_ip: DF.Data | None
+		monitoring_agent: DF.Link | None
 		region: DF.Link | None
 		status: DF.Literal["Pending", "Installing", "Active", "Broken", "Terminated"]
 	# end: auto-generated types
+
+	# Its name is no DNS record of its own, but it rides on every route as `server` and into request ids.
+	name_prefix = "inf"
+
+	def validate(self):
+		self.validate_ingress_network()
+
+	def on_update(self):
+		"""Moving a box between ingresses is the cutover, and it changes three tables at once:
+		the old owner loses these replicas, the new one gains them, and every gateway's row for
+		these models flips between a direct engine and an ingress hand-off.
+
+		Pushed here because nothing else would. The scheduled run repairs it within a tick, but a
+		cutover that only takes effect on the next cron is a cutover nobody can watch."""
+		if not self.has_value_changed("ingress"):
+			return
+		before = self.get_doc_before_save()
+		moved = [self.ingress, before.ingress if before else None]
+		frappe.enqueue(
+			"grove.agent_sync.full_sync",
+			queue="short",
+			trigger="Provision",
+			ingresses=agent_sync.active_among(moved),
+		)
+
+	def validate_ingress_network(self):
+		"""An ingress can only reach this box privately if the two share a VPC.
+
+		Checked here because nothing downstream can say so: _replicas_for_ingress selects on this
+		link, so a mismatch produces an ingress with an empty table and a model that reads
+		unavailable — a silence, days after the save, with nothing pointing back at this field."""
+		if not self.ingress:
+			return
+		ingress_network = frappe.db.get_value("Ingress Server", self.ingress, "network")
+		box_network = frappe.db.get_value("Machine", self.machine, "network") if self.machine else None
+		if ingress_network != box_network:
+			frappe.throw(
+				f"Ingress Server {self.ingress} is in Network {ingress_network or 'none'}, but "
+				f"{self.name} is in {box_network or 'none'}. An ingress reaches only the boxes "
+				f"inside its own VPC."
+			)
+
+	def before_insert(self):
+		# Generated names are id-safe by construction, but a Region named with a dot in it would
+		# slug into one that is not — so the check stays, here and on rename.
+		validate_id_safe_name(self.doctype, self.name)
+
+	def before_rename(self, old_name, new_name, merge=False):
+		validate_id_safe_name(self.doctype, new_name)
 
 	# ── The box ───────────────────────────────────────────────────────────────
 	# Everything that reaches the hardware goes through here: a Model Deployment talks to
@@ -112,7 +166,8 @@ class InferenceServer(AnsibleHost, Document):
 			self.name,
 			"provision",
 			queue="long",
-			timeout=3600,
+			# Has to outlast the driver reboot, which is half an hour on a bare metal box.
+			timeout=5400,
 		)
 		frappe.msgprint(f"Provisioning {self.name} — watch its Ansible Plays.")
 
@@ -126,11 +181,17 @@ class InferenceServer(AnsibleHost, Document):
 		frappe.db.set_value("Inference Server", self.name, "status", "Installing")
 		frappe.db.commit()
 
+		is_bare_metal = frappe.db.get_value("Machine", self.machine, "is_bare_metal")
 		play_name, rc = self.run_playbook(
 			"provision.yml",
 			extravars={
 				"gpu_data_mount": self.data_path,
 				"monitoring_has_gpu": bool(self.gpus),
+				# The driver reboot outlasts Ansible's default on a bare metal box.
+				"gpu_reboot_timeout": 1800 if is_bare_metal else 600,
+				# The engine proxy's htpasswd: this play and serve.yml both write it, from the
+				# one source, so whichever runs last cannot disagree with the other.
+				**frappe.get_single("Grove Settings").scrape_auth_variables,
 			},
 		)
 

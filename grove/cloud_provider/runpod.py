@@ -24,6 +24,23 @@ LOG_READ_TIMEOUT = 65
 DEFAULT_IMAGE = "vllm/vllm-openai:latest"
 DEFAULT_CONTAINER_DISK_GB = 2
 
+# RunPod pod states that map onto a Pod status of their own. Everything else — CREATED,
+# RESTARTING, a state RunPod adds later — is a pod on its way up.
+POD_STATUS = {
+	"RUNNING": "Running",
+	"EXITED": "Stopped",
+	"PAUSED": "Stopped",
+	"DEAD": "Stopped",
+	"TERMINATED": "Terminated",
+}
+
+
+def pod_status(runpod_state):
+	"""RunPod pod state → Pod status. An unrecognised state reads Provisioning, never Stopped:
+	a pod that is slow to come up (or a state this client has not seen) must not be recorded as
+	one the operator stopped."""
+	return POD_STATUS.get(runpod_state, "Provisioning")
+
 
 class RunPodError(Exception):
 	pass
@@ -51,11 +68,14 @@ class RunPodClient:
 		return r.json() if r.text else {}
 
 	@staticmethod
-	def build_ports(engine_pool_size, engine_base=8080):
-		"""RunPod ports list: SSH + a pool of vLLM TCP ports. Declared at pod-create;
-		RunPod can't hot-add ports to a running pod, so the whole pool is opened up front
-		and deployments claim from it. e.g. ['22/tcp','8080/tcp','8081/tcp',...]."""
-		return ["22/tcp"] + [f"{engine_base + i}/tcp" for i in range(engine_pool_size)]
+	def proxy_url(pod_id, internal_port):
+		"""RunPod's HTTPS endpoint for a port exposed as http. RunPod terminates TLS with its own
+		certificate, so the pod serves plain http and carries none; the hostname is keyed on the
+		pod id, so unlike a direct-tcp mapping it survives a restart.
+
+		Cloudflare fronts it with a 100s connection cap: a response that starts streaming inside
+		that window is fine, one that is still buffering at 100s returns 524."""
+		return f"https://{pod_id}-{int(internal_port)}.proxy.runpod.net"
 
 	def _container_config(
 		self,
@@ -99,26 +119,24 @@ class RunPodClient:
 		volume_mount_path="/data",
 		container_disk_in_gb=DEFAULT_CONTAINER_DISK_GB,
 		cloud_type="SECURE",
-		template_id=None,
 		args=None,
 		container_registry_auth_id=None,
 	):
-		"""Create an on-demand pod. `ports` is the pool list (build_ports); `env` is a dict
+		"""Create an on-demand pod. `ports` is the pool list, e.g. ['22/tcp', '8080/http'], built
+		from the Pod's own Ports rows since the provider cannot hot-add later; `env` is a dict
 		(e.g. {"PUBLIC_KEY": <keys>} for SSH). `args` is appended to the image's entrypoint —
 		for a vLLM image whose entrypoint is `vllm serve`, that is the repo plus its flags.
-		`template_id` supplies container defaults (v2 has no templateId field, so the template
-		is fetched and spread under the explicit settings); `container_registry_auth_id` (see
-		get_registry_auth_id) authenticates the pull for a private image. Returns the parsed
-		pod (see _parse_pod) — the endpoints are absent until it runs, so poll_pod_ready()."""
+		`container_registry_auth_id` (see get_registry_auth_id) authenticates the pull for a
+		private image. Returns the parsed pod (see _parse_pod) — the endpoints are absent until
+		it runs, so poll_pod_ready()."""
 		config = self._container_config(
 			ports=ports, env=env, args=args, name=name,
-			image_name=image_name or (None if template_id else DEFAULT_IMAGE),
+			image_name=image_name or DEFAULT_IMAGE,
 			container_disk_in_gb=container_disk_in_gb,
 			volume_in_gb=volume_in_gb, volume_mount_path=volume_mount_path,
 			container_registry_auth_id=container_registry_auth_id,
 		)
 		body = {
-			**self.template_config(template_id),
 			**config,
 			"gpu": {"id": gpu_type_id, "count": gpu_count},
 			"cloud": cloud_type,
@@ -128,25 +146,12 @@ class RunPodClient:
 			raise RunPodError(f"Failed to spawn pod (no id): {pod}")
 		return self._parse_pod(pod)
 
-	def template_config(self, template_id):
-		"""A template's container settings, to spread into a create body. v2 dropped the
-		create-time templateId, so the template is read here and the caller's own settings win
-		over it. Empty when no template is named."""
-		if not template_id:
-			return {}
-		template = self._request("GET", f"/templates/{template_id}")
-		return {
-			key: template[key]
-			for key in ("image", "args", "disk", "ports", "env", "registry")
-			if template.get(key) is not None
-		}
-
 	def update_pod(self, pod_id, **config):
 		"""Edit a live pod in place (same settings spawn_pod takes). RunPod resets the container
 		to pick the change up, but keeps the pod id and the volume — so a volume-backed HF_HOME
 		keeps its weights, unlike a terminate + create. PATCH is a partial update, so anything
-		omitted is left alone. The GPU shape, cloud type and template are create-only and cannot
-		be changed here. Returns the parsed pod — the reset clears the endpoints, so
+		omitted is left alone. The GPU shape and cloud type are create-only and cannot be
+		changed here. Returns the parsed pod — the reset clears the endpoints, so
 		poll_pod_ready() before reading them."""
 		body = self._container_config(**config)
 		if not body:

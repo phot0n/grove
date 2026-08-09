@@ -5,6 +5,7 @@
 import unittest
 
 from grove.api import _totals_by_model as totals_by_model
+from grove.grove.doctype.usage_record.usage_record import billable
 
 FIELDS = ("prompt_tokens", "completion_tokens", "cached_tokens", "total_tokens", "request_count")
 
@@ -50,11 +51,36 @@ class TestTotalsByModel(unittest.TestCase):
 		summary = totals_by_model([row("qwen3-35b", total=1)], FIELDS)
 		self.assertEqual(summary[0]["model"], "qwen3-35b")
 
+	def test_a_row_that_claims_more_cache_than_total_is_not_a_credit(self):
+		# cached is a SUBSET of total, so this should not happen — but a response reporting
+		# cached tokens with total_tokens: 0 produces it, because /meter skips a zero rather
+		# than writing it. Unclamped, this row would cancel real usage on the same summary.
+		summary = totals_by_model(
+			[row("qwen3-35b", total=0, cached=90), row("qwen3-35b", total=100, cached=0)], FIELDS
+		)
+		self.assertEqual(summary[0]["billable_tokens"], 100)
+
 	def test_missing_metrics_count_as_zero(self):
 		# get_all can hand back None for a column never written.
 		summary = totals_by_model([{"model": "qwen3-35b", "total_tokens": None}], FIELDS)
 		self.assertEqual(summary[0]["total_tokens"], 0)
 		self.assertEqual(summary[0]["billable_tokens"], 0)
+
+
+class TestBillable(unittest.TestCase):
+	"""The one definition the budget gate and the usage report both use."""
+
+	def test_cache_hits_do_not_count_against_a_budget(self):
+		self.assertEqual(billable(100, 40), 60)
+
+	def test_it_never_goes_negative(self):
+		# One malformed record must not credit a user back under their limit.
+		self.assertEqual(billable(0, 90), 0)
+		self.assertEqual(billable(10, 90), 0)
+
+	def test_a_column_never_written_reads_as_zero(self):
+		self.assertEqual(billable(None, None), 0)
+		self.assertEqual(billable(50, None), 50)
 
 
 if __name__ == "__main__":

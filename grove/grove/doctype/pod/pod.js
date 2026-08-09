@@ -1,6 +1,6 @@
 // Model-intrinsic vLLM config lives on the Model and is read in the backend
 // (grove.serve_command.ServeCommand) at build time — the Pod no longer mirrors it. The Serving
-// tab holds only per-pod tuning (serve port, dtype, gpu-mem-util, max_model_len, aliases,
+// tab holds only per-pod tuning (serve port, kv cache dtype, gpu-mem-util, max_model_len, aliases,
 // extra args). Nothing to copy on Model select.
 // Keep the viewer bounded — a loading vLLM emits far more than anyone scrolls back through.
 const LOG_LINE_LIMIT = 2000;
@@ -11,6 +11,11 @@ frappe.ui.form.on('Pod', {
 	refresh(frm) {
 		if (frm.is_new()) return;
 		setup_log_view(frm);
+
+		// Console URL is RunPod's own; a pod on any other provider has no page there.
+		if (frm.doc.pod_id && frm.doc.provider_type === 'runpod') {
+			frm.add_web_link(`https://console.runpod.io/pods?id=${frm.doc.pod_id}`, __('Open in RunPod'));
+		}
 
 		// No provider pod yet → offer Spawn. Once spawned → Sync / Restart / Terminate.
 		if (!frm.doc.pod_id && (frm.doc.status === 'Pending' || frappe.boot.developer_mode)) {

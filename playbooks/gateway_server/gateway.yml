@@ -1,0 +1,160 @@
+---
+# Provision a Grove Gateway Server (merged gateway+proxy): OpenResty + local Redis
+# (zero-loss persistence) + the Go agent. Idempotent. Codifies deploy.sh.
+# extra-vars: admin_token (control-plane admin API token), agent_source (path to
+# gateway_service source on control plane).
+- hosts: all
+  become: true
+  gather_facts: true
+  vars:
+    grove_dir: "{{ playbook_dir }}"
+    # Pinned to what the live gateway is verified on: from an upstream repo, not the distro, so
+    # "latest" would move under us on a rebuild — and it sits in the request path.
+    lua_resty_http_version: "0.17.1"
+
+  # Checked before the roles install anything: the agent refuses to start without this token, so a
+  # run that forgot it does not produce a half-provisioned box with grove-gateway crash-looping.
+  pre_tasks:
+    - name: refuse to provision without an admin token
+      ansible.builtin.assert:
+        that: admin_token | default('') | trim | length > 0
+        fail_msg: >-
+          No admin_token was passed — provision from the Gateway Server's Setup button, or pass the
+          same extra-vars it does.
+
+  # openresty first (it removes any distro nginx holding :443), then grove_https — nginx.conf
+  # below declares a `listen 443 ssl` server and OpenResty will not start without a certificate on
+  # disk. The version pin lives in the openresty role, shared with every inference box's engine
+  # proxy so the whole fleet runs one build.
+  #
+  # fleet_tls after grove_https and before the nginx.conf task: with a Fleet Zone set the config
+  # names the wildcard's paths, so the files have to be there before `openresty -t` reads it. With
+  # no zone it writes nothing and the config falls back to grove_https's self-signed box.crt.
+  roles:
+    - openresty
+    - grove_https
+    - fleet_tls
+    - build_gateway_agent
+
+  tasks:
+    - name: install redis-server
+      ansible.builtin.apt:
+        name: redis-server
+        state: present
+        update_cache: true
+
+    - name: install lua-resty-http (opm)
+      ansible.builtin.command:
+        cmd: /usr/local/openresty/bin/opm get ledgetech/lua-resty-http={{ lua_resty_http_version }}
+        creates: /usr/local/openresty/site/lualib/resty/http.lua
+
+    - name: redis zero-loss persistence
+      ansible.builtin.blockinfile:
+        path: /etc/redis/redis.conf
+        marker: "# {mark} grove gateway zero-loss"
+        block: |
+          appendonly yes
+          appendfsync always
+          maxmemory-policy noeviction
+      notify: restart redis
+
+    - name: grove lua dir
+      ansible.builtin.file:
+        path: /etc/grove-gateway/lua
+        state: directory
+        mode: "0755"
+
+    # The log directory is created by the openresty role above, which every box that runs
+    # OpenResty needs it for.
+    - name: openresty logrotate
+      ansible.builtin.copy:
+        src: "{{ grove_dir }}/logrotate/openresty"
+        dest: /etc/logrotate.d/openresty
+        mode: "0644"
+
+    - name: agent binary
+      ansible.builtin.copy:
+        src: /tmp/grove-gateway
+        dest: /usr/local/bin/grove-gateway
+        mode: "0755"
+        remote_src: true
+      notify: restart grove-gateway
+
+    - name: lua files
+      ansible.builtin.copy:
+        src: "{{ grove_dir }}/lua/"
+        dest: /etc/grove-gateway/lua/
+        mode: "0644"
+      notify: reload openresty
+
+    - name: nginx.conf
+      ansible.builtin.template:
+        src: "{{ grove_dir }}/nginx.conf.j2"
+        dest: /usr/local/openresty/nginx/conf/nginx.conf
+        mode: "0644"
+      notify: reload openresty
+
+    - name: systemd unit
+      ansible.builtin.copy:
+        src: "{{ grove_dir }}/systemd/grove-gateway.service"
+        dest: /etc/systemd/system/grove-gateway.service
+        mode: "0644"
+      notify:
+        - reload systemd
+        - restart grove-gateway
+
+    - name: agent.env (admin token from the control plane)
+      ansible.builtin.copy:
+        dest: /etc/grove-gateway/agent.env
+        content: |
+          GROVE_ADMIN_TOKEN={{ admin_token }}
+          GROVE_GATEWAY_ID={{ gateway_id | default('') }}
+          GROVE_GATEWAY_REGION={{ gateway_region | default('') }}
+          GROVE_SYNTHETIC_SESSION_TTL={{ synthetic_session_ttl | default('') }}
+        mode: "0600"
+      no_log: true
+      notify: restart grove-gateway
+
+    - name: redis started
+      ansible.builtin.systemd:
+        name: redis-server
+        enabled: true
+        state: started
+
+    - name: nginx config test
+      ansible.builtin.command: /usr/local/openresty/bin/openresty -t
+      changed_when: false
+
+    - name: grove-gateway started
+      ansible.builtin.systemd:
+        name: grove-gateway
+        enabled: true
+        state: started
+        daemon_reload: true
+
+    - name: openresty started
+      ansible.builtin.systemd:
+        name: openresty
+        enabled: true
+        state: started
+
+  handlers:
+    - name: restart redis
+      ansible.builtin.systemd:
+        name: redis-server
+        state: restarted
+
+    - name: reload systemd
+      ansible.builtin.systemd:
+        daemon_reload: true
+
+    - name: restart grove-gateway
+      ansible.builtin.systemd:
+        name: grove-gateway
+        state: restarted
+        daemon_reload: true
+
+    - name: reload openresty
+      ansible.builtin.systemd:
+        name: openresty
+        state: reloaded

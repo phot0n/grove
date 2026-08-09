@@ -1,7 +1,6 @@
 {
  "actions": [],
  "allow_rename": 1,
- "autoname": "prompt",
  "creation": "2026-07-01 00:00:00",
  "doctype": "DocType",
  "engine": "InnoDB",
@@ -9,11 +8,13 @@
   "machine",
   "machine_ip",
   "is_static_ip",
-  "region",
   "status",
-  "monitoring_agent",
-  "is_provisioned",
   "data_path",
+  "column_break_axpk",
+  "region",
+  "monitoring_agent",
+  "ingress",
+  "is_provisioned",
   "section_gpus",
   "gpus_html"
  ],
@@ -24,7 +25,8 @@
    "in_list_view": 1,
    "label": "Machine",
    "options": "Machine",
-   "reqd": 1
+   "reqd": 1,
+   "set_only_once": 1
   },
   {
    "fetch_from": "machine.public_ip",
@@ -36,7 +38,7 @@
   },
   {
    "default": "0",
-   "description": "Whether this box's address survives a stop. Owned by the Machine — set it there.",
+   "description": "Whether this box's address survives a stop. Owned by the Machine \u2014 set it there.",
    "fetch_from": "machine.is_static_ip",
    "fieldname": "is_static_ip",
    "fieldtype": "Check",
@@ -55,6 +57,7 @@
    "default": "Pending",
    "fieldname": "status",
    "fieldtype": "Select",
+   "hidden": 1,
    "in_list_view": 1,
    "label": "Status",
    "options": "Pending\nInstalling\nActive\nBroken\nTerminated"
@@ -65,6 +68,13 @@
    "fieldtype": "Link",
    "label": "Monitoring Agent",
    "options": "Monitoring Agent"
+  },
+  {
+   "description": "The ingress that fronts this box. Set it and the gateways reach this box's engines through that ingress, privately; leave it blank and they dial the box directly, as they always have. Must be an ingress in this box's own Network.",
+   "fieldname": "ingress",
+   "fieldtype": "Link",
+   "label": "Ingress Server",
+   "options": "Ingress Server"
   },
   {
    "default": "0",
@@ -91,10 +101,14 @@
    "fieldname": "gpus_html",
    "fieldtype": "HTML",
    "label": "GPUs"
+  },
+  {
+   "fieldname": "column_break_axpk",
+   "fieldtype": "Column Break"
   }
  ],
  "links": [],
- "modified": "2026-07-26 02:52:51.057106",
+ "modified": "2026-08-07 03:33:36.587973",
  "modified_by": "Administrator",
  "module": "Grove",
  "name": "Inference Server",

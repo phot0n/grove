@@ -38,8 +38,8 @@
   {"fieldname": "internet_gateway_id", "fieldtype": "Data", "label": "Internet Gateway ID", "read_only": 1, "depends_on": "eval:doc.cloud_provider", "description": "Filled in by Create Network. Informational."},
   {"fieldname": "route_table_id", "fieldtype": "Data", "label": "Route Table ID", "read_only": 1, "depends_on": "eval:doc.cloud_provider", "description": "Filled in by Create Network. Informational — the VPC's own default route table, given a 0.0.0.0/0 route to the Internet Gateway."},
   {"fieldname": "column_break_3", "fieldtype": "Column Break", "depends_on": "eval:doc.cloud_provider"},
-  {"fieldname": "proxy_security_group_ids", "fieldtype": "Data", "label": "Proxy Security Group IDs", "read_only": 1, "depends_on": "eval:doc.cloud_provider", "description": "For a Proxy Server box: 22, 80 and 443 open to 0.0.0.0/0. Filled in by Create Security Groups."},
-  {"fieldname": "inference_security_group_ids", "fieldtype": "Data", "label": "Inference Security Group IDs", "read_only": 1, "depends_on": "eval:doc.cloud_provider", "description": "For an Inference Server box: 22 open to 0.0.0.0/0, 8080-8085 (engine ports) open only to the Proxy security group — 6 ports, so at most 6 concurrent Model Deployments per box. Filled in by Create Security Groups."}
+  {"fieldname": "proxy_security_group_ids", "fieldtype": "Data", "label": "Proxy Security Group IDs", "read_only": 1, "depends_on": "eval:doc.cloud_provider", "description": "For a Gateway Server box: 22, 80 and 443 open to 0.0.0.0/0. Filled in by Create Security Groups."},
+  {"fieldname": "inference_security_group_ids", "fieldtype": "Data", "label": "Inference Security Group IDs", "read_only": 1, "depends_on": "eval:doc.cloud_provider", "description": "For an Inference Server box: 22 open to 0.0.0.0/0, and 443 — the engine proxy, fronting every deployment and both exporters — open only to the proxy fleet and the metrics agents. Filled in by Create Security Groups; the 443 sources are kept current by Sync Ingress Rules."}
  ],
  "links": [
   {"group": "Infrastructure", "link_doctype": "Machine", "link_fieldname": "network"}

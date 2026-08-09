@@ -13,15 +13,30 @@ from urllib.parse import urlparse
 import frappe
 from werkzeug.wrappers import Response
 
+from grove.net import reachable_ip
+
 NODE_EXPORTER_PORT = 9100
 DCGM_EXPORTER_PORT = 9400
 # vmagent's own /metrics — its -httpListenAddr in the vmagent role.
 VMAGENT_PORT = 8429
 
+# Every box answers on one port, and the exporters are re-published as paths behind it (the
+# engine_proxy role on an inference box, OpenResty on a proxy box) — so a box needs nothing open
+# but 22 and this. The exporters still listen on their own ports; they are simply not reachable
+# from outside.
+#
+# An inference box is moving from 443 to 80: nothing ever verified its self-signed certificate, and
+# the hop is inside the fleet, so the TLS was buying nothing but a file the box had to carry. A
+# proxy box keeps 443 — that one faces customers and holds a real certificate.
+BOX_HTTP_PORT = 80
+BOX_HTTPS_PORT = 443
+NODE_METRICS_PATH = "/metrics/node"
+GPU_METRICS_PATH = "/metrics/gpu"
+
 
 def run_exporters_play(server):
 	"""Install the metrics exporters on a server's box: node, and DCGM when the Machine has
-	GPU rows. Shared by Inference Server and Proxy Server — the play and the box are the same
+	GPU rows. Shared by Inference Server and Gateway Server — the play and the box are the same
 	thing, only which doc owns the button differs.
 
 	The exporters only listen. Which agent scrapes them is the server's `monitoring_agent`,
@@ -81,24 +96,40 @@ def authenticate(token):
 
 def host_targets(agent):
 	"""Exporter targets for every box this agent owns, including its own."""
-	return build_host_targets(inference_boxes(agent) + proxy_boxes(agent)) + agent_targets(agent)
+	network = agent_network(agent)
+	boxes = inference_boxes(agent) + front_boxes(agent)
+	return build_host_targets(boxes, network) + agent_targets(agent)
+
+
+def agent_network(agent):
+	"""The Network this agent's own box sits in, or "" when it has none.
+
+	A Network is one VPC, one subnet, one availability zone, so two boxes that share one can
+	reach each other privately; anything else has no route between the addresses and must be
+	scraped over the public internet."""
+	machine = frappe.db.get_value("Monitoring Agent", agent, "machine")
+	return (machine and frappe.db.get_value("Machine", machine, "network")) or ""
 
 
 def agent_targets(agent):
-	"""The agent's own box. Nothing else names it — it carries no Inference or Proxy Server
+	"""The agent's own box. Nothing else names it — it carries no Inference or Gateway Server
 	doc — and an agent that cannot see its own disk filling is the blind spot that matters:
 	vmagent's queue depth and dropped-sample counters are how a broken pipeline announces
 	itself, before anyone notices a gap in a dashboard.
 
 	Scraped over localhost, since this is the box doing the scraping — nothing here has to be
-	reachable from outside, and no security group rule is needed for it."""
+	reachable from outside, and no security group rule is needed for it.
+
+	Not through a TLS front like the fleet's, and so not built by exporter_entry: this box
+	carries no Inference or Gateway Server doc, so nothing ever installs nginx on it. Plain http,
+	the default /metrics, and an address that is already unique per port."""
 	box = frappe.db.get_value("Monitoring Agent", agent, ["machine", "region"], as_dict=True)
 	if not box:
 		return []
 	labels = {"machine": box.machine or "", "region": box.region or "", "server": agent}
 	return [
-		exporter_entry("127.0.0.1", NODE_EXPORTER_PORT, labels),
-		exporter_entry("127.0.0.1", VMAGENT_PORT, labels),
+		{"targets": [f"127.0.0.1:{port}"], "labels": dict(labels)}
+		for port in (NODE_EXPORTER_PORT, VMAGENT_PORT)
 	]
 
 
@@ -106,6 +137,7 @@ def engine_targets(agent):
 	"""Engines this agent scrapes: every Active deployment on its boxes, and every Running
 	pod that names it. Both are reached at their engine_url — the address the gateway
 	already routes to."""
+	network = agent_network(agent)
 	boxes = {box["name"]: box for box in inference_boxes(agent)}
 	deployments = (
 		frappe.get_all(
@@ -126,6 +158,7 @@ def engine_targets(agent):
 				"machine": boxes[deployment.inference_server]["machine"],
 				"region": boxes[deployment.inference_server]["region"],
 			},
+			address=reachable_ip(boxes[deployment.inference_server], network),
 		)
 		for deployment in deployments
 	]
@@ -141,24 +174,37 @@ def engine_targets(agent):
 	return [entry for entry in entries if entry]
 
 
+# A box that still exists is worth scraping whatever state it is in — Broken most of all, since
+# its metrics are how you find out why. Terminated is the one status that means the machine is
+# gone, so a target for it can only ever be down, and a permanently-down target is worse than no
+# target: it reads exactly like a box that just died.
+_GONE_STATUS = "Terminated"
+
+
 def inference_boxes(agent):
 	"""Inference Servers this agent scrapes, as plain rows: name, box, address, GPUs."""
 	servers = frappe.get_all(
 		"Inference Server",
-		filters={"monitoring_agent": agent},
+		filters={"monitoring_agent": agent, "status": ("!=", _GONE_STATUS)},
 		fields=["name", "machine", "machine_ip as ip", "region"],
 	)
-	return _with_gpu_flag(servers)
+	return _with_gpu_flag(_with_machine_address(servers))
 
 
-def proxy_boxes(agent):
-	"""Proxy Servers this agent scrapes. Never GPU boxes — no DCGM target for them."""
-	servers = frappe.get_all(
-		"Proxy Server",
-		filters={"monitoring_agent": agent},
-		fields=["name", "machine", "public_ip as ip", "region"],
-	)
-	return [{**server, "has_gpu": False} for server in servers]
+def front_boxes(agent):
+	"""The named boxes this agent scrapes — Gateway Servers and Ingress Servers. Both run the
+	same OpenResty in front of the same node_exporter, so they are one query shape twice over.
+	Never GPU boxes: no DCGM target for either."""
+	servers = [
+		server
+		for doctype in ("Gateway Server", "Ingress Server")
+		for server in frappe.get_all(
+			doctype,
+			filters={"monitoring_agent": agent, "status": ("!=", _GONE_STATUS)},
+			fields=["name", "machine", "public_ip as ip", "region"],
+		)
+	]
+	return [{**server, "has_gpu": False} for server in _with_machine_address(servers)]
 
 
 def _with_gpu_flag(servers):
@@ -168,42 +214,107 @@ def _with_gpu_flag(servers):
 	return [{**server, "has_gpu": server["machine"] in gpu_machines} for server in servers]
 
 
-def build_host_targets(boxes):
+def _with_machine_address(servers):
+	"""Each box's private address and Network, read live off its Machine.
+
+	Not mirrored onto the server doc with a fetch_from: that copy is only as fresh as the last
+	save of the server, and a stale scrape address is a target that can only ever be down —
+	indistinguishable from a box that just died."""
+	machines = [server["machine"] for server in servers if server.get("machine")]
+	addresses = (
+		{
+			machine["name"]: machine
+			for machine in frappe.get_all(
+				"Machine",
+				filters={"name": ("in", machines)},
+				fields=["name", "private_ip", "network"],
+			)
+		}
+		if machines
+		else {}
+	)
+	return [
+		{
+			**server,
+			"private_ip": addresses.get(server.get("machine"), {}).get("private_ip") or "",
+			"network": addresses.get(server.get("machine"), {}).get("network") or "",
+		}
+		for server in servers
+	]
+
+
+def build_host_targets(boxes, viewer_network=""):
 	"""Boxes → exporter entries. A box with no address cannot be scraped — it is skipped
 	rather than emitted as a target that can only ever be down."""
 	entries = []
 	for box in boxes:
 		if not box.get("ip"):
 			continue
+		address = reachable_ip(box, viewer_network)
 		labels = {
 			"machine": box.get("machine") or "",
 			"region": box.get("region") or "",
 			"server": box["name"],
 		}
-		entries.append(exporter_entry(box["ip"], NODE_EXPORTER_PORT, labels))
+		entries.append(
+			exporter_entry(address, NODE_EXPORTER_PORT, NODE_METRICS_PATH, labels, box["ip"])
+		)
 		if box.get("has_gpu"):
-			entries.append(exporter_entry(box["ip"], DCGM_EXPORTER_PORT, labels))
+			entries.append(
+				exporter_entry(address, DCGM_EXPORTER_PORT, GPU_METRICS_PATH, labels, box["ip"])
+			)
 	return entries
 
 
-def exporter_entry(ip, port, labels):
-	return {"targets": [f"{ip}:{port}"], "labels": dict(labels)}
+def exporter_entry(address, port, metrics_path, labels, instance_ip=None):
+	"""One exporter, scraped through its box's TLS front rather than on its own port.
+
+	`instance` is set here instead of being left to default from the address, which is now
+	`<ip>:443` for every exporter on the box: node and DCGM would otherwise collapse into one
+	series name that means nothing. The value keeps the exporter's own port, so it is byte
+	identical to what these targets reported before they moved behind the front.
+
+	It also keeps the box's PUBLIC address even when the box is scraped privately. The address
+	is where to connect; `instance` is which exporter this is, and a box that gains a private
+	IP must not rename every series it has ever reported."""
+	return {
+		"targets": [f"{address}:{BOX_HTTPS_PORT}"],
+		"labels": {
+			"__scheme__": "https",
+			"__metrics_path__": metrics_path,
+			"instance": f"{instance_ip or address}:{port}",
+			**labels,
+		},
+	}
 
 
-def engine_entry(engine_url, labels):
-	"""One entry for an engine, addressed exactly where the gateway routes it. None when
-	there is no URL yet — a deployment mid-provision, or a pod still loading."""
+def engine_entry(engine_url, labels, address=None):
+	"""One entry for an engine, addressed where the gateway routes it unless `address` says to
+	reach the same engine privately. None when there is no URL yet — a deployment mid-provision,
+	or a pod still loading.
+
+	Derived from the URL rather than branched on what kind of engine it is, because the two
+	kinds no longer share a shape: a deployment sits behind its box's front at
+	`https://<ip>/e/<slug>`, while a pod — which has no box, no Ansible and no front — keeps
+	`http://<host>:<port>`. Both fall out of the same two lines.
+
+	Only the address moves. `engine` and `instance` stay the public URL: the first is the join
+	back to the route it describes, and the second is what tells two engines on one box apart."""
 	parsed = urlparse(engine_url or "")
 	if not parsed.hostname:
 		return None
 	port = parsed.port or (443 if parsed.scheme == "https" else 80)
 	return {
-		"targets": [f"{parsed.hostname}:{port}"],
+		"targets": [f"{address or parsed.hostname}:{port}"],
 		"labels": {
-			# Verbatim: the exact string gateway_sync pushes as this engine's route target.
+			# Verbatim: the exact string agent_sync pushes as this engine's route target.
 			# Reformatted, the series can no longer be joined to the route it describes.
 			"engine": engine_url,
 			"__scheme__": parsed.scheme or "http",
+			"__metrics_path__": f"{parsed.path.rstrip('/')}/metrics",
+			# Unique by construction. Every engine on a box shares one address now, so the
+			# default would name the box and merge them.
+			"instance": engine_url,
 			**{key: value or "" for key, value in labels.items()},
 		},
 	}

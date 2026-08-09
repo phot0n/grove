@@ -10,6 +10,7 @@
   "user_group",
   "column_break_head",
   "rate_limited",
+  "dirty",
   "section_allow",
   "allow",
   "section_deny",
@@ -38,17 +39,25 @@
    "fieldtype": "Column Break"
   },
   {
-   "description": "total_tokens this user may consume per calendar month (UTC); blank/0 = unlimited. SHARED across every API Key they hold \u2014 the keys are just credentials, the budget is the person's. Enforced by the control plane against the month's Usage Records; when reached, all their keys are flagged rate_limited and pushed to the gateways (reactive, resets each month).",
+   "description": "total_tokens this user may consume per calendar month (UTC); blank/0 = unlimited. SHARED across every API Key they hold \u2014 the keys are just credentials, the budget is the person's. Enforced by the control plane against the month's Usage Records; when reached, this user is flagged Rate Limited and pushed to the gateways as one record, so every key they hold is refused at once (reactive, resets each month).",
    "fieldname": "max_tokens",
    "fieldtype": "Int",
    "label": "Max Tokens / Month"
   },
   {
    "default": "0",
-   "description": "System-set: this user hit their monthly token budget, so every key they hold is rejected with 429 (their keys project status=rate_limited). Cleared by the daily grove.usage_pull.reactivate_rate_limited once current-month usage is back under budget (month rollover / raised budget); stays blocked for the rest of the month otherwise.",
+   "description": "System-set: this user hit their monthly token budget, so every key they hold is rejected with 429 (pushed once, as limited on their own gateway record). Cleared by the daily grove.usage_pull.reactivate_rate_limited once current-month usage is back under budget (month rollover / raised budget); stays blocked for the rest of the month otherwise.",
    "fieldname": "rate_limited",
    "fieldtype": "Check",
    "label": "Rate Limited",
+   "read_only": 1
+  },
+  {
+   "default": "0",
+   "description": "Set on change; cleared once a sync run has pushed this user's access and budget flag to every Active proxy.",
+   "fieldname": "dirty",
+   "fieldtype": "Check",
+   "label": "Pending Sync",
    "read_only": 1
   },
   {

@@ -1,0 +1,53 @@
+---
+# Deploy & build the Go agent on an ALREADY-provisioned Gateway Server: push
+# gateway_service source, build on the proxy, install its env file + restart.
+# Does NOT touch OpenResty or Redis (use gateway.yml for a full provision).
+# extra-vars: agent_source (path to gateway_service source on control plane),
+# admin_token, gateway_id, gateway_region, synthetic_session_ttl.
+- hosts: all
+  become: true
+  gather_facts: true
+
+  roles:
+    - build_gateway_agent
+
+  tasks:
+    # The play is hand-runnable and the file holds the token every /admin push authenticates
+    # with. The agent refuses to start without it, so a run that forgot it would trade a working
+    # gateway for a crash-looping one — caught here, before agent.env is overwritten.
+    - name: refuse to write agent.env without an admin token
+      ansible.builtin.assert:
+        that: admin_token | default('') | trim | length > 0
+        fail_msg: >-
+          No admin_token was passed — writing agent.env now would stop the agent from starting at
+          all, and every gateway sync with it. Re-run from the Gateway Server's Deploy Agent button,
+          or pass the same extra-vars it does.
+
+    # Written here and not only on provision: the synthetic-session TTL lives in this file, and a
+    # setting that needs a live gateway re-provisioned to change is not one anybody will change.
+    - name: agent.env
+      ansible.builtin.copy:
+        dest: /etc/grove-gateway/agent.env
+        content: |
+          GROVE_ADMIN_TOKEN={{ admin_token }}
+          GROVE_GATEWAY_ID={{ gateway_id | default('') }}
+          GROVE_GATEWAY_REGION={{ gateway_region | default('') }}
+          GROVE_SYNTHETIC_SESSION_TTL={{ synthetic_session_ttl | default('') }}
+        mode: "0600"
+      no_log: true
+      notify: restart grove-gateway
+
+    - name: install grove-gateway binary
+      ansible.builtin.copy:
+        src: /tmp/grove-gateway
+        dest: /usr/local/bin/grove-gateway
+        mode: "0755"
+        remote_src: true
+      notify: restart grove-gateway
+
+  handlers:
+    - name: restart grove-gateway
+      ansible.builtin.systemd:
+        name: grove-gateway
+        state: restarted
+        daemon_reload: true
