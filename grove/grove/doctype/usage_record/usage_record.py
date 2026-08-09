@@ -36,15 +36,27 @@ def current_month():
 	return datetime.now(timezone.utc).strftime("%Y-%m")
 
 
-def billable_tokens(grove_user, month):
-	"""What `grove_user` spent in `month`, summed across every key they hold.
+def billable(total_tokens, cached_tokens):
+	"""One record's billable tokens: total minus the prefix-cache hits, never below zero.
 
-	Billable = total_tokens - cached_tokens: prefix-cache hits skip prefill compute
-	(near-zero marginal cost on our own GPUs), so they don't count against budget. One
-	definition, shared by the set and the clear side of the budget gate."""
+	Cache hits skip prefill compute — near-zero marginal cost on our own GPUs — so they do not
+	count against a budget. Cached is a SUBSET of total, so the difference should never be
+	negative; the floor is there for when it is anyway. A response can report cached tokens with
+	total_tokens: 0, and the gateway's /meter skips a zero rather than writing it, leaving a
+	record whose cached count exceeds its total. Summed unclamped, that row would cancel real
+	usage on the user's OTHER keys and quietly credit them back under their budget.
+
+	The one definition of billable: the budget gate and the usage report both come here, so they
+	cannot drift into disagreeing about what a customer owes."""
+	return max((total_tokens or 0) - (cached_tokens or 0), 0)
+
+
+def billable_tokens(grove_user, month):
+	"""What `grove_user` spent in `month`, summed across every key they hold. One definition,
+	shared by the set and the clear side of the budget gate."""
 	rows = frappe.get_all(
 		"Usage Record",
 		filters={"user": grove_user, "month": month},
 		fields=["total_tokens", "cached_tokens"],
 	)
-	return sum((r.total_tokens or 0) - (r.cached_tokens or 0) for r in rows)
+	return sum(billable(r.total_tokens, r.cached_tokens) for r in rows)
