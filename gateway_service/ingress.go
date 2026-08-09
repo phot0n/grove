@@ -4,18 +4,48 @@ package main
 // no user or group lookup, no usage counters — an ingress is told a model and a session key and
 // answers with an engine. The tenant it belongs to is not information this box has.
 //
-// Session affinity is stateless here, which is the whole reason the shared DNS name in front of a
-// Network is safe. The gateway computes session_key and forwards it; every ingress in the Network
-// holds the identical replica table and hashes it the same way, so whichever one DNS hands out
-// returns the SAME replica and a client bouncing between ingresses keeps its prefix cache. Storing
-// affinity per-ingress in Redis — the way the gateway's sticky: keys used to — would shred it.
+// Session affinity is stateless: the gateway computes session_key and forwards it, and the ingress
+// derives the replica from that alone. No sticky: key, no TTL, nothing to expire — the same key
+// against the same table answers the same replica for as long as the table holds, and the gateway
+// rotates the key on a jittered bucket when affinity should move.
+//
+// This ingress owns its replicas: an Inference Server names exactly one. That is what makes the
+// capacity gate here exact, and it is the reason the gate lives at this tier rather than on the
+// gateway, where two boxes counting the same engine would each see only their own half.
 
 import (
 	"crypto/subtle"
+	"encoding/binary"
 	"encoding/json"
+	"fmt"
 	"math"
 	"net/http"
+	"time"
 )
+
+// sessionWindow is how long a session key stays put before it rotates. Long enough that a
+// conversation keeps its prefix cache, short enough that a replica added to a Network starts
+// taking share without waiting for the callers to go away.
+const sessionWindow = 30 * time.Minute
+
+// sessionKey is what the ingress hashes to choose a replica, computed here because the gateway is
+// the only tier that knows who is calling. Derived from the key and the model, so two models under
+// one key are balanced independently, and rotated on a bucket so affinity is not permanent.
+//
+// The bucket is jittered by the key. A fixed window rotates every session in the fleet at the same
+// instant — one synchronised cache-miss stampede across every replica — and offsetting each key by
+// its own hash smears the rotations evenly across the window instead.
+func sessionKey(meterID, model string, now time.Time) string {
+	window := int64(sessionWindow / time.Second)
+	offset := int64(binary.BigEndian.Uint64(sha256sumPrefix(meterID)) % uint64(window))
+	bucket := (now.Unix() + offset) / window
+	return sha256hex(fmt.Sprintf("%s|%s|%d", meterID, model, bucket))
+}
+
+func sha256sumPrefix(s string) []byte {
+	sum := sha256sum(s)
+	return sum[:8]
+}
 
 // spillFactor bounds how far above the mean in-flight a replica may go before a session hashing to
 // it spills to the next in the ring. Plain consistent hashing pins a whale tenant onto one replica
@@ -123,9 +153,9 @@ func (s *server) handleRelease(w http.ResponseWriter, r *http.Request) {
 //
 // Rendezvous rather than a hash ring with virtual nodes: it gives the same minimal-disruption
 // property — removing a replica only moves the keys that were on it — in a dozen lines and with no
-// ring to build, and the order it produces depends on nothing but the key and the engine URLs. Two
-// ingresses holding the same table therefore agree without exchanging a byte, which is what makes
-// DNS balancing in front of them safe.
+// ring to build, and the order it produces depends on nothing but the key and the engine URLs. So
+// a replica added or drained moves only its own share of the keys, and a restarted ingress picks
+// up exactly where it left off without persisting a thing.
 //
 // Returns the status the caller should answer with, same vocabulary as pickRoute: 200 admit, 503
 // the model has nowhere to go here, 429 every replica is at its --max-num-seqs.

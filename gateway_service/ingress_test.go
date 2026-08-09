@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"testing"
+	"time"
 )
 
 func replica(url string, inFlight, capacity int) Route {
@@ -17,10 +18,9 @@ func idle(urls ...string) []Route {
 	return out
 }
 
-// The property the whole shared-DNS design rests on: two ingresses in a Network hold the identical
-// table, so the same key must resolve to the same replica from either. Nothing coordinates them —
-// if the choice depended on anything but the key and the engine URLs, DNS balancing would shred
-// every client's prefix cache.
+// Affinity is stateless: nothing is stored, so the same key against the same table must answer the
+// same replica every time. If the choice depended on anything but the key and the engine URLs, an
+// agent restart would shred every client's prefix cache.
 func TestTheSameKeyLandsOnTheSameReplica(t *testing.T) {
 	routes := idle("http://a/e/m", "http://b/e/m", "http://c/e/m")
 	first, _ := pickReplica(routes, "sess-1")
@@ -32,8 +32,8 @@ func TestTheSameKeyLandsOnTheSameReplica(t *testing.T) {
 	}
 }
 
-// Table order is not part of the decision. The control plane builds each ingress's table from its
-// own query, and two ingresses have no reason to receive the replicas in the same order.
+// Table order is not part of the decision. The control plane rebuilds this table on every sync and
+// has no reason to return the replicas in a stable order.
 func TestTheOrderOfTheTableDoesNotChangeTheAnswer(t *testing.T) {
 	forward := idle("http://a/e/m", "http://b/e/m", "http://c/e/m")
 	reversed := idle("http://c/e/m", "http://b/e/m", "http://a/e/m")
@@ -229,6 +229,64 @@ func TestABoxIsOnePlaneOrTheOther(t *testing.T) {
 	for _, gateway := range []string{"gw-1", "", "  "} {
 		if id, err := resolveMode(gateway, ""); err != nil || id != "" {
 			t.Errorf("gateway %q: got %q/%v, want the gateway plane", gateway, id, err)
+		}
+	}
+}
+
+// The session key is what the ingress hashes, so its two properties are what affinity rests on:
+// stable inside a window, and not rotating in lockstep across keys.
+func TestASessionKeyIsStableInsideItsWindow(t *testing.T) {
+	base := time.Unix(1_800_000_000, 0)
+	first := sessionKey("meter-1", "qwen3-35b", base)
+	for _, after := range []time.Duration{time.Second, time.Minute, 5 * time.Minute} {
+		if got := sessionKey("meter-1", "qwen3-35b", base.Add(after)); got != first {
+			t.Errorf("+%s rotated the key inside its window", after)
+		}
+	}
+}
+
+func TestASessionKeyEventuallyRotates(t *testing.T) {
+	base := time.Unix(1_800_000_000, 0)
+	if sessionKey("meter-1", "qwen3-35b", base) == sessionKey("meter-1", "qwen3-35b", base.Add(2*sessionWindow)) {
+		t.Error("the key never rotates, so affinity is permanent")
+	}
+}
+
+func TestTwoModelsUnderOneKeyBalanceIndependently(t *testing.T) {
+	base := time.Unix(1_800_000_000, 0)
+	if sessionKey("meter-1", "qwen3-35b", base) == sessionKey("meter-1", "llama-70b", base) {
+		t.Error("both models share a session key, so they would pin to the same replica")
+	}
+}
+
+func TestRotationsAreJitteredAcrossKeys(t *testing.T) {
+	// A fixed window rotates every session in the fleet at the same instant — one synchronised
+	// cache-miss stampede across every replica. Each key's offset must move its boundary.
+	base := time.Unix(1_800_000_000, 0)
+	rotated := map[int]int{}
+	for i := 0; i < 200; i++ {
+		meter := fmt.Sprintf("meter-%d", i)
+		before := sessionKey(meter, "m", base)
+		for step := 1; step <= 30; step++ {
+			if sessionKey(meter, "m", base.Add(time.Duration(step)*time.Minute)) != before {
+				rotated[step]++
+				break
+			}
+		}
+	}
+	if len(rotated) < 10 {
+		t.Errorf("keys rotate at only %d distinct minutes — not jittered: %v", len(rotated), rotated)
+	}
+}
+
+func TestAnIngressRouteIsToldApartFromAnEngine(t *testing.T) {
+	if !(Route{Kind: "ingress"}).isIngress() {
+		t.Error("an ingress row was not recognised as one")
+	}
+	// Empty is what every route pushed before the split carries, and those are all engines.
+	for _, kind := range []string{"", "direct"} {
+		if (Route{Kind: kind}).isIngress() {
+			t.Errorf("kind %q was treated as an ingress", kind)
 		}
 	}
 }

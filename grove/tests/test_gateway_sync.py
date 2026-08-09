@@ -33,7 +33,11 @@ def pod(name, model="qwen3-35b", max_num_seqs=0):
 class TestRoutesForProxy(unittest.TestCase):
 	def routes(self, deployments=(), pods=(), models=("qwen3-35b",)):
 		"""_routes_for_proxy against mocked docs. get_all is dispatched on doctype because the
-		function reads three of them, and get_doc only ever supplies the internal key."""
+		function reads several of them, and get_doc only ever supplies the internal key.
+
+		No box here names an ingress, so every route is direct — the shape this whole suite was
+		written against, and the shape a fleet that has cut nothing over still has. The ingress
+		rows have their own file: test_gateway_routes."""
 
 		def get_all(doctype, **kwargs):
 			if doctype == "Model Deployment":
@@ -42,12 +46,17 @@ class TestRoutesForProxy(unittest.TestCase):
 				return list(models)
 			if doctype == "Pod":
 				return list(pods)
+			if doctype in ("Ingress Server", "Inference Server"):
+				return []
 			raise AssertionError(f"unexpected get_all({doctype})")
 
 		doc = unittest.mock.Mock()
 		doc.get_password.return_value = "internal-key"
 		with (
 			unittest.mock.patch.object(frappe, "get_all", side_effect=get_all),
+			unittest.mock.patch.object(
+				frappe, "db", frappe._dict(get_single_value=lambda *args: "grove.example.com")
+			),
 			unittest.mock.patch.object(frappe, "get_doc", return_value=doc),
 		):
 			return gateway_sync._routes_for_proxy("PROXY-1")

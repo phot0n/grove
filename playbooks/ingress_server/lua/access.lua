@@ -17,6 +17,11 @@ local model = ngx.var.http_x_grove_model or ""
 local session_key = ngx.var.http_x_grove_session_key or ""
 local request_id = ngx.var.http_x_request_id or ""
 
+-- The gateway swapped the client's key for this ingress's data token before forwarding, so what
+-- arrives here proves the caller is a gateway. Checked in the agent, which can compare it in
+-- constant time; it is replaced with the engine's own key further down either way.
+local token = (ngx.var.http_authorization or ""):gsub("^[Bb]earer%s+", "")
+
 local function fail(status, reason)
 	-- Named so the gateway can tell a broken ingress from a model with nowhere to go here: it
 	-- ejects a whole network on a connection failure or a 502/504, and must NOT eject one on a
@@ -42,7 +47,12 @@ local res
 res, err = client:request_uri(AGENT_PICK, {
 	method = "POST",
 	headers = { ["Content-Type"] = "application/json" },
-	body = cjson.encode({ model = model, session_key = session_key, request_id = request_id }),
+	body = cjson.encode({
+		token = token,
+		model = model,
+		session_key = session_key,
+		request_id = request_id,
+	}),
 })
 if not res then
 	return fail(503, "agent-unavailable")
@@ -73,5 +83,7 @@ ngx.var.upstream = decision.engine_url .. ngx.var.request_uri
 if decision.internal_key and decision.internal_key ~= "" then
 	ngx.req.set_header("Authorization", "Bearer " .. decision.internal_key)
 end
--- Not forwarded to the engine: it is this hop's routing input and means nothing to vLLM.
+-- Not forwarded to the engine: these are this hop's routing input and mean nothing to vLLM, which
+-- adopts X-Request-Id and no other header of ours.
 ngx.req.clear_header("X-Grove-Session-Key")
+ngx.req.clear_header("X-Grove-Model")

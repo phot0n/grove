@@ -84,6 +84,19 @@ ngx.var.upstream = d.engine_url .. ngx.var.request_uri
 if d.internal_key and d.internal_key ~= "" then
 	ngx.req.set_header("Authorization", "Bearer " .. d.internal_key)
 end
+
+-- An ingress route is a hand-off, not an engine: the box behind it picks the replica. It reads no
+-- body, so the model it would otherwise have parsed goes as a header, and the session key goes
+-- with it — the ingress hashes that to choose a replica and never learns whose it is.
+if d.kind == "ingress" then
+	ngx.req.set_header("X-Grove-Model", model)
+	ngx.req.set_header("X-Grove-Session-Key", d.session_key or "")
+else
+	-- A direct route reaches vLLM, which adopts X-Request-Id and nothing else. Clearing these
+	-- keeps a client-supplied value from reaching an engine that would only ignore it.
+	ngx.req.clear_header("X-Grove-Model")
+	ngx.req.clear_header("X-Grove-Session-Key")
+end
 ngx.ctx.meter_id = d.meter_id
 ngx.ctx.prefix = d.prefix or ""
 ngx.ctx.model = model  -- for per-model usage metering in the log phase

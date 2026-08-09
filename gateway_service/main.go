@@ -142,6 +142,11 @@ type decideResp struct {
 	// $upstream_addr the box's :443 for every engine on it.
 	Deployment string `json:"deployment,omitempty"`
 	RequestID  string `json:"request_id,omitempty"` // gr-<gateway>-<deployment>-<keyprefix>-<rand>
+	// Set only when the chosen route hands off to an ingress. Lua forwards them as headers; the
+	// ingress needs the model because it does not read the body, and the session key because it
+	// is the only tier that must not learn who is calling.
+	Kind       string `json:"kind,omitempty"`
+	SessionKey string `json:"session_key,omitempty"`
 	// Never omitempty: Lua stamps this on every admitted body, and a missing 0 would let a
 	// client's own `priority` stand and elevate itself.
 	Priority int `json:"priority"`
@@ -232,7 +237,7 @@ func (s *server) handleDecide(w http.ResponseWriter, r *http.Request) {
 	requestID := s.buildRequestID(route, rec.KeyPrefix)
 	s.claim(ctx, route.EngineURL, requestID)
 
-	writeJSON(w, decideResp{
+	resp := decideResp{
 		Allow:       true,
 		Status:      200,
 		EngineURL:   route.EngineURL,
@@ -243,7 +248,12 @@ func (s *server) handleDecide(w http.ResponseWriter, r *http.Request) {
 		Deployment:  route.Deployment,
 		RequestID:   requestID,
 		Priority:    priorityOf(usr, grp),
-	})
+	}
+	if route.isIngress() {
+		resp.Kind = route.Kind
+		resp.SessionKey = sessionKey(meterID, req.Model, time.Now())
+	}
+	writeJSON(w, resp)
 }
 
 // buildRequestID stamps a traceable id on every admitted request:

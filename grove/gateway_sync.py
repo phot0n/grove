@@ -146,6 +146,58 @@ def _effective_keys():
 	]
 
 
+def _ingress_targets():
+	"""{Inference Server name: the ingress row its engines fold into, or None}.
+
+	A key with None means the box is owned by an ingress the gateway cannot use right now. Those
+	engines are dropped, NOT dialled directly: a box that names an ingress is reached through it or
+	not at all. The fallback would appear to work today, while every box still carries its own
+	front, and become a black hole the moment phase 4 deletes it — a behaviour that changes under
+	you between phases is worse than one that is dark and says so.
+
+	One row per (model, ingress) rather than per replica is the whole point: the gateway learns
+	that Mumbai has two ingresses, never which boxes are behind them, so a pod restarting there is
+	invisible to a gateway in Singapore.
+
+	No Fleet Zone is the exception, and it is a different condition: no box in the fleet has a name
+	yet, which is the pre-TLS setup where everything is dialled by IP. Ownership is ignored
+	entirely there rather than taking the whole fleet dark over a setting nobody has filled in."""
+	zone = frappe.db.get_single_value("Grove Settings", "fleet_zone")
+	if not zone:
+		return {}
+	ingresses = {
+		row["name"]: row
+		for row in frappe.get_all(
+			"Ingress Server", filters={"status": "Active"}, fields=["name", "region"]
+		)
+	}
+	targets = {}
+	for server in frappe.get_all(
+		"Inference Server", filters={"ingress": ("is", "set")}, fields=["name", "ingress"]
+	):
+		ingress = ingresses.get(server["ingress"])
+		if not ingress:
+			targets[server["name"]] = None
+			continue
+		targets[server["name"]] = {
+			# No path: access.lua appends the client's request_uri, exactly as it does for an
+			# engine. The ingress then appends the same thing again onto its own replica's URL.
+			"engine_url": f"https://{ingress['name']}.{zone}",
+			# The gateway presents this to prove it is a gateway. It is NOT the admin token.
+			"internal_key": frappe.get_doc("Ingress Server", ingress["name"]).get_password(
+				"data_token", raise_exception=False
+			) or "",
+			"healthy": True,
+			"region": ingress["region"] or "",
+			# Both name the ingress: buildRequestID records where the gateway SENT the request,
+			# and the ingress's own log records where it landed.
+			"deployment": ingress["name"],
+			"server": ingress["name"],
+			"kind": "ingress",
+		}
+	return targets
+
+
 def _routes_for_proxy(proxy_name):
 	"""deploy:<model> table (global — same for every proxy since deployments are no
 	longer proxy-scoped): every model maps to its Active engines (empty list → the
@@ -158,24 +210,42 @@ def _routes_for_proxy(proxy_name):
 		fields=["name", "model", "engine_url", "status", "inference_server", "max_num_seqs"],
 	)
 	routes = {m: [] for m in frappe.get_all("Model", pluck="name")}
+	targets = _ingress_targets()
+	# One row per (model, ingress), so several deployments behind one ingress fold together
+	# instead of each getting a row that names the same URL.
+	folded = {}
 	for d in deps:
 		routes.setdefault(d.model, [])
-		if d.status == "Active":
-			internal_key = frappe.get_doc("Model Deployment", d.name).get_password("internal_api_key") or ""
-			routes[d.model].append({
-				"engine_url": d.engine_url,
-				"internal_key": internal_key,
-				"healthy": True,
-				# --max-num-seqs is what this engine runs at once; past it vLLM queues. The
-				# gateway holds admissions to the same number so the queue forms across
-				# replicas instead of inside one. Blank resolves to the same default the serve
-				# command uses — the two have to agree or the cap is not the engine's.
-				"capacity": int(d.max_num_seqs or DEFAULT_MAX_NUM_SEQS),
-				# Which placement was chosen (request-id target part, access-log deployment=).
-				# A box can serve the same model twice, so the server alone cannot name an engine.
-				"deployment": d.name,
-				"server": d.inference_server or d.name,  # which box it is on
-			})
+		if d.status != "Active":
+			continue
+		# --max-num-seqs is what this engine runs at once; past it vLLM queues. Blank resolves to
+		# the same default the serve command uses — the two have to agree or the cap is not the
+		# engine's.
+		capacity = int(d.max_num_seqs or DEFAULT_MAX_NUM_SEQS)
+		if d.inference_server in targets:
+			target = targets[d.inference_server]
+			if target is None:
+				continue  # owned by an ingress that cannot take traffic — dark, not dialled direct
+			# Advisory here, authoritative on the ingress. The gateway sums what sits behind an
+			# ingress to choose between ingresses; the ingress applies the exact per-replica gate
+			# and 429s the excess, which is why two gateways cannot jointly overrun a replica.
+			row = folded.setdefault((d.model, target["server"]), {**target, "capacity": 0})
+			row["capacity"] += capacity
+			continue
+		internal_key = frappe.get_doc("Model Deployment", d.name).get_password("internal_api_key") or ""
+		routes[d.model].append({
+			"engine_url": d.engine_url,
+			"internal_key": internal_key,
+			"healthy": True,
+			"capacity": capacity,
+			# Which placement was chosen (request-id target part, access-log deployment=).
+			# A box can serve the same model twice, so the server alone cannot name an engine.
+			"deployment": d.name,
+			"server": d.inference_server or d.name,  # which box it is on
+			"kind": "direct",
+		})
+	for (model, _ingress), row in folded.items():
+		routes[model].append(row)
 
 	# Standalone serving Pods (a vLLM image serving the Model directly — no Model Deployment)
 	# register the same way: deploy:<model> → engine. Only Running pods with a derived
@@ -200,6 +270,9 @@ def _routes_for_proxy(proxy_name):
 			# fields are the pod. Kept explicit so consumers never special-case a pod route.
 			"deployment": p.name,
 			"server": p.name,
+			# Always direct: a pod has no Machine and so no Network, and cannot sit behind an
+			# ingress. Provider TLS already covers the hop.
+			"kind": "direct",
 		})
 	return routes
 

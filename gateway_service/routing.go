@@ -18,7 +18,15 @@ type Route struct {
 	// Empty on a route pushed before this field existed; buildRequestID falls back.
 	Deployment string `json:"deployment"`
 	Server     string `json:"server"` // inference-server / pod id — which box it is on
+	// "ingress" when this row is an Ingress Server that will pick a replica of its own, "direct"
+	// (or empty, on a route pushed before this field existed) when it is an engine to dial.
+	// Lua reads it to decide whether to send the ingress headers; nothing else branches on it.
+	Kind string `json:"kind"`
 }
+
+// isIngress reports whether this row hands off to an ingress rather than naming an engine.
+// Empty Kind is direct, which is what every route pushed before the split was.
+func (r Route) isIngress() bool { return r.Kind == "ingress" }
 
 // hasRoom reports whether this engine can take another request. A placement with no
 // --max-num-seqs set has no number to hold it to, so it is never held back.
