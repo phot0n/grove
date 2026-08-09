@@ -1,0 +1,52 @@
+{
+ "actions": [],
+ "autoname": "hash",
+ "creation": "2026-08-09 00:00:00",
+ "doctype": "DocType",
+ "engine": "InnoDB",
+ "field_order": [
+  "record_type",
+  "record_id"
+ ],
+ "fields": [
+  {
+   "description": "Which Redis record the gateway should drop. Keys and users are pushed as UPSERTs, so nothing else ever removes one.",
+   "fieldname": "record_type",
+   "fieldtype": "Select",
+   "in_list_view": 1,
+   "label": "Record Type",
+   "options": "Key\nUser",
+   "reqd": 1
+  },
+  {
+   "description": "The Redis record id: for a Key its sha256 key_hash, for a User the Grove User doc name. Held here rather than as a Link because the doc it names is already gone.",
+   "fieldname": "record_id",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Record ID",
+   "reqd": 1
+  }
+ ],
+ "links": [],
+ "modified": "2026-08-09 00:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "Grove",
+ "name": "Gateway Deletion",
+ "naming_rule": "Random",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "delete": 1,
+   "email": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "System Manager",
+   "share": 1
+  }
+ ],
+ "row_format": "Dynamic",
+ "sort_field": "creation",
+ "sort_order": "ASC",
+ "states": []
+}

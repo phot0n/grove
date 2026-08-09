@@ -71,11 +71,11 @@ func TestCatalogKeepsTheDeployedOrder(t *testing.T) {
 // The catalogue is a display list. It must not be reachable as a grant — canUse is the only
 // access decision, and it has never heard of it.
 func TestTheCatalogueGrantsNothing(t *testing.T) {
-	rec := KeyRecord{Status: "active", HasGroup: true} // no group models, no allow
-	if canUse(rec, GroupRecord{}, "qwen3-4b") {
+	rec, usr := KeyRecord{Status: "active"}, UserRecord{} // no group models, no allow
+	if canUse(usr, GroupRecord{}, "qwen3-4b") {
 		t.Fatal("a model on the public catalogue must still be refused without a grant")
 	}
-	if status, _ := evaluate(rec, GroupRecord{}, "qwen3-4b"); status != 403 {
+	if status, _ := evaluate(rec, usr, GroupRecord{}, "qwen3-4b"); status != 403 {
 		t.Fatalf("evaluate = %d, want 403", status)
 	}
 }

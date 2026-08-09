@@ -7,6 +7,8 @@ import secrets
 import frappe
 from frappe.model.document import Document
 
+from grove.grove.doctype.gateway_deletion.gateway_deletion import record_deletion
+
 KEY_PREFIX = "gr_sk_"
 
 
@@ -40,34 +42,30 @@ class GroveAPIKey(Document):
 		self.api_secret = full_key
 
 	def on_update(self):
-		# Covers revocation (status flip) and any other key edit.
+		# A revoked key is never projected again, so no upsert can retire the record the gateways
+		# already hold — only an explicit deletion can. Written here rather than in revoke() so a
+		# status changed any other way is caught too.
+		if self.has_value_changed("status") and self.status == "revoked":
+			record_deletion("Key", self.key_hash)
 		if not self.dirty:
 			self._mark_dirty()
 
+	def on_trash(self):
+		# Same reason, for a key deleted outright rather than revoked. Nothing can dirty a doc
+		# that no longer exists, which is why the hash is copied out to its own row.
+		record_deletion("Key", self.key_hash)
+
 	@frappe.whitelist()
 	def revoke(self):
+		"""Retire the credential. The row stays as the record that it existed and when it stopped;
+		what goes is the gateways' copy, via the Gateway Deletion on_update writes."""
 		# this guards against weird race condiions where the key is created and revoked at the same time.
 		if frappe.utils.time_diff_in_hours(frappe.utils.now_datetime(), self.creation) < 6:
 			frappe.throw("API key cannot be revoked less than 6 hours of it's creation")
 
 		self.status = "revoked"
-		self.dirty = 1
 		self.save(ignore_permissions=True)
 
 	def _mark_dirty(self):
 		frappe.db.set_value(self.doctype, self.name, "dirty", 1, update_modified=False)
 		self.dirty = 1
-
-
-def mark_keys_dirty(grove_users):
-	"""Queue keys for the next sync_dirty push. A key carries its user's group NAME plus their
-	own allow/deny, so this is for what moves on the user — joining a group, an allow/deny edit,
-	the budget flag. A change to what a group grants dirties the group, not its members' keys.
-	Takes Grove User doc names (what `user` links to). `grove_users=None` means every key."""
-	filters = {"dirty": 0}
-	if grove_users is not None:
-		grove_users = list(grove_users)
-		if not grove_users:
-			return
-		filters["user"] = ("in", grove_users)
-	frappe.db.set_value("Grove API Key", filters, "dirty", 1, update_modified=False)

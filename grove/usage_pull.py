@@ -60,8 +60,8 @@ def reactivate_rate_limited():
 	budget was raised. A user still over budget for the still-active current month stays
 	blocked (the monthly cap is HARD — no daily burst). Runs independently of traffic so
 	a blocked user still gets un-limited at month rollover (they otherwise see no usage to
-	re-fire the on_update). The budget is per-user and shared across their keys, so this
-	clears all of a user's keys at once. Returns the count of users reactivated."""
+	re-fire the on_update). The budget is per-user and shared across their keys, so clearing it
+	unblocks all of them at once. Returns the count of users reactivated."""
 	month = current_month()
 	users = frappe.get_all("Grove User", filters={"rate_limited": 1}, pluck="name")
 	cleared = 0

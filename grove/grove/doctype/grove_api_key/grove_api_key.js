@@ -7,7 +7,7 @@ frappe.ui.form.on('Grove API Key', {
 
 		frm.add_custom_button(__('Revoke'), () => {
 			frappe.confirm(
-				__('Revoke this key? Gateways stop honouring it within the cache TTL, and it cannot be un-revoked.'),
+				__('Revoke this key? It is kept here as a record, and dropped from every gateway on the next sync. It cannot be un-revoked.'),
 				() => frm.call('revoke').then(() => frm.reload_doc()),
 			);
 		});

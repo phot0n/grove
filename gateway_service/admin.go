@@ -16,11 +16,17 @@ import (
 type adminKey struct {
 	KeyHash string `json:"key_hash"` // sha256(secret) hex — the Redis key id
 	Prefix  string `json:"prefix"`
-	User    string `json:"user"`
-	Status  string `json:"status"` // active | revoked | rate_limited
-	Group   string `json:"group"`  // Grove User Group name; "" = ungrouped
-	Allow   string `json:"allow"`  // comma list: this user's adds on top of the group
-	Deny    string `json:"deny"`   // comma list: removals that beat every grant
+	User    string `json:"user"`   // Grove User doc name — the pointer to user:<name>
+	Status  string `json:"status"` // active | revoked
+}
+
+type adminUser struct {
+	Name    string `json:"name"`  // Grove User doc name — the Redis record id
+	Email   string `json:"email"` // for humans reading Redis; no decision reads it
+	Group   string `json:"group"` // Grove User Group name; "" = ungrouped
+	Allow   string `json:"allow"` // comma list: this user's adds on top of the group
+	Deny    string `json:"deny"`  // comma list: removals that beat every grant
+	Limited bool   `json:"limited"`
 }
 
 type adminGroup struct {
@@ -29,9 +35,38 @@ type adminGroup struct {
 	Models   string `json:"models"`   // comma list of model ids; "" = grants nothing
 }
 
-// PUT /admin/keys — upsert one or more keys. Revocation is an upsert with
-// status="revoked" (the agent's evaluate() then returns 401).
+// deleteRecords drops the Redis records the control plane says are gone, under `prefix`. The only
+// pruning path the admin API has — every other endpoint upserts — so a revoked key keeps working
+// on this box until one of these lands.
+func (s *server) deleteRecords(w http.ResponseWriter, r *http.Request, prefix string) {
+	var body struct {
+		IDs []string `json:"ids"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		http.Error(w, "bad body", http.StatusBadRequest)
+		return
+	}
+	redisKeys := make([]string, 0, len(body.IDs))
+	for _, id := range body.IDs {
+		// A blank id would name the prefix itself, and DEL on "key:" is a different record.
+		if id != "" {
+			redisKeys = append(redisKeys, prefix+id)
+		}
+	}
+	if len(redisKeys) > 0 {
+		s.rdb.Del(r.Context(), redisKeys...)
+	}
+	writeJSON(w, map[string]any{"ok": true, "count": len(redisKeys)})
+}
+
+// PUT /admin/keys — upsert one or more keys.
+// DELETE /admin/keys — remove them. Revocation deletes the credential rather than flagging it, so
+// this is what takes a revoked key out of service.
 func (s *server) handleAdminKeys(w http.ResponseWriter, r *http.Request) {
+	if r.Method == http.MethodDelete {
+		s.deleteRecords(w, r, "key:")
+		return
+	}
 	var body struct {
 		Keys []adminKey `json:"keys"`
 	}
@@ -49,15 +84,53 @@ func (s *server) handleAdminKeys(w http.ResponseWriter, r *http.Request) {
 			"status": k.Status,
 			"user":   k.User,
 			"prefix": k.Prefix,
-			"group":  k.Group,
-			"allow":  k.Allow,
-			"deny":   k.Deny,
 		})
-		// Access used to be flattened onto the key. Left behind, that stale set is what
-		// loadKey's legacy branch would read, so an upgraded record drops it here.
+		// A pre-group control plane resolved access to a flat model set on the key; that set is
+		// stale the moment a group is pushed, so it goes.
+		//
+		// `group`/`allow`/`deny` are deliberately NOT dropped. This handler cannot tell a
+		// current push from one by a control plane that still writes them, and dropping them
+		// under the second would leave the record with no access at all. They are inert once
+		// user:<name> exists — resolveUser only reads them when it does not.
 		s.rdb.HDel(ctx, redisKey, "models", "priority")
 	}
 	writeJSON(w, map[string]any{"ok": true, "count": len(body.Keys)})
+}
+
+// PUT /admin/users — upsert the access and budget state behind one or more Grove Users. The point
+// of the split: a person's keys are credentials, and this pushes one record instead of one per key
+// they hold.
+// DELETE /admin/users — remove them, for a person whose Grove User doc is gone.
+func (s *server) handleAdminUsers(w http.ResponseWriter, r *http.Request) {
+	if r.Method == http.MethodDelete {
+		s.deleteRecords(w, r, "user:")
+		return
+	}
+	var body struct {
+		Users []adminUser `json:"users"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		http.Error(w, "bad body", http.StatusBadRequest)
+		return
+	}
+	ctx := r.Context()
+	for _, u := range body.Users {
+		if u.Name == "" {
+			continue
+		}
+		limited := "0"
+		if u.Limited {
+			limited = "1"
+		}
+		s.rdb.HSet(ctx, "user:"+u.Name, map[string]any{
+			"email":   u.Email,
+			"group":   u.Group,
+			"allow":   u.Allow,
+			"deny":    u.Deny,
+			"limited": limited,
+		})
+	}
+	writeJSON(w, map[string]any{"ok": true, "count": len(body.Users)})
 }
 
 // PUT /admin/groups — upsert the model grant and priority behind one or more Grove User Groups.

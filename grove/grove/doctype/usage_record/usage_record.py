@@ -16,10 +16,10 @@ class UsageRecord(Document):
 
 	def _enforce_budget(self):
 		"""When the USER's recorded billable usage this month reaches their budget
-		(Grove User.max_tokens), flag every key they hold rate_limited (+ dirty) so the
-		next key sync tells the gateways to reject them with 429. The budget belongs to
-		the person and is shared across their keys, so one key exhausting it stops the
-		lot. Set-only here — clearing is the daily grove.usage_pull.reactivate_rate_limited
+		(Grove User.max_tokens), flag the USER rate_limited (+ dirty) so the next sync tells
+		the gateways to reject them with 429. The budget belongs to the person and is shared
+		across their keys, so one key exhausting it stops the lot — and one record does it,
+		however many they hold. Set-only here — clearing is the daily grove.usage_pull.reactivate_rate_limited
 		job (which also breaks the month-rollover deadlock, since a blocked user sees no
 		new usage to re-fire this). Reactive: usage is pulled after the fact, so a small
 		overage is expected."""

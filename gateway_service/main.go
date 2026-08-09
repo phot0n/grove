@@ -59,6 +59,7 @@ func main() {
 	mux.HandleFunc("/models", s.handleModels)
 	// Control-plane push/pull surface (token-gated; reached via OpenResty /grove-admin/).
 	mux.HandleFunc("/admin/keys", adminAuth(adminToken, s.handleAdminKeys))
+	mux.HandleFunc("/admin/users", adminAuth(adminToken, s.handleAdminUsers))
 	mux.HandleFunc("/admin/groups", adminAuth(adminToken, s.handleAdminGroups))
 	mux.HandleFunc("/admin/routes", adminAuth(adminToken, s.handleAdminRoutes))
 	mux.HandleFunc("/admin/usage", adminAuth(adminToken, s.handleAdminUsage))
@@ -129,16 +130,23 @@ func (s *server) handleDecide(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// What the key's group grants. Skipped for an ungrouped key, which reaches only its own
-	// Allow list, so that request costs no second round trip.
-	grp, err := s.loadGroup(ctx, rec.Group)
+	// Who holds the key: their group, their own allow/deny, and whether they are over budget.
+	usr, err := s.resolveUser(ctx, rec)
+	if err != nil {
+		writeJSON(w, decideResp{Allow: false, Status: 503, Reason: "user store error"})
+		return
+	}
+
+	// What their group grants. Skipped for an ungrouped user, who reaches only their own Allow
+	// list, so that request costs no third round trip.
+	grp, err := s.loadGroup(ctx, usr.Group)
 	if err != nil {
 		writeJSON(w, decideResp{Allow: false, Status: 503, Reason: "group store error"})
 		return
 	}
 
-	// Admission gates: key status (revoked / over monthly budget) + allowed models.
-	if status, reason := evaluate(rec, grp, req.Model); status != 200 {
+	// Admission gates: key revoked, holder over monthly budget, then allowed models.
+	if status, reason := evaluate(rec, usr, grp, req.Model); status != 200 {
 		writeJSON(w, decideResp{Allow: false, Status: status, Reason: reason})
 		return
 	}
@@ -184,7 +192,7 @@ func (s *server) handleDecide(w http.ResponseWriter, r *http.Request) {
 		Session:     session,
 		Deployment:  route.Deployment,
 		RequestID:   requestID,
-		Priority:    priorityOf(rec, grp),
+		Priority:    priorityOf(usr, grp),
 	})
 }
 
@@ -299,14 +307,19 @@ func (s *server) handleModels(w http.ResponseWriter, r *http.Request) {
 		writeErrJSON(w, 503, "key store error")
 		return
 	}
-	// Revoked/inactive can't list; active + rate_limited can (over-budget still shows
-	// what the key is entitled to — only inference is blocked).
-	if !ok || (rec.Status != "active" && rec.Status != "rate_limited") {
+	// Revoked/inactive can't list. Over budget still can: it shows what the key is entitled to,
+	// and that lives on the user, so only inference is blocked.
+	if !ok || rec.Status != "active" {
 		writeErrJSON(w, 401, "unknown or revoked api key")
 		return
 	}
 
-	grp, err := s.loadGroup(ctx, rec.Group)
+	usr, err := s.resolveUser(ctx, rec)
+	if err != nil {
+		writeErrJSON(w, 503, "user store error")
+		return
+	}
+	grp, err := s.loadGroup(ctx, usr.Group)
 	if err != nil {
 		writeErrJSON(w, 503, "group store error")
 		return
@@ -319,7 +332,7 @@ func (s *server) handleModels(w http.ResponseWriter, r *http.Request) {
 	created := time.Now().Unix()
 	data := []modelObj{}
 	for _, m := range deployed {
-		if !canUse(rec, grp, m) { // same decision the inference path makes (matches evaluate)
+		if !canUse(usr, grp, m) { // same decision the inference path makes (matches evaluate)
 			continue
 		}
 		data = append(data, modelObj{ID: m, Object: "model", Created: created, OwnedBy: "frappe"})
@@ -418,19 +431,51 @@ func (s *server) loadKey(ctx context.Context, meterID string) (KeyRecord, bool, 
 	if len(h) == 0 {
 		return KeyRecord{}, false, nil
 	}
-	group, hasGroup := h["group"] // present-but-blank = ungrouped; absent = a legacy record
+	group, hasGroup := h["group"] // present-but-blank = ungrouped; absent = a pre-group record
 	rec := KeyRecord{
 		Status:    h["status"],
 		User:      h["user"],
 		KeyPrefix: h["prefix"],
-		Group:     strings.TrimSpace(group),
-		Allow:     modelSet(h["allow"]),
-		Deny:      modelSet(h["deny"]),
-		HasGroup:  hasGroup,
-		Models:    modelSet(h["models"]),
+		Legacy: legacyKey{
+			HasGroup: hasGroup,
+			Group:    strings.TrimSpace(group),
+			Allow:    modelSet(h["allow"]),
+			Deny:     modelSet(h["deny"]),
+			Models:   modelSet(h["models"]),
+		},
 	}
-	rec.Priority, _ = strconv.Atoi(strings.TrimSpace(h["priority"])) // absent/garbage → baseline 0
+	rec.Legacy.Priority, _ = strconv.Atoi(strings.TrimSpace(h["priority"])) // absent/garbage → 0
+	// Status used to carry the holder's budget flag as a third value. Lift it off here, so
+	// Status means only "is this credential live" — which is all a current record puts there.
+	if rec.Status == "rate_limited" {
+		rec.Status, rec.Legacy.Limited = "active", true
+	}
 	return rec, true, nil
+}
+
+// resolveUser is the second hop of the request path: key → user → group. A key whose user record
+// is missing falls back to what the key itself carries, which is how a box still holding pre-split
+// records keeps serving. A key with nothing to fall back to reaches nothing.
+func (s *server) resolveUser(ctx context.Context, rec KeyRecord) (UserRecord, error) {
+	if rec.User != "" {
+		h, err := s.rdb.HGetAll(ctx, "user:"+rec.User).Result()
+		if err != nil {
+			return UserRecord{}, err
+		}
+		if len(h) > 0 {
+			return UserRecord{
+				Email:   h["email"],
+				Group:   strings.TrimSpace(h["group"]),
+				Allow:   modelSet(h["allow"]),
+				Deny:    modelSet(h["deny"]),
+				Limited: strings.TrimSpace(h["limited"]) == "1",
+			}, nil
+		}
+	}
+	if !rec.Legacy.hasProjection() {
+		return UserRecord{}, nil
+	}
+	return synthUser(rec), nil
 }
 
 // loadGroup reads what a group grants. A group with no record — never pushed, or deleted — reads

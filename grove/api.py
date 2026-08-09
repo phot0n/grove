@@ -60,8 +60,9 @@ def provision_key(name: str, email: str, token_limit: int=None, allowed_models: 
 
 @frappe.whitelist()
 def revoke_key(api_key: str):
-	"""Revoke by the full key (not the doc name): hash it → find by key_hash →
-	flip status → revoked. Gateways drop it within the cache TTL."""
+	"""Revoke by the full key (not the doc name): hash it → find by key_hash → flip to revoked.
+	The row stays as the record it existed; a Gateway Deletion is written alongside and the next
+	sync drops the record from every proxy, so the key stops working within a tick."""
 	frappe.only_for(ALLOWED_ROLES)
 	from grove.grove.doctype.grove_api_key.grove_api_key import hash_secret
 
