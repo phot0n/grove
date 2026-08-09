@@ -3,18 +3,24 @@
 """How a server doc names itself: `<prefix><n>-<region>`, e.g. `gw1-ap-south-1`.
 
 Generated rather than typed because the name is not a label — it is infrastructure. A Gateway
-Server's and an Ingress Server's name IS their DNS record under the fleet zone, and every server's
-name is a part of the request ids it stamps. Left to an operator, those drift into whatever reads
-well that afternoon, and the fleet ends up with `gw-ap-south` beside `mc-sg-proxy`.
+Server's and an Ingress Server's name IS its DNS record under the fleet zone, and every server's
+name is part of the request ids it stamps. Left to an operator those drift into whatever reads well
+that afternoon, and the fleet ends up with `gw-ap-south` beside `mc-sg-proxy`.
+
+The number comes from `tabSeries`, Frappe's own counter, under a key that includes the region — so
+each region counts from 1 and two inserts racing each other cannot land on the same number, which a
+read-then-add-one would. The name is then assembled here rather than by a naming series, because a
+series keys its counter on whatever precedes the `#`: put the digits after the prefix, as
+`gw1-ap-south-1` does, and the key is `gw` and every region shares one counter. Position and scope
+are the same decision there, and this is the only way to have both.
 
 The region is a suffix, not a namespace, because a name has to be one DNS label: `*.<zone>` covers
-`gw1-ap-south-1.<zone>` and nothing deeper. A box with no region — a colo machine that is in no
-Network — simply has no suffix, which is exactly what it has to say.
+`gw1-ap-south-1.<zone>` and nothing deeper. A box with no region — a colo machine in no Network —
+simply has no suffix, which is exactly what it has to say.
 """
 
-import re
-
 import frappe
+from frappe.model.naming import getseries
 
 from grove.utils import slugify
 
@@ -33,26 +39,22 @@ class GeneratedName:
 		self._chosen_name = self.name
 
 	def autoname(self):
-		self.name = self._chosen_name or next_server_name(
-			self.doctype, self.name_prefix, self.machine
-		)
+		self.name = self._chosen_name or next_server_name(self.name_prefix, self.machine)
 
 
-def next_server_name(doctype, prefix, machine):
-	"""The next free name for a server of this kind on this Machine.
+def next_server_name(prefix, machine, counter=None):
+	"""The next name for a server of this kind on this Machine.
 
-	Numbered per region, so each region starts at 1 and the number stays small enough to say out
-	loud. The index is the highest ALREADY USED plus one, never the lowest free one: a name that
-	has been retired may still have a DNS record or a log history behind it, and handing it to a
-	different box would quietly merge the two.
+	`counter` is the number source, defaulting to Frappe's `tabSeries`. Injectable for the same
+	reason `parse_naming_series` takes one: the real counter is a row in a table that no test
+	rollback undoes, so a test that wanted to assert a number could never assert the same one twice.
 
-	Terminated servers still count — their docs are the record that the name was used."""
-	suffix = slugify(frappe.db.get_value("Machine", machine, "region") or "") if machine else ""
-	stem = f"{prefix}{{}}-{suffix}" if suffix else f"{prefix}{{}}"
-	used = re.compile(f"^{re.escape(prefix)}([0-9]+){re.escape('-' + suffix) if suffix else ''}$")
-	taken = [
-		int(match.group(1))
-		for name in frappe.get_all(doctype, pluck="name")
-		if (match := used.match(name or ""))
-	]
-	return stem.format(max(taken, default=0) + 1)
+	The series only ever climbs, and never reuses a number even when the doc that took it is
+	deleted. That is the behaviour worth having: a retired name may still have a DNS record or a
+	log history behind it, and handing it to a different box would quietly merge the two."""
+	counter = counter or getseries
+	region = slugify(frappe.db.get_value("Machine", machine, "region") or "") if machine else ""
+	# The series key, not the name — it ends in '-' the way Frappe's own keys do, and it is what
+	# makes the count per region.
+	number = counter(f"{prefix}-{region}-" if region else f"{prefix}-", 1)
+	return f"{prefix}{number}-{region}" if region else f"{prefix}{number}"
