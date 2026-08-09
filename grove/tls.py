@@ -69,10 +69,16 @@ def renew_fleet_certificate():
 
 
 def push_to_proxies():
-	"""Ship the stored certificate to every Active proxy, one enqueued play each. Separate jobs
-	because a box that is unreachable must not stop the rest of the fleet from being renewed."""
-	for name in frappe.get_all("Gateway Server", filters={"status": "Active"}, pluck="name"):
-		frappe.enqueue_doc("Gateway Server", name, "deploy_tls", queue="long", timeout=600)
+	"""Ship the stored certificate to every Active gateway and ingress, one enqueued play each.
+	Separate jobs because a box that is unreachable must not stop the rest of the fleet from being
+	renewed.
+
+	Both kinds, because both serve the same wildcard: an ingress left off this list keeps serving
+	the certificate it was provisioned with until the day it expires, and then every gateway
+	dialling it fails verification at once."""
+	for doctype in ("Gateway Server", "Ingress Server"):
+		for name in frappe.get_all(doctype, filters={"status": "Active"}, pluck="name"):
+			frappe.enqueue_doc(doctype, name, "deploy_tls", queue="long", timeout=600)
 
 
 def store_certificate(zone):

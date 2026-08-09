@@ -20,6 +20,13 @@ covered unless someone remembers a `CountryCode: '*'` default."""
 from grove.cloud_provider.base import CloudClientError
 
 TTL = 60
+# What a Route53 health checker asks an ingress, and how patiently. Two failures at 30s is about a
+# minute to drop a dead box out of resolution — fast enough that a stopped ingress is not a
+# lingering black hole, slow enough that one missed check does not shrink a two-box Network to one.
+HEALTH_PORT = 443
+HEALTH_PATH = "/healthz"
+HEALTH_INTERVAL = 30
+HEALTH_FAILURE_THRESHOLD = 2
 
 
 class Route53Error(CloudClientError):
@@ -65,6 +72,101 @@ class Route53Client:
 		return self._change(zone, "DELETE", hostname, gateway_host, public_ip, region, identifier)
 
 	def _change(self, zone, action, hostname, gateway_host, public_ip, region, identifier):
+		shared = {
+			"Name": gateway_host,
+			"Type": "A",
+			"TTL": TTL,
+			"ResourceRecords": [{"Value": public_ip}],
+			# SetIdentifier names this box's row in the shared set; Region is what the resolver's
+			# latency is measured against. Both are required for a latency record and neither can
+			# be changed later without deleting the row.
+			"SetIdentifier": identifier,
+			"Region": region,
+		}
+		return self._submit(zone, action, identifier, hostname, public_ip, shared)
+
+	def upsert_ingress_records(self, zone, hostname, ingress_host, public_ip, identifier, health_check_id=""):
+		"""Both records an ingress needs, in one change batch so a box is never half in DNS: its
+		own name, which the control plane pushes a replica table to, and its row in the Network's
+		shared data name, which is the only ingress address a gateway's route table ever holds.
+
+		Adding or removing an ingress is this call and nothing else — no gateway learns how many
+		there are."""
+		return self._ingress_change(
+			zone, "UPSERT", hostname, ingress_host, public_ip, identifier, health_check_id
+		)
+
+	def delete_ingress_records(self, zone, hostname, ingress_host, public_ip, identifier, health_check_id=""):
+		"""Both records again, on the way out, repeating exactly what the upsert wrote — Route53
+		matches a DELETE on the whole record, health check included. The health check itself is a
+		separate resource: delete_health_check, and only after this."""
+		return self._ingress_change(
+			zone, "DELETE", hostname, ingress_host, public_ip, identifier, health_check_id
+		)
+
+	def _ingress_change(self, zone, action, hostname, ingress_host, public_ip, identifier, health_check_id):
+		shared = {
+			"Name": ingress_host,
+			"Type": "A",
+			"TTL": TTL,
+			"ResourceRecords": [{"Value": public_ip}],
+			# One row per ingress under one name, each with its own health check. A multivalue
+			# set returns up to eight healthy rows at random and omits a row whose check is
+			# failing — which a single record carrying N values cannot do, and why a dead ingress
+			# behind a plain multi-A keeps being handed out until somebody notices.
+			"SetIdentifier": identifier,
+			"MultiValueAnswer": True,
+		}
+		if health_check_id:
+			shared["HealthCheckId"] = health_check_id
+		return self._submit(zone, action, identifier, hostname, public_ip, shared)
+
+	def sync_health_check(self, identifier, public_ip, hostname, health_check_id=""):
+		"""The health check behind one ingress's row in its Network's shared name → its id.
+
+		Updated when the doc already holds an id and created otherwise, because a box that came
+		back on a new address needs the check moved, not a second one billed beside it. The
+		CallerReference is derived from the name for the same reason: a create that is retried
+		with identical settings returns the existing check rather than a duplicate.
+
+		The name goes in as FullyQualifiedDomainName so the check sends the SNI and Host header a
+		gateway does, and the address as IPAddress so it reaches THIS box rather than whichever
+		one DNS is currently handing out."""
+		if health_check_id:
+			self._call(
+				self.route53.update_health_check,
+				HealthCheckId=health_check_id,
+				IPAddress=public_ip,
+				FullyQualifiedDomainName=hostname,
+			)
+			return health_check_id
+		response = self._call(
+			self.route53.create_health_check,
+			CallerReference=f"grove-ingress-{identifier}",
+			HealthCheckConfig={
+				"IPAddress": public_ip,
+				"Port": HEALTH_PORT,
+				"Type": "HTTPS",
+				"ResourcePath": HEALTH_PATH,
+				"FullyQualifiedDomainName": hostname,
+				"RequestInterval": HEALTH_INTERVAL,
+				"FailureThreshold": HEALTH_FAILURE_THRESHOLD,
+			},
+		)
+		return response["HealthCheck"]["Id"]
+
+	def delete_health_check(self, health_check_id):
+		"""After the record that references it — Route53 refuses while one still does. A check
+		that is already gone is not an error worth blocking a deletion over."""
+		try:
+			self._call(self.route53.delete_health_check, HealthCheckId=health_check_id)
+		except Route53Error as e:
+			if e.code != "NoSuchHealthCheck":
+				raise
+
+	def _submit(self, zone, action, identifier, hostname, public_ip, shared):
+		"""This box's own name and its row in a shared set, in one change batch — a box is never
+		reachable by its own name but absent from the set, or the reverse."""
 		changes = [
 			{
 				"Action": action,
@@ -75,20 +177,7 @@ class Route53Client:
 					"ResourceRecords": [{"Value": public_ip}],
 				},
 			},
-			{
-				"Action": action,
-				"ResourceRecordSet": {
-					"Name": gateway_host,
-					"Type": "A",
-					"TTL": TTL,
-					"ResourceRecords": [{"Value": public_ip}],
-					# SetIdentifier names this box's row in the shared set; Region is what the
-					# resolver's latency is measured against. Both are required for a latency
-					# record and neither can be changed later without deleting the row.
-					"SetIdentifier": identifier,
-					"Region": region,
-				},
-			},
+			{"Action": action, "ResourceRecordSet": shared},
 		]
 		response = self._call(
 			self.route53.change_resource_record_sets,

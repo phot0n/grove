@@ -97,7 +97,7 @@ def authenticate(token):
 def host_targets(agent):
 	"""Exporter targets for every box this agent owns, including its own."""
 	network = agent_network(agent)
-	boxes = inference_boxes(agent) + proxy_boxes(agent)
+	boxes = inference_boxes(agent) + front_boxes(agent)
 	return build_host_targets(boxes, network) + agent_targets(agent)
 
 
@@ -191,13 +191,19 @@ def inference_boxes(agent):
 	return _with_gpu_flag(_with_machine_address(servers))
 
 
-def proxy_boxes(agent):
-	"""Gateway Servers this agent scrapes. Never GPU boxes — no DCGM target for them."""
-	servers = frappe.get_all(
-		"Gateway Server",
-		filters={"monitoring_agent": agent, "status": ("!=", _GONE_STATUS)},
-		fields=["name", "machine", "public_ip as ip", "region"],
-	)
+def front_boxes(agent):
+	"""The named boxes this agent scrapes — Gateway Servers and Ingress Servers. Both run the
+	same OpenResty in front of the same node_exporter, so they are one query shape twice over.
+	Never GPU boxes: no DCGM target for either."""
+	servers = [
+		server
+		for doctype in ("Gateway Server", "Ingress Server")
+		for server in frappe.get_all(
+			doctype,
+			filters={"monitoring_agent": agent, "status": ("!=", _GONE_STATUS)},
+			fields=["name", "machine", "public_ip as ip", "region"],
+		)
+	]
 	return [{**server, "has_gpu": False} for server in _with_machine_address(servers)]
 
 

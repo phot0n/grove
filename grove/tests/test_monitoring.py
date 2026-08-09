@@ -210,16 +210,21 @@ class TestWhichBoxesAreScraped(unittest.TestCase):
 		filters = self.filters_for(monitoring.inference_boxes)["Inference Server"]
 		self.assertEqual(filters["status"], ("!=", "Terminated"))
 
-	def test_a_terminated_gateway_server_is_not_a_target_either(self):
-		filters = self.filters_for(monitoring.proxy_boxes)["Gateway Server"]
-		self.assertEqual(filters["status"], ("!=", "Terminated"))
+	def test_a_terminated_front_box_is_not_a_target_either(self):
+		# front_boxes runs the same query over Gateway Server and Ingress Server — both run the
+		# same OpenResty over the same node_exporter, and both leave a dead target behind.
+		captured = self.filters_for(monitoring.front_boxes)
+		for doctype in ("Gateway Server", "Ingress Server"):
+			with self.subTest(doctype):
+				self.assertEqual(captured[doctype]["status"], ("!=", "Terminated"))
 
 	def test_a_broken_box_is_still_scraped(self):
 		# Only Terminated is excluded. A Broken box still exists, and its metrics are the fastest
 		# way to find out what is wrong with it — filtering on == "Active" would blind you there.
 		for boxes, doctype in (
 			(monitoring.inference_boxes, "Inference Server"),
-			(monitoring.proxy_boxes, "Gateway Server"),
+			(monitoring.front_boxes, "Gateway Server"),
+			(monitoring.front_boxes, "Ingress Server"),
 		):
 			with self.subTest(doctype):
 				self.assertNotIn("Active", str(self.filters_for(boxes)[doctype]["status"]))

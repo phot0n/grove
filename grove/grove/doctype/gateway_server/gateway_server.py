@@ -5,15 +5,13 @@ import frappe
 from frappe.model.document import Document
 
 from grove import gateway_sync
-from grove.ansible import AnsibleHost
-from grove.cloud_provider.route53 import Route53Client, Route53Error
+from grove.cloud_provider.route53 import Route53Error
+from grove.fleet import FleetHost
 from grove.grove.doctype.network.network import sync_fleet_ingress
-from grove.monitoring import run_exporters_play
-from grove.tls import dns_credentials
-from grove.utils import gateway_service_source, validate_id_safe_name
+from grove.utils import gateway_service_source
 
 
-class GatewayServer(AnsibleHost, Document):
+class GatewayServer(FleetHost, Document):
 	# begin: auto-generated types
 	# This code is auto-generated. Do not modify anything in this block.
 
@@ -33,39 +31,13 @@ class GatewayServer(AnsibleHost, Document):
 		status: DF.Literal["Pending", "Installing", "Active", "Broken", "Terminated"]
 	# end: auto-generated types
 
-	def before_insert(self):
-		# This name is the gateway's own id (GROVE_GATEWAY_ID, set from proxy.yml) and so the
-		# FIRST part of every request id this proxy stamps. Typed by an operator
-		# (autoname: prompt), so it is checked here and on rename — the only two moments it can
-		# be chosen.
-		validate_id_safe_name(self.doctype, self.name)
-
-	def before_rename(self, old_name, new_name, merge=False):
-		validate_id_safe_name(self.doctype, new_name)
+	# The gateway's own name is GROVE_GATEWAY_ID and the first part of every request id it
+	# stamps; its records also need Gateway Host to belong to and a Region to be sorted by.
+	dns_settings = ("fleet_zone", "gateway_host", "dns_provider")
+	dns_fields = ("public_ip", "region")
 
 	def validate(self):
 		self.set_admin_url()
-
-	@property
-	def hostname(self):
-		"""The name that reaches THIS box: <Gateway Server name>.<proxy zone>, covered by the
-		fleet's wildcard. Blank with no zone set, and then the box has no name at all — it is
-		reached by IP over plain HTTP, which is how every proxy worked before TLS.
-
-		Doc names are already DNS-legal labels: validate_id_safe_name allows letters, digits
-		and '-' only, on insert and on rename."""
-		zone = frappe.db.get_single_value("Grove Settings", "fleet_zone")
-		return f"{self.name}.{zone}" if zone else ""
-
-	def set_admin_url(self):
-		"""Where the control plane reaches this box's agent. Derived, never typed: it has to name
-		ONE box, and Gateway Host deliberately names all of them at once. Once it is https on a
-		name the fleet certificate covers, `requests` verifies it by default — which is the
-		entire change needed for gateway_sync and usage_pull to stop trusting the network."""
-		if self.hostname:
-			self.admin_url = f"https://{self.hostname}/grove-admin"
-		elif self.public_ip:
-			self.admin_url = f"http://{self.public_ip}/grove-admin"
 
 	def on_update(self):
 		# A newly-Active proxy needs the full current state now — the background
@@ -144,25 +116,6 @@ class GatewayServer(AnsibleHost, Document):
 				raise
 			return None
 
-	def dns_client(self):
-		"""(Route53Client, Grove Settings) once everything a record needs is set, (None, settings)
-		otherwise. Silent rather than loud: a fleet with no zone configured is the pre-TLS setup,
-		and provisioning a box there should not start failing."""
-		settings = frappe.get_single("Grove Settings")
-		if not (settings.fleet_zone and settings.gateway_host and settings.dns_provider):
-			return None, settings
-		if not (self.public_ip and self.region):
-			frappe.throw(f"Gateway Server {self.name} needs a public IP and a Region before its DNS records.")
-		return Route53Client(*dns_credentials(settings)), settings
-
-	@frappe.whitelist()
-	def deploy_tls(self):
-		"""Write the current fleet certificate on this box and reload OpenResty. Nothing else —
-		this is what the daily renewal pushes, and it runs against live gateways."""
-		return self.run_playbook(
-			"deploy_tls.yml", extravars=frappe.get_single("Grove Settings").tls_variables
-		)
-
 	@frappe.whitelist()
 	def deploy_openresty(self):
 		"""Button: push the Lua and nginx.conf this bench has, validate, graceful reload.
@@ -193,20 +146,6 @@ class GatewayServer(AnsibleHost, Document):
 				**tls_variables,
 			},
 		)
-
-	@frappe.whitelist()
-	def install_exporters(self):
-		"""Button: install this box's metrics exporters (long job — it SSHes to the box).
-		They only listen; the Monitoring Agent named on this doc is what scrapes them."""
-		if not self.machine:
-			frappe.throw("Set a Machine before installing exporters.")
-		frappe.enqueue_doc(
-			self.doctype, self.name, "provision_exporters", queue="long", timeout=1800
-		)
-		frappe.msgprint(f"Installing the metrics exporters on {self.name} — watch its Ansible Plays.")
-
-	def provision_exporters(self):
-		return run_exporters_play(self)
 
 	@frappe.whitelist()
 	def deploy_agent(self):

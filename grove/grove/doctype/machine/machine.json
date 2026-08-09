@@ -38,7 +38,7 @@
  ],
  "fields": [
   {"fieldname": "machine_name", "fieldtype": "Data", "label": "Machine Name", "reqd": 1, "unique": 1, "in_list_view": 1},
-  {"fieldname": "machine_type", "fieldtype": "Select", "label": "Machine Type", "options": "\nGateway Server\nInference Server\nMonitoring Agent", "in_list_view": 1, "description": "What this box backs. Drives its Network security-group list on AWS; informational on bare-metal."},
+  {"fieldname": "machine_type", "fieldtype": "Select", "label": "Machine Type", "options": "\nGateway Server\nIngress Server\nInference Server\nMonitoring Agent", "in_list_view": 1, "description": "What this box backs. Drives its Network security-group list on AWS; informational on bare-metal."},
   {"fieldname": "region", "fieldtype": "Link", "label": "Region", "options": "Region", "in_list_view": 1, "read_only_depends_on": "eval:doc.network", "description": "Source of truth; Proxy/Inference Servers on this machine inherit it. Derived from Network when one is linked and has a Region set."},
   {"fieldname": "network", "fieldtype": "Link", "label": "Network", "options": "Network", "description": "AWS: drives this box's subnet, security groups and region. Bare-metal: optional — a bare-metal box's ports are open by default, so this can point at a placeholder Network with everything left blank, or stay unset."},
   {"fieldname": "status", "fieldtype": "Select", "label": "Status", "options": "Pending\nProvisioning\nActive\nDraining\nOffline\nTerminated", "default": "Pending", "in_list_view": 1},

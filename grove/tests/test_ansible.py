@@ -97,7 +97,8 @@ class TestEveryRoleAPlaybookNamesResolves(unittest.TestCase):
 		# The walk below proves nothing if the glob quietly matched nothing.
 		folders = {path.parent.name for path in self.playbooks()}
 		self.assertEqual(
-			folders, {"machine", "inference_server", "gateway_server", "monitoring_agent"}
+			folders,
+			{"machine", "inference_server", "gateway_server", "ingress_server", "monitoring_agent"},
 		)
 
 	def test_every_role_resolves_in_its_own_folder_or_the_shared_one(self):

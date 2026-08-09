@@ -1,0 +1,48 @@
+---
+# Deploy & build the Go agent on an ALREADY-provisioned Ingress Server: push gateway_service
+# source, build on the box, install its env file + restart. Does NOT touch OpenResty or Redis
+# (use ingress.yml for a full provision).
+# extra-vars: agent_source, admin_token, ingress_id.
+- hosts: all
+  become: true
+  gather_facts: true
+
+  roles:
+    - build_gateway_agent
+
+  tasks:
+    # The play is hand-runnable and the file holds the token every /admin push authenticates
+    # with. The agent refuses to start without it, so a run that forgot it would trade a working
+    # ingress for a crash-looping one — caught here, before agent.env is overwritten.
+    - name: refuse to write agent.env without an admin token
+      ansible.builtin.assert:
+        that: admin_token | default('') | trim | length > 0
+        fail_msg: >-
+          No admin_token was passed — writing agent.env now would stop the agent from starting at
+          all, and every replica-table push with it. Re-run from the Ingress Server's Deploy Agent
+          button, or pass the same extra-vars it does.
+
+    - name: agent.env
+      ansible.builtin.copy:
+        dest: /etc/grove-gateway/agent.env
+        content: |
+          GROVE_ADMIN_TOKEN={{ admin_token }}
+          GROVE_INGRESS_ID={{ ingress_id | default('') }}
+        mode: "0600"
+      no_log: true
+      notify: restart grove-gateway
+
+    - name: install grove-gateway binary
+      ansible.builtin.copy:
+        src: /tmp/grove-gateway
+        dest: /usr/local/bin/grove-gateway
+        mode: "0755"
+        remote_src: true
+      notify: restart grove-gateway
+
+  handlers:
+    - name: restart grove-gateway
+      ansible.builtin.systemd:
+        name: grove-gateway
+        state: restarted
+        daemon_reload: true
