@@ -117,6 +117,15 @@ class TestServeCommand(unittest.TestCase):
 		for flag in ("--dtype", "--kv-cache-dtype", "--max-num-batched-tokens"):
 			self.assertNotIn(flag, args, flag)
 
+	def test_the_engine_build_is_not_advertised_to_callers(self):
+		# vLLM defaults system_fingerprint to its exact version and build hash, and puts it on
+		# every response AND every streaming frame. Passed on every placement, embedding included:
+		# the field is on the response shape, not on the kind of model serving it.
+		for model in (dict(CHAT_MODEL), {"hf_repo": "x", "modality": "embedding"}):
+			with self.subTest(model["modality"]):
+				args = serve(model=model).args
+				self.assertEqual(args[args.index("--fingerprint-mode") + 1], "none")
+
 	def test_the_sequence_cap_is_always_stated(self):
 		# The one tuning flag that is never left off. The gateway holds admissions to this number,
 		# and it cannot hold an engine to a default that moves with the image tag.
