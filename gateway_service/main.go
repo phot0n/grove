@@ -41,6 +41,13 @@ func main() {
 	addr := env("GROVE_AGENT_ADDR", "127.0.0.1:9090")
 	redisAddr := env("GROVE_REDIS_ADDR", "127.0.0.1:6379")
 
+	// Before Redis: a missing token is a config fault, and needing a reachable Redis to hear
+	// about it would report the wrong one.
+	adminToken, err := requireAdminToken(os.Getenv("GROVE_ADMIN_TOKEN"))
+	if err != nil {
+		log.Fatal(err)
+	}
+
 	s := &server{
 		rdb:          redis.NewClient(&redis.Options{Addr: redisAddr}),
 		gatewayID:    gatewayID(),
@@ -49,8 +56,6 @@ func main() {
 	if err := s.rdb.Ping(context.Background()).Err(); err != nil {
 		log.Fatalf("redis unreachable at %s: %v", redisAddr, err)
 	}
-
-	adminToken := os.Getenv("GROVE_ADMIN_TOKEN")
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) { w.Write([]byte("ok\n")) })
@@ -63,9 +68,6 @@ func main() {
 	mux.HandleFunc("/admin/groups", adminAuth(adminToken, s.handleAdminGroups))
 	mux.HandleFunc("/admin/routes", adminAuth(adminToken, s.handleAdminRoutes))
 	mux.HandleFunc("/admin/usage", adminAuth(adminToken, s.handleAdminUsage))
-	if adminToken == "" {
-		log.Print("WARNING: GROVE_ADMIN_TOKEN empty — /admin endpoints disabled")
-	}
 
 	log.Printf("grove-gateway agent listening on %s (redis %s)", addr, redisAddr)
 	log.Fatal(http.ListenAndServe(addr, mux))
@@ -550,6 +552,19 @@ func gatewayID() string {
 		return strings.SplitN(h, ".", 2)[0]
 	}
 	return "gw"
+}
+
+// requireAdminToken reads GROVE_ADMIN_TOKEN, which the agent refuses to start without. /admin is
+// the only path the control plane has to this box, and treating a blank token as "admin off" left
+// a box serving the keys and routes it last had, with nothing but one startup line to say why the
+// pushes stopped landing. Whitespace is blank: an env file written from an empty template renders
+// the value as spaces, and that is the same missing token.
+func requireAdminToken(raw string) (string, error) {
+	token := strings.TrimSpace(raw)
+	if token == "" {
+		return "", errors.New("GROVE_ADMIN_TOKEN is empty — refusing to start with an unguarded admin plane")
+	}
+	return token, nil
 }
 
 // parseSyntheticTTL reads GROVE_SYNTHETIC_SESSION_TTL: how long a caller that names no session of

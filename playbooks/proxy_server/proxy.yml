@@ -12,6 +12,16 @@
     # "latest" would move under us on a rebuild — and it sits in the request path.
     lua_resty_http_version: "0.17.1"
 
+  # Checked before the roles install anything: the agent refuses to start without this token, so a
+  # run that forgot it does not produce a half-provisioned box with grove-gateway crash-looping.
+  pre_tasks:
+    - name: refuse to provision without an admin token
+      ansible.builtin.assert:
+        that: admin_token | default('') | trim | length > 0
+        fail_msg: >-
+          No admin_token was passed — provision from the Proxy Server's Setup button, or pass the
+          same extra-vars it does.
+
   # openresty first (it removes any distro nginx holding :443), then grove_https — nginx.conf
   # below declares a `listen 443 ssl` server and OpenResty will not start without a certificate on
   # disk. The version pin lives in the openresty role, shared with every inference box's engine

@@ -13,15 +13,15 @@
 
   tasks:
     # The play is hand-runnable and the file holds the token every /admin push authenticates
-    # with, so a run that forgot it would write a blank one and stop every sync — silently, since
-    # the agent only warns at startup.
+    # with. The agent refuses to start without it, so a run that forgot it would trade a working
+    # gateway for a crash-looping one — caught here, before agent.env is overwritten.
     - name: refuse to write agent.env without an admin token
       ansible.builtin.assert:
-        that: admin_token | default('') | length > 0
+        that: admin_token | default('') | trim | length > 0
         fail_msg: >-
-          No admin_token was passed — writing agent.env now would disable /admin on this box and
-          every gateway sync with it. Re-run from the Proxy Server's Deploy Agent button, or pass
-          the same extra-vars it does.
+          No admin_token was passed — writing agent.env now would stop the agent from starting at
+          all, and every gateway sync with it. Re-run from the Proxy Server's Deploy Agent button,
+          or pass the same extra-vars it does.
 
     # Written here and not only on provision: the synthetic-session TTL lives in this file, and a
     # setting that needs a live gateway re-provisioned to change is not one anybody will change.

@@ -5,8 +5,8 @@ recorded, so no site and no SSH.
 
 The play writes /etc/grove-gateway/agent.env whole, from extra-vars. That file holds the admin
 token every /admin push authenticates with, so a caller that omits one variable does not leave a
-stale value behind — it writes a blank one, and the next gateway sync stops with nothing to say
-why. These pin that the button passes everything the file renders.
+stale value behind — it writes a blank one, and the agent refuses to start on a blank token.
+These pin that the button passes everything the file renders.
 """
 
 import re
@@ -61,8 +61,8 @@ class TestDeployAgentShipsItsEnvFile(unittest.TestCase):
 		self.assertEqual(agent_env_variables() - set(sent), set())
 
 	def test_the_admin_token_is_not_blank(self):
-		"""A blank one disables /admin on the box and every sync with it — and the agent only
-		says so once, at startup."""
+		"""A blank one is fatal to the agent (requireAdminToken), so the box would come back
+		crash-looping instead of serving."""
 		self.assertTrue(deploy_agent_extravars()["admin_token"])
 
 	def test_the_tuning_comes_from_grove_settings(self):
