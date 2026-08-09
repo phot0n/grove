@@ -349,8 +349,9 @@ def _replicas_for_ingress(ingress_name):
 			"internal_key": internal_key,
 			"healthy": True,
 			"capacity": int(deployment.max_num_seqs or DEFAULT_MAX_NUM_SEQS),
+			# No `server`: which box an engine sits on is the gateway's request-id part, and the
+			# ingress has no use for it — it already holds the box's address in engine_url.
 			"deployment": deployment.name,
-			"server": deployment.inference_server,
 		})
 	return routes
 

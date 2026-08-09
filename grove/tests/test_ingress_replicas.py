@@ -129,6 +129,14 @@ class TestReplicasForIngress(unittest.TestCase):
 		self.assertEqual(route["deployment"], "MD-1")
 		self.assertEqual(route["capacity"], 8)
 
+	def test_a_row_carries_only_what_the_ingress_reads(self):
+		# Every field here is read by pickReplica or handlePick. `server` is not: it is the
+		# gateway's request-id part, and the ingress already has the box's address in engine_url.
+		[route] = self.routes()["qwen3-35b"]
+		self.assertEqual(
+			set(route), {"engine_url", "internal_key", "healthy", "capacity", "deployment"}
+		)
+
 	def test_a_box_owned_by_another_ingress_is_not_in_this_table(self):
 		# Same Network, different owner. If both ingresses held it, each would count only its own
 		# half of the traffic and the replica would run at twice its --max-num-seqs.
