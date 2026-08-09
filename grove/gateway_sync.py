@@ -320,14 +320,16 @@ def _replicas_for_ingress(ingress_name):
 	restarting in another region is not an event it ever sees. That is the point of the split:
 	replica topology never leaves its own Network.
 
-	Seeded with EVERY Model, so a model with nothing here is sent as an empty list, the agent DELs
-	the key, and /pick answers 503 no-replica rather than the model quietly resolving somewhere it
-	should not.
+	Only the models this ingress can actually serve. Retiring the rest is the `prune` flag's job:
+	the payload is the complete table, so the agent deletes any deploy:<model> key it does not name
+	and /pick answers 503 no-replica. Naming every Model instead — one empty list each, to delete
+	keys that mostly never existed — was nearly the whole payload, since an ingress fronts a handful
+	of models and the catalogue runs to hundreds.
 
 	Pods are absent by construction — they have no Machine and so no ingress, and stay on the
 	gateway's direct route kind."""
 	owned = _owned_boxes(ingress_name)
-	routes = {model: [] for model in frappe.get_all("Model", pluck="name")}
+	routes = {}
 	if not owned:
 		return routes
 
@@ -355,9 +357,18 @@ def _replicas_for_ingress(ingress_name):
 
 def sync_replicas(ingress):
 	"""Replace one ingress's replica table. The only push an ingress ever takes — there is no
-	keys, users, groups or usage endpoint on that plane to send anything else to."""
+	keys, users, groups or usage endpoint on that plane to send anything else to.
+
+	Reports both counts because they answer different questions. The agent's `models` is how many
+	KEYS were written, which is every Model in the catalogue — a model with nothing here is sent
+	empty on purpose, so the agent deletes its key. `replicas` is how many engines this ingress can
+	actually reach, and it is the one that tells you whether a cutover worked: 13 models and 0
+	replicas is a table that answers 503 for everything."""
+	table = _replicas_for_ingress(ingress)
 	_doc, admin_url, token = _conn(ingress, "Ingress Server")
-	return _post(admin_url, token, "routes", {"routes": _replicas_for_ingress(ingress)})
+	# prune: this IS the whole table for this ingress, so anything else it still holds is retired.
+	response = _post(admin_url, token, "routes", {"routes": table, "prune": True})
+	return {**response, "replicas": sum(len(routes) for routes in table.values())}
 
 
 def push_groups(proxy, groups=_ALL):
@@ -416,7 +427,10 @@ def sync_routes(proxy, models=_ALL):
 	routes = _routes_for_proxy(proxy)
 	if models is not _ALL:
 		routes = {m: routes.get(m, []) for m in models}
-	return _post(admin_url, token, "routes", {"routes": routes})
+	response = _post(admin_url, token, "routes", {"routes": routes})
+	# Two counts, as for an ingress: `models` is keys written, `routes` is how many places the
+	# gateway can actually send a request.
+	return {**response, "routes": sum(len(rows) for rows in routes.values())}
 
 
 # --- Sync runs -------------------------------------------------------------
@@ -554,7 +568,7 @@ def _push_replicas_and_classify(ingress):
 	detail = []
 	try:
 		result = sync_replicas(ingress)
-		detail.append(f"replicas:{result.get('models', '?')}")
+		detail.append(f"models:{result.get('models', '?')} replicas:{result.get('replicas', '?')}")
 		success = 1
 	except (requests.ConnectionError, requests.Timeout) as e:
 		reachable, error = 0, f"{type(e).__name__}: {e}"[:2000]
@@ -600,7 +614,7 @@ def _push_and_classify(proxy, groups, users, keys, deletions, models):
 			detail.append(f"deleted:{r.get('count', '?')}")
 		if models is not None:
 			r = sync_routes(proxy, models)
-			detail.append(f"routes:{r.get('models', '?')}")
+			detail.append(f"models:{r.get('models', '?')} routes:{r.get('routes', '?')}")
 		success = 1
 	except (requests.ConnectionError, requests.Timeout) as e:
 		reachable, error = 0, f"{type(e).__name__}: {e}"[:2000]

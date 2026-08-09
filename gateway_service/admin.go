@@ -1,7 +1,9 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
+	"log"
 	"net/http"
 	"strings"
 
@@ -168,11 +170,21 @@ func (s *server) handleAdminGroups(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, map[string]any{"ok": true, "count": len(body.Groups)})
 }
 
-// PUT /admin/routes — replace the routing table for each given model
-// (deploy:<model>). Grove sends the full healthy set per model each sync.
+// PUT /admin/routes — replace the routing table for each given model (deploy:<model>). Grove
+// sends the full healthy set per model each sync.
+//
+// `prune` says the payload is the COMPLETE table, so any deploy:<model> key not named in it is
+// gone and gets deleted here. Without it, the only way to retire a model is to send it with an
+// empty list — which means naming every model in the catalogue on every push, most of them empty,
+// to delete keys that mostly do not exist. An ingress holds replicas for a handful of models and
+// the catalogue runs to hundreds, so that is nearly all of the payload and all of the work.
+//
+// Absent, it is false and the endpoint behaves exactly as it did, which is what an older control
+// plane still expects.
 func (s *server) handleAdminRoutes(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		Routes map[string][]Route `json:"routes"`
+		Prune  bool               `json:"prune"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		http.Error(w, "bad body", http.StatusBadRequest)
@@ -187,7 +199,34 @@ func (s *server) handleAdminRoutes(w http.ResponseWriter, r *http.Request) {
 		b, _ := json.Marshal(routes)
 		s.rdb.Set(ctx, "deploy:"+model, b, 0)
 	}
-	writeJSON(w, map[string]any{"ok": true, "models": len(body.Routes)})
+	pruned := 0
+	if body.Prune {
+		var err error
+		if pruned, err = s.pruneRoutes(ctx, body.Routes); err != nil {
+			// The write above already landed, so the table is correct and merely wider than it
+			// should be. Saying so beats failing a push that did its real work.
+			log.Printf("routes pruned partially: %v", err)
+		}
+	}
+	writeJSON(w, map[string]any{"ok": true, "models": len(body.Routes), "pruned": pruned})
+}
+
+// pruneRoutes deletes every deploy:<model> key the payload did not name → how many went.
+func (s *server) pruneRoutes(ctx context.Context, keep map[string][]Route) (int, error) {
+	models, err := s.listModels(ctx)
+	if err != nil {
+		return 0, err
+	}
+	var stale []string
+	for _, model := range models {
+		if _, ok := keep[model]; !ok {
+			stale = append(stale, "deploy:"+model)
+		}
+	}
+	if len(stale) == 0 {
+		return 0, nil
+	}
+	return len(stale), s.rdb.Del(ctx, stale...).Err()
 }
 
 // drainUsage atomically READS and DELETES a live usage:<prefix> hash — the

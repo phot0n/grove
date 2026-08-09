@@ -149,24 +149,51 @@ class TestReplicasForIngress(unittest.TestCase):
 		urls = [r["engine_url"] for routes in self.routes().values() for r in routes]
 		self.assertFalse([u for u in urls if "203.0.113.9" in u], urls)
 
-	def test_a_model_with_nothing_local_is_sent_as_empty_not_omitted(self):
-		# Empty list → the agent DELs deploy:<model> → /pick answers 503 no-replica. Omitting it
-		# would leave a stale table entry routing to a replica this ingress cannot reach.
-		self.assertEqual(self.routes()["llama-70b"], [])
+	def test_a_model_with_nothing_local_is_not_sent_at_all(self):
+		# Not named, rather than named with an empty list. Retiring it is the prune flag's job —
+		# see test_the_push_is_marked_complete, which is what makes omitting it safe.
+		self.assertNotIn("llama-70b", self.routes())
 
 	def test_only_active_deployments_are_routed(self):
 		deployments = [r["deployment"] for routes in self.routes().values() for r in routes]
 		self.assertNotIn("MD-4", deployments)
 
-	def test_an_ingress_that_owns_nothing_still_sends_every_model(self):
-		# Same reason: every model has to be named so its key is pruned rather than left stale.
-		routes = self.routes(ingress="ING-unused")
-		self.assertEqual(set(routes), {"qwen3-35b", "llama-70b"})
-		self.assertEqual([r for rows in routes.values() for r in rows], [])
+	def test_an_ingress_that_owns_nothing_sends_an_empty_table(self):
+		# And prune turns that into "delete everything you hold", which is what retires the last
+		# model on an ingress whose boxes were all reassigned.
+		self.assertEqual(self.routes(ingress="ING-unused"), {})
+
+	def test_only_the_models_it_can_serve_are_sent(self):
+		# The catalogue runs to hundreds and an ingress fronts a handful. Naming every model, one
+		# empty list each, was nearly the whole payload on every sync.
+		self.assertEqual(list(self.routes()), ["qwen3-35b"])
 
 
 if __name__ == "__main__":
 	unittest.main()
+
+
+class TestThePushIsMarkedComplete(unittest.TestCase):
+	"""Omitting a model is only safe because the push says it is the WHOLE table.
+
+	Without prune the agent upserts what it is given and keeps the rest, so a model whose replicas
+	all moved to another ingress would keep a key here pointing at a box this one cannot reach —
+	and /pick would hand it out."""
+
+	def test_sync_replicas_sets_prune(self):
+		from grove import gateway_sync
+
+		sent = {}
+		with (
+			patch.object(gateway_sync, "_replicas_for_ingress", return_value={"m": []}),
+			patch.object(gateway_sync, "_conn", return_value=(None, "http://x", "t")),
+			patch.object(
+				gateway_sync, "_post",
+				side_effect=lambda url, token, path, payload: sent.update(payload) or {"models": 1},
+			),
+		):
+			gateway_sync.sync_replicas("ING-1")
+		self.assertIs(sent.get("prune"), True)
 
 
 class TestWhichIngressesAPushReaches(unittest.TestCase):
