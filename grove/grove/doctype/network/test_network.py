@@ -53,6 +53,10 @@ def agent(public_ip, network="", private_ip="", status="Active"):
 	return {"public_ip": public_ip, "network": network, "private_ip": private_ip, "status": status}
 
 
+def ingress(private_ip, network="Mumbai", status="Active"):
+	return {"private_ip": private_ip, "network": network, "status": status}
+
+
 class TestInferenceIngressCidrs(unittest.TestCase):
 	"""Who may reach an inference box on 443. Everything wrong here fails silently in one of two
 	directions: too narrow and the gateway 504s or the metrics go dark, too wide and the engine
@@ -60,48 +64,70 @@ class TestInferenceIngressCidrs(unittest.TestCase):
 
 	def test_a_proxy_is_allowed_as_a_single_address(self):
 		self.assertEqual(
-			inference_ingress_cidrs([proxy("54.251.169.42")], [], "Mumbai"),
+			inference_ingress_cidrs([proxy("54.251.169.42")], [], [], "Mumbai"),
 			["54.251.169.42/32"],
 		)
 
 	def test_a_terminated_proxy_is_dropped(self):
 		# Its address goes back to AWS, and the next tenant would inherit the hole.
 		cidrs = inference_ingress_cidrs(
-			[proxy("1.1.1.1"), proxy("2.2.2.2", status="Terminated")], [], "Mumbai"
+			[proxy("1.1.1.1"), proxy("2.2.2.2", status="Terminated")], [], [], "Mumbai"
 		)
 		self.assertEqual(cidrs, ["1.1.1.1/32"])
 
 	def test_a_proxy_with_no_address_yet_contributes_nothing(self):
-		self.assertEqual(inference_ingress_cidrs([proxy("")], [], "Mumbai"), [])
+		self.assertEqual(inference_ingress_cidrs([proxy("")], [], [], "Mumbai"), [])
 
 	def test_an_agent_in_this_network_arrives_privately(self):
 		# scrape_ip dials the private address when the agent shares the box's Network, so that is
 		# the source the box sees — its public /32 would open a hole nothing uses.
 		cidrs = inference_ingress_cidrs(
-			[], [agent("3.3.3.3", network="Mumbai", private_ip="10.0.0.7")], "Mumbai"
+			[], [agent("3.3.3.3", network="Mumbai", private_ip="10.0.0.7")], [], "Mumbai"
 		)
 		self.assertEqual(cidrs, ["10.0.0.7/32"])
 
 	def test_an_agent_elsewhere_arrives_publicly(self):
 		cidrs = inference_ingress_cidrs(
-			[], [agent("3.3.3.3", network="Frankfurt", private_ip="10.9.0.7")], "Mumbai"
+			[], [agent("3.3.3.3", network="Frankfurt", private_ip="10.9.0.7")], [], "Mumbai"
 		)
 		self.assertEqual(cidrs, ["3.3.3.3/32"])
 
 	def test_an_agent_in_this_network_with_no_private_address_falls_back(self):
-		cidrs = inference_ingress_cidrs([], [agent("3.3.3.3", network="Mumbai")], "Mumbai")
+		cidrs = inference_ingress_cidrs([], [agent("3.3.3.3", network="Mumbai")], [], "Mumbai")
 		self.assertEqual(cidrs, ["3.3.3.3/32"])
 
 	def test_a_terminated_agent_is_dropped(self):
-		self.assertEqual(inference_ingress_cidrs([], [agent("3.3.3.3", status="Terminated")], "M"), [])
+		self.assertEqual(inference_ingress_cidrs([], [agent("3.3.3.3", status="Terminated")], [], "M"), [])
 
 	def test_the_same_address_twice_is_one_rule(self):
 		# AWS rejects a duplicate rule outright, so a proxy and an agent on one box must collapse.
-		cidrs = inference_ingress_cidrs([proxy("1.1.1.1")], [agent("1.1.1.1")], "Mumbai")
+		cidrs = inference_ingress_cidrs([proxy("1.1.1.1")], [agent("1.1.1.1")], [], "Mumbai")
 		self.assertEqual(cidrs, ["1.1.1.1/32"])
 
 	def test_a_network_that_owns_nothing_yet_allows_nobody(self):
-		self.assertEqual(inference_ingress_cidrs([], [], "Mumbai"), [])
+		self.assertEqual(inference_ingress_cidrs([], [], [], "Mumbai"), [])
+
+	def test_an_ingress_in_this_network_arrives_privately(self):
+		# The mirror image of the gateway rule: an ingress dials the box privately or not at all,
+		# so a public /32 would open a hole nothing arrives through while the hop it uses stayed
+		# shut. This is what makes a cutover possible at all.
+		cidrs = inference_ingress_cidrs([], [], [ingress("10.0.127.43")], "Mumbai")
+		self.assertEqual(cidrs, ["10.0.127.43/32"])
+
+	def test_an_ingress_in_another_network_is_not_let_in(self):
+		# Two VPCs can carve the same 10.x range, so a foreign ingress's private address is not
+		# merely useless here — it might name a different machine entirely.
+		cidrs = inference_ingress_cidrs([], [], [ingress("10.0.127.43", network="Frankfurt")], "Mumbai")
+		self.assertEqual(cidrs, [])
+
+	def test_an_ingress_with_no_private_address_contributes_nothing(self):
+		# It cannot reach these boxes anyway. Fail closed, the same rule that keeps it out of the
+		# replica table — never a public fallback.
+		self.assertEqual(inference_ingress_cidrs([], [], [ingress("")], "Mumbai"), [])
+
+	def test_a_terminated_ingress_is_dropped(self):
+		cidrs = inference_ingress_cidrs([], [], [ingress("10.0.127.43", status="Terminated")], "Mumbai")
+		self.assertEqual(cidrs, [])
 
 
 class TestSyncIngress(unittest.TestCase):

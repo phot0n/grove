@@ -211,44 +211,62 @@ class Network(Document):
 
 	@property
 	def inference_ingress_cidrs(self):
-		"""The addresses that may reach an inference box on this Network's 443, read live."""
+		"""The addresses that may reach an inference box on this Network's front ports, read live."""
 		proxies = frappe.get_all("Gateway Server", fields=["public_ip", "status"])
-		agents = frappe.get_all("Monitoring Agent", fields=["machine", "public_ip", "status"])
-		machines = {
-			machine["name"]: machine
-			for machine in frappe.get_all(
-				"Machine",
-				filters={"name": ("in", [agent["machine"] for agent in agents if agent["machine"]])},
-				fields=["name", "network", "private_ip"],
-			)
-		}
-		agents = [{**agent, **machines.get(agent["machine"], {})} for agent in agents]
-		return inference_ingress_cidrs(proxies, agents, self.name)
+		agents = _with_machine(frappe.get_all("Monitoring Agent", fields=["machine", "public_ip", "status"]))
+		ingresses = _with_machine(frappe.get_all("Ingress Server", fields=["machine", "status"]))
+		return inference_ingress_cidrs(proxies, agents, ingresses, self.name)
 
 
-def inference_ingress_cidrs(proxies, agents, network):
+def _with_machine(rows):
+	"""Each row's Machine joined on: its Network and its private address, read live rather than
+	mirrored onto the server doc, where the copy is only as fresh as that doc's last save."""
+	machines = {
+		machine["name"]: machine
+		for machine in frappe.get_all(
+			"Machine",
+			filters={"name": ("in", [row["machine"] for row in rows if row.get("machine")])},
+			fields=["name", "network", "private_ip"],
+		)
+	} if rows else {}
+	return [{**row, **machines.get(row.get("machine"), {})} for row in rows]
+
+
+def inference_ingress_cidrs(proxies, agents, ingresses, network):
 	"""Every address allowed to reach an inference box in `network` on its front ports, as /32s.
 
-	Two callers and no others. The gateway forwards to https://<box public ip>/e/<slug>, and the
-	metrics agent scrapes /metrics/node and /metrics/gpu through the same front. The control plane
-	is not one of them: it reaches a box over SSH and a proxy at its own admin URL.
+	Three callers and no others. A gateway forwards to https://<box public ip>/e/<slug> for a box
+	that fronts itself, an INGRESS forwards to https://<box private ip>/e/<slug> for a box it owns,
+	and the metrics agent scrapes /metrics/node and /metrics/gpu through the same front. The
+	control plane is not one of them: it reaches a box over SSH and a server at its own admin URL.
 
-	Every source contributes the address the box will actually see it arrive from. An agent goes
-	through net.reachable_ip, the same rule it picks its scrape address by. A gateway contributes
-	its PUBLIC address unconditionally, and that is not an oversight to tidy up: the gateway dials
-	the box's public IP, so same-VPC traffic still leaves through the internet gateway and arrives
-	from the public side. The dial address and this rule have to move together — narrowing this to
-	a private /32 while engine_url still says https://<public ip> shuts the fleet out.
+	Every source contributes the address the box will actually see it arrive from.
+
+	- An agent goes through net.reachable_ip, the same rule it picks its scrape address by.
+	- A gateway contributes its PUBLIC address unconditionally, and that is not an oversight to
+	  tidy up: it dials the box's public IP, so same-VPC traffic still leaves through the internet
+	  gateway and arrives from the public side. The dial address and this rule move together —
+	  narrowing this to a private /32 while engine_url still says https://<public ip> shuts the
+	  fleet out.
+	- An ingress contributes its PRIVATE address, for the mirror-image reason: it dials the box
+	  privately or not at all, so a public /32 for one would open a hole nothing ever arrives
+	  through while the hop it actually uses stayed shut.
+
+	Only ingresses whose BOX is in this Network count. Two VPCs can carve the same 10.x range, so
+	an ingress from another one contributes an address that is not merely useless here but might
+	name a different machine entirely. An ingress with no private address contributes nothing and
+	cannot reach these boxes anyway — the same fail-closed rule that keeps it out of the replica
+	table.
 
 	Every agent counts, not only those scraping this Network: an agent box is Grove's own, and the
 	join that would narrow it is not worth the code.
 
 	A box that is Terminated is gone, and its address belongs to whoever AWS hands it to next."""
-	addresses = [proxy.get("public_ip") for proxy in proxies if proxy.get("status") != GONE_STATUS]
+	live = lambda rows: [row for row in rows if row.get("status") != GONE_STATUS]  # noqa: E731
+	addresses = [proxy.get("public_ip") for proxy in live(proxies)]
+	addresses += [reachable_ip({**agent, "ip": agent.get("public_ip")}, network) for agent in live(agents)]
 	addresses += [
-		reachable_ip({**agent, "ip": agent.get("public_ip")}, network)
-		for agent in agents
-		if agent.get("status") != GONE_STATUS
+		ingress.get("private_ip") for ingress in live(ingresses) if ingress.get("network") == network
 	]
 	return sorted({f"{address}/32" for address in addresses if address})
 

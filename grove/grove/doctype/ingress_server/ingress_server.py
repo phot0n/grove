@@ -7,6 +7,7 @@ from frappe.model.document import Document
 from grove import gateway_sync
 from grove.cloud_provider.route53 import Route53Error
 from grove.fleet import FleetHost
+from grove.grove.doctype.network.network import sync_fleet_ingress
 from grove.utils import gateway_service_source
 
 
@@ -48,6 +49,23 @@ class IngressServer(FleetHost, Document):
 
 	def validate(self):
 		self.set_admin_url()
+		self.validate_machine_network()
+
+	def validate_machine_network(self):
+		"""The Network on this doc has to be the one its BOX is in.
+
+		Nothing downstream can catch a mismatch: the ingress would be given that Network's
+		replicas, be unable to reach any of them, and be left out of their security group — three
+		silences instead of one error. It also decides which boxes trust this ingress's private
+		address, and two VPCs can carve the same 10.x range."""
+		if not (self.network and self.machine):
+			return
+		box_network = frappe.db.get_value("Machine", self.machine, "network")
+		if box_network != self.network:
+			frappe.throw(
+				f"Machine {self.machine} is in Network {box_network or 'none'}, but this ingress "
+				f"says {self.network}. An ingress fronts the VPC its own box sits in."
+			)
 
 	def on_update(self):
 		# A newly-Active ingress has an empty replica table until something fills it, and the
@@ -58,10 +76,17 @@ class IngressServer(FleetHost, Document):
 			)
 		if self.has_value_changed("status") and self.status == "Terminated":
 			self.remove_dns_records()
+		# An inference box only opens its front to addresses in the fleet, and this ingress's
+		# private address is one of them — so an ingress that arrived, moved or died changes what
+		# those groups must allow.
+		if self.has_value_changed("status") or self.has_value_changed("machine"):
+			sync_fleet_ingress()
 
 	def on_trash(self):
-		# While the doc's name still says which records and which health check are its own.
+		# Before the doc goes, while its name still says which records are its own.
 		self.remove_dns_records()
+		# Enqueued, so it recomputes after this delete commits and without this ingress in the set.
+		sync_fleet_ingress()
 
 	@frappe.whitelist()
 	def sync_dns_records(self):
@@ -130,8 +155,9 @@ class IngressServer(FleetHost, Document):
 			# DNS before the table: the push goes to admin_url, which is this box's own name the
 			# moment a zone is set, and nothing resolves it until this runs.
 			self.sync_dns_records()
-			# provision writes status through db.set_value, so on_update never fires here — this
-			# is the only thing that gives a new ingress a replica to route to.
+			# provision writes status through db.set_value, so on_update never fires here — these
+			# two are what let a new ingress reach an engine and be let through to one.
+			sync_fleet_ingress()
 			gateway_sync.sync_replicas(self.name)
 		return play_name, rc
 
