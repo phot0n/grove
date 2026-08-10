@@ -86,6 +86,8 @@ class PodProvisioner:
 		mount = pod.volume_mount_path or VOLUME_MOUNT
 		env = {"HF_HOME": f"{mount}/hf"}
 		if not pod.is_custom_engine:
+			# What --enable-log-requests/--enable-log-outputs actually emit at.
+			env["VLLM_LOGGING_LEVEL"] = "DEBUG"
 			key = pod.get_password("api_key", raise_exception=False)
 			if key:
 				env["VLLM_API_KEY"] = key

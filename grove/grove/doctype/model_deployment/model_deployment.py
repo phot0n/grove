@@ -396,7 +396,7 @@ def _engine_env(md, hf_token):
 	"""Env vars for the engine container: what Grove derives from the deployment first, the
 	operator's own rows layered on top (same precedence the Pod path uses). VLLM_API_KEY is
 	NOT here — the role resolves it on the box, so the env-file template there adds it."""
-	env = {}
+	env = {"VLLM_LOGGING_LEVEL": "DEBUG"}
 	if hf_token:
 		env["HF_TOKEN"] = hf_token
 	if md.allow_long_max_model_len:

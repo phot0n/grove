@@ -193,6 +193,9 @@ class ServeCommand:
 			# response body id carries it. The response HEADER is set by the gateway, so we
 			# deliberately DON'T pass --enable-request-id-headers (it would echo a duplicate).
 			"--enable-log-requests",
+			# Logs the generated text alongside the request — paired with VLLM_LOGGING_LEVEL=DEBUG
+			# on both placements, so a request can be read end to end out of the engine log.
+			"--enable-log-outputs",
 			# vLLM defaults system_fingerprint to "full", which is its exact version and build
 			# hash — `vllm-0.24.0-bf54a486` — on every response and on EVERY streaming frame.
 			# That hands a customer the engine build to look up known issues against, for a field
