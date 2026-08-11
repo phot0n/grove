@@ -22,6 +22,14 @@
     rm go.tar.gz
   when: go_check.rc != 0
 
+# Cleared first because copy never deletes: a file removed from the tree would otherwise linger
+# here forever, and a stale package beside the current one is a build failure nobody can see from
+# the control plane. The tree is a few hundred KB, so re-copying it whole costs nothing.
+- name: clear the previous source tree
+  ansible.builtin.file:
+    path: /tmp/grove-gateway-src
+    state: absent
+
 - name: sync gateway_service source
   ansible.builtin.copy:
     src: "{{ agent_source }}/"
@@ -36,6 +44,6 @@
     export CGO_ENABLED=0
     export GOARCH={{ go_arch }}
     cd /tmp/grove-gateway-src
-    go build -ldflags="-s -w" -o /tmp/grove-gateway .
+    go build -ldflags="-s -w" -o /tmp/grove-gateway ./cmd/grove-gateway
   environment:
     PATH: "/usr/local/go/bin:{{ ansible_env.PATH }}"

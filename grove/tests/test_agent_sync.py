@@ -44,7 +44,9 @@ class TestRoutesForProxy(unittest.TestCase):
 			if doctype == "Model Deployment":
 				return list(deployments)
 			if doctype == "Model":
-				return list(models)
+				# name + modality: the route rows carry the model's surface, so this read is no
+				# longer just a list of names. Modality itself is TestRouteModality's business.
+				return [frappe._dict(name=m, modality="text") for m in models]
 			if doctype == "Pod":
 				return list(pods)
 			if doctype in ("Ingress Server", "Inference Server"):
@@ -110,6 +112,57 @@ class TestRoutesForProxy(unittest.TestCase):
 		# is the one way this whole mechanism can be quietly wrong.
 		[route] = self.routes([deployment("MD-00007")])["qwen3-35b"]
 		self.assertEqual(route["capacity"], DEFAULT_MAX_NUM_SEQS)
+
+
+class TestRouteModality(unittest.TestCase):
+	"""Which OpenAI surface a model answers on rides on its route rows.
+
+	Stamped per row because deploy:<model> is the only thing pushed per model — a separate record
+	would mean a new namespace and a new push for one short string. The gateway refuses a request
+	for a surface the modality does not cover, so a wrong value here is a 404 on a working model."""
+
+	def routes(self, models, deployments=(), pods=()):
+		def get_all(doctype, **kwargs):
+			if doctype == "Model":
+				return [frappe._dict(name=n, modality=m) for n, m in models.items()]
+			if doctype == "Model Deployment":
+				return list(deployments)
+			if doctype == "Pod":
+				return list(pods)
+			return []
+
+		with (
+			unittest.mock.patch.object(agent_sync.frappe, "get_all", get_all),
+			unittest.mock.patch.object(
+				agent_sync.frappe, "get_doc",
+				lambda *a: frappe._dict(get_password=lambda *_a, **_k: "k"),
+			),
+			unittest.mock.patch.object(agent_sync, "_ingress_targets", lambda: {}),
+		):
+			return agent_sync._routes_for_proxy("PROXY-1")
+
+	def test_a_deployment_row_carries_its_models_modality(self):
+		routes = self.routes(
+			{"qwen3-4b": "text"},
+			deployments=[deployment("MD-1", model="qwen3-4b")],
+		)
+		self.assertEqual(routes["qwen3-4b"][0]["modality"], "text")
+
+	def test_a_pod_row_carries_it_too(self):
+		# The ASR container is a Pod, never a Model Deployment — the path that actually matters here.
+		routes = self.routes(
+			{"nemotron-asr": "audio"},
+			pods=[pod("test-nemo-asr", model="nemotron-asr")],
+		)
+		self.assertEqual(routes["nemotron-asr"][0]["modality"], "audio")
+
+	def test_a_model_with_no_modality_sends_blank_not_null(self):
+		# The gateway reads blank as unrestricted. None would serialise as null and read as a value.
+		routes = self.routes(
+			{"qwen3-4b": None},
+			deployments=[deployment("MD-1", model="qwen3-4b")],
+		)
+		self.assertEqual(routes["qwen3-4b"][0]["modality"], "")
 
 
 class TestEffectiveGroups(unittest.TestCase):
@@ -406,8 +459,6 @@ class TestPushOrder(unittest.TestCase):
 		)
 
 
-if __name__ == "__main__":
-	unittest.main()
 class TestResyncAll(unittest.TestCase):
 	"""The hourly backstop for a box that lost its store.
 
@@ -458,3 +509,5 @@ class TestResyncAll(unittest.TestCase):
 		self.assertTrue(callable(agent_sync.resync_all))
 
 
+if __name__ == "__main__":
+	unittest.main()

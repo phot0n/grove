@@ -4,14 +4,25 @@
 import json
 import re
 
+import bcrypt
 import frappe
 from frappe.model.document import Document
 from frappe.utils import get_url
-from passlib.hash import sha256_crypt
 
 from grove.utils import is_dns_name, is_label_under
 
 SD_TOKEN_PATTERN = re.compile(r"^[A-Za-z0-9._~-]{16,}$")
+
+
+def verify_scrape_password(password: str, stored: str) -> bool:
+	"""Whether `stored` is a bcrypt hash of `password`. False for anything unreadable — a hash from
+	the older sha256-crypt scheme lands here and is simply replaced."""
+	if not stored:
+		return False
+	try:
+		return bcrypt.checkpw(password.encode(), stored.encode())
+	except ValueError:
+		return False
 
 
 class GroveSettings(Document):
@@ -101,16 +112,27 @@ class GroveSettings(Document):
 		"""The hash each box writes into its htpasswd file, derived here so the password itself
 		never reaches a box and never lands in an Ansible argv.
 
-		Recomputed only when the password actually changes: sha256_crypt salts randomly, so
-		hashing on every save would rewrite the file on every box and reload nginx for nothing.
-		A hash that is blank or not sha256_crypt is replaced rather than raised on — this field
-		is read-only, so anything else in it came from an edit that should not survive."""
+		bcrypt, because three different things have to verify this one file: the gateway's own Go
+		process, the nginx still fronting every inference box, and anything else that reads an
+		htpasswd. bcrypt is the only format all three accept.
+
+		Recomputed only when the password actually changes: bcrypt salts randomly, so hashing on
+		every save would rewrite the file on every box and reload nginx for nothing. A stored value
+		that does not verify is replaced rather than raised on — the field is read-only, so anything
+		else in it came from an edit that should not survive.
+
+		bcrypt truncates silently past 72 bytes, which would make two different long passwords
+		interchangeable. Refused rather than truncated: a scrape password is generated, so hitting
+		this means something upstream is wrong."""
 		password = self.get_password("scrape_password", raise_exception=False) or ""
+		if len(password.encode()) > 72:
+			frappe.throw("Scrape Password must be at most 72 bytes — bcrypt ignores anything beyond it.")
+
 		stored = self.scrape_password_hash or ""
 		if not password:
 			self.scrape_password_hash = ""
-		elif not (sha256_crypt.identify(stored) and sha256_crypt.verify(password, stored)):
-			self.scrape_password_hash = sha256_crypt.hash(password)
+		elif not verify_scrape_password(password, stored):
+			self.scrape_password_hash = bcrypt.hashpw(password.encode(), bcrypt.gensalt()).decode()
 
 	@property
 	def monitoring_variables(self):
@@ -127,9 +149,14 @@ class GroveSettings(Document):
 
 	@property
 	def gateway_variables(self):
-		"""Ansible vars for the gateway agent's env file. Tuning only — the admin token and the
-		gateway id name one proxy and come from its own doc."""
-		return {"synthetic_session_ttl": self.synthetic_session_ttl or ""}
+		"""Ansible vars for the gateway's config.json — the half that is re-read on a signal rather
+		than requiring a restart.
+
+		Tuning only. Identity and secrets go to agent.env instead, and nothing appears in both: a
+		value that lives in one is not overridable from the other, so there is never a question of
+		which won. `synthetic_session_ttl` is stored as a bare "0" here, which Go reads as a zero
+		duration."""
+		return {"synthetic_session_ttl": self.synthetic_session_ttl or "0"}
 
 	@property
 	def scrape_auth_variables(self):

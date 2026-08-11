@@ -11,10 +11,6 @@ frappe.ui.form.on('Ingress Server', {
 				frm.call('deploy_agent');
 			}, __('Ingress'));
 
-			// Config only — no agent restart, and Redis keeps its replica table.
-			frm.add_custom_button(__('Deploy OpenResty Config'), () => {
-				frm.call('deploy_openresty');
-			}, __('Ingress'));
 
 			frm.add_custom_button(__('Install Exporters'), () => frm.call('install_exporters'));
 

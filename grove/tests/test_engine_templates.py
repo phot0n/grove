@@ -15,9 +15,8 @@ from pathlib import Path
 import yaml
 from jinja2 import Environment, FileSystemLoader
 
-from grove.tests.test_gateway_templates import resolve
 
-PLAYBOOKS = Path(__file__).parent.parent.parent / "playbooks"
+PLAYBOOKS = Path(__file__).parent.parent / "playbooks"
 INFERENCE_ROLES = PLAYBOOKS / "inference_server/roles"
 
 
@@ -37,6 +36,24 @@ PROXY_TEMPLATES = environment(INFERENCE_ROLES / "engine_proxy/templates")
 
 # engine_proxy names the certificate and htpasswd paths that grove_https owns, and grove_https runs
 # ahead of it in every play that uses either — so its defaults are in scope on the box, and here.
+def resolve(variables):
+	"""A default that references another default (grove_tls_cert → grove_tls_dir) is resolved lazily
+	by Ansible and not at all by plain Jinja. Without this the config renders with the braces still
+	in it and every path assertion passes against a string nginx could not use.
+
+	Lived in the gateway template tests until those went with the nginx they covered. The inference
+	box still runs one, so this came along."""
+	plain = Environment()
+	for _ in range(2):
+		variables = {
+			key: plain.from_string(value).render(**variables)
+			if isinstance(value, str) and "{{" in value
+			else value
+			for key, value in variables.items()
+		}
+	return variables
+
+
 PROXY_VARS = resolve({
 	**role_defaults(PLAYBOOKS / "roles/grove_https"),
 	**role_defaults(PLAYBOOKS / "roles/openresty"),
@@ -210,8 +227,12 @@ class TestCertificateLifetime(unittest.TestCase):
 
 
 class TestOneWebServerForTheFleet(unittest.TestCase):
-	"""The gateway's data path and every inference box's engine proxy run the same pinned build.
-	Two versions on one request path means two sets of defaults and two bug surfaces."""
+	"""Every inference box's engine proxy runs the same pinned build. Two versions on one request
+	path means two sets of defaults and two bug surfaces.
+
+	It used to cover the gateway too. The gateway serves its own TLS now and installs no web server
+	at all, so what is left to keep aligned is the inference fleet — and the check that the gateway
+	stays OUT of it lives in test_gateway_config.py."""
 
 	def plays_using(self, role):
 		found = []
@@ -226,19 +247,25 @@ class TestOneWebServerForTheFleet(unittest.TestCase):
 		return found
 
 	def test_the_version_is_pinned_in_exactly_one_place(self):
-		# It used to be a var inside gateway.yml's own tasks. Extracting the role is what stops an
-		# inference box drifting to a different build than the gateway.
+		# It used to be a var inside a play's own tasks. Extracting the role is what stops one
+		# inference box drifting to a different build than the next.
 		pinned = role_defaults(PLAYBOOKS / "roles/openresty")["openresty_version"]
 		self.assertRegex(pinned, r"^\d+\.\d+\.\d+\.\d+$")
-		for play in ("gateway_server/gateway.yml", "inference_server/serve.yml"):
+		for play in ("inference_server/serve.yml", "inference_server/provision.yml"):
 			with self.subTest(play):
 				self.assertNotIn("openresty_version", (PLAYBOOKS / play).read_text())
 
-	def test_both_sides_of_the_fleet_install_it(self):
+	def test_every_inference_play_installs_it(self):
 		plays = self.plays_using("openresty")
-		self.assertIn("gateway.yml", plays)
 		self.assertIn("serve.yml", plays)
 		self.assertIn("provision.yml", plays)
+
+	def test_no_front_box_installs_it_any_more(self):
+		# grove-gateway owns :80 and :443 on a Gateway or Ingress Server. A play that reinstalled
+		# OpenResty there would take the ports back from it on the next provision.
+		plays = self.plays_using("openresty")
+		self.assertNotIn("gateway.yml", plays)
+		self.assertNotIn("ingress.yml", plays)
 
 	def test_it_installs_before_anything_that_writes_its_config(self):
 		# grove_https puts the certificate on disk and engine_proxy writes the config; both are

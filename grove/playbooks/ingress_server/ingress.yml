@@ -1,24 +1,24 @@
 ---
-# Provision a Grove Ingress Server: OpenResty + local Redis + the Go agent in ingress mode.
-# Deliberately close to gateway.yml — same binary, same OpenResty, same certificate — minus every
-# tenant-facing piece: no key push, no usage pull, no synthetic-session TTL. What an ingress is
-# GIVEN is what keeps it out of the tenant plane, so nothing here hands it tenant configuration.
+# Provision a Grove Ingress Server: local Redis + the grove-gateway binary in ingress mode.
+# Deliberately close to gateway.yml — same binary, same certificate — minus every tenant-facing
+# piece: no key push, no usage pull, no synthetic-session TTL. What an ingress is GIVEN is what
+# keeps it out of the tenant plane, so nothing here hands it tenant configuration.
 #
-# Redis is rebuildable state here, not durable: the replica table is pushed by the control plane
-# and the in-flight counters are re-derived, so this box takes the default persistence rather than
-# the gateway's appendfsync always.
+# Redis is rebuildable state here, not durable: the replica table is pushed by the control plane and
+# the in-flight counters are re-derived, so this box takes the default persistence rather than the
+# gateway's appendfsync always.
 #
-# extra-vars: admin_token, data_token, agent_source, ingress_id, ingress_hostname.
+# extra-vars: admin_token, data_token, agent_source, ingress_id, ingress_hostname, the fleet TLS
+# pair, the scrape hash.
 - hosts: all
   become: true
   gather_facts: true
   vars:
     grove_dir: "{{ playbook_dir }}"
-    # Pinned to what the gateway fleet is verified on — it sits in the request path.
-    lua_resty_http_version: "0.17.1"
-    # Defaulted here so a play run by hand renders the plaintext config instead of failing on an
-    # undefined variable halfway through the template.
+    # Defaulted here so a play run by hand does not fail on an undefined variable halfway through.
     ingress_hostname: ""
+    # No self-signed certificate on a front box — see gateway.yml.
+    grove_tls_selfsigned: false
 
   pre_tasks:
     - name: refuse to provision without an admin token
@@ -28,42 +28,61 @@
           No admin_token was passed — provision from the Ingress Server's Provision button, or
           pass the same extra-vars it does.
 
-  # openresty first (it removes any distro nginx holding :443), then grove_https — nginx.conf
-  # declares a `listen 443 ssl` server and OpenResty will not start without a certificate on disk.
-  # fleet_tls after it and before the nginx.conf task: with a Fleet Zone set the config names the
-  # wildcard's paths, so the files have to be there before `openresty -t` reads it.
+    # An ingress given no data token refuses every gateway, which reads as a routing outage rather
+    # than the config fault it is. The binary refuses to start on it; caught here instead.
+    - name: refuse to provision without a data token
+      ansible.builtin.assert:
+        that: data_token | default('') | trim | length > 0
+        fail_msg: >-
+          No data_token was passed — an ingress without one refuses every gateway. Provision from
+          the Ingress Server's button, or pass the same extra-vars it does.
+
   roles:
-    - openresty
     - grove_https
     - fleet_tls
     - build_gateway_agent
 
   tasks:
+    - name: stop and disable openresty
+      ansible.builtin.systemd:
+        name: openresty
+        state: stopped
+        enabled: false
+      failed_when: false
+
+    # A box provisioned before this carries a self-signed certificate nothing now reads. Removed by
+    # file, never by directory: /etc/grove/tls also holds the fleet wildcard this box actually
+    # serves, and taking the directory would take that with it.
+    - name: remove the self-signed certificate this box no longer serves
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - "{{ grove_tls_cert }}"
+        - "{{ grove_tls_key }}"
+
     - name: install redis-server
       ansible.builtin.apt:
         name: redis-server
         state: present
         update_cache: true
 
-    - name: install lua-resty-http (opm)
-      ansible.builtin.command:
-        cmd: /usr/local/openresty/bin/opm get ledgetech/lua-resty-http={{ lua_resty_http_version }}
-        creates: /usr/local/openresty/site/lualib/resty/http.lua
-
-    - name: grove lua dir
+    - name: grove-gateway directories
       ansible.builtin.file:
-        path: /etc/grove-gateway/lua
+        path: "{{ item }}"
         state: directory
         mode: "0755"
+      loop:
+        - /etc/grove-gateway
+        - /var/log/grove-gateway
 
-    # The log directory is created by the openresty role above.
-    - name: openresty logrotate
+    - name: access log rotation
       ansible.builtin.copy:
-        src: "{{ grove_dir }}/logrotate/openresty"
-        dest: /etc/logrotate.d/openresty
+        src: "{{ grove_dir }}/logrotate/grove-gateway"
+        dest: /etc/logrotate.d/grove-gateway
         mode: "0644"
 
-    - name: agent binary
+    - name: gateway binary
       ansible.builtin.copy:
         src: /tmp/grove-gateway
         dest: /usr/local/bin/grove-gateway
@@ -71,19 +90,35 @@
         remote_src: true
       notify: restart grove-gateway
 
-    - name: lua files
+    # GROVE_INGRESS_ID is what selects the infra plane, and no tenant variable appears here at all:
+    # the binary registers no key-reading handler when it is given this id.
+    - name: agent.env
       ansible.builtin.copy:
-        src: "{{ grove_dir }}/lua/"
-        dest: /etc/grove-gateway/lua/
-        mode: "0644"
-      notify: reload openresty
+        dest: /etc/grove-gateway/agent.env
+        content: |
+          GROVE_ADMIN_TOKEN={{ admin_token }}
+          GROVE_INGRESS_ID={{ ingress_id | default('') }}
+          GROVE_INGRESS_TOKEN={{ data_token }}
+          GROVE_REDIS_ADDR=127.0.0.1:6379
+          GROVE_LISTEN_HTTP=:80
+          GROVE_LISTEN_HTTPS=:443
+          GROVE_SELF_HOST={{ ingress_hostname }}
+          GROVE_TLS_CERT={{ fleet_tls_cert_path if (fleet_tls_cert | default('')) else '' }}
+          GROVE_TLS_KEY={{ fleet_tls_key_path if (fleet_tls_cert | default('')) else '' }}
+          GROVE_HTPASSWD={{ grove_metrics_htpasswd }}
+          GROVE_ACCESS_LOG=/var/log/grove-gateway/access.log
+          GROVE_CONFIG=/etc/grove-gateway/config.json
+          GROVE_PID_FILE=/run/grove-gateway.pid
+        mode: "0600"
+      no_log: true
+      notify: restart grove-gateway
 
-    - name: nginx.conf
+    - name: config.json
       ansible.builtin.template:
-        src: "{{ grove_dir }}/nginx.conf.j2"
-        dest: /usr/local/openresty/nginx/conf/nginx.conf
+        src: "{{ grove_dir }}/config.json.j2"
+        dest: /etc/grove-gateway/config.json
         mode: "0644"
-      notify: reload openresty
+      notify: reload grove-gateway config
 
     - name: systemd unit
       ansible.builtin.copy:
@@ -94,28 +129,11 @@
         - reload systemd
         - restart grove-gateway
 
-    # GROVE_INGRESS_ID is what puts the agent in ingress mode: no key store, no usage push, no
-    # /decide against a tenant. A gateway is given GROVE_GATEWAY_ID instead, and never both.
-    - name: agent.env (admin token from the control plane)
-      ansible.builtin.copy:
-        dest: /etc/grove-gateway/agent.env
-        content: |
-          GROVE_ADMIN_TOKEN={{ admin_token }}
-          GROVE_INGRESS_TOKEN={{ data_token | default('') }}
-          GROVE_INGRESS_ID={{ ingress_id | default('') }}
-        mode: "0600"
-      no_log: true
-      notify: restart grove-gateway
-
     - name: redis started
       ansible.builtin.systemd:
         name: redis-server
         enabled: true
         state: started
-
-    - name: nginx config test
-      ansible.builtin.command: /usr/local/openresty/bin/openresty -t
-      changed_when: false
 
     - name: grove-gateway started
       ansible.builtin.systemd:
@@ -123,12 +141,6 @@
         enabled: true
         state: started
         daemon_reload: true
-
-    - name: openresty started
-      ansible.builtin.systemd:
-        name: openresty
-        enabled: true
-        state: started
 
   handlers:
     - name: reload systemd
@@ -141,7 +153,7 @@
         state: restarted
         daemon_reload: true
 
-    - name: reload openresty
-      ansible.builtin.systemd:
-        name: openresty
-        state: reloaded
+    - name: reload grove-gateway config
+      ansible.builtin.command: systemctl kill -s SIGUSR1 grove-gateway
+      changed_when: true
+      failed_when: false

@@ -18,7 +18,7 @@ from urllib.parse import parse_qs, quote, urlparse
 import frappe
 import yaml
 from jinja2 import Environment, FileSystemLoader, StrictUndefined
-from passlib.hash import sha256_crypt
+import bcrypt
 
 from grove import monitoring
 from grove.grove.doctype.grove_settings.grove_settings import SD_TOKEN_PATTERN
@@ -34,7 +34,7 @@ from grove.monitoring import (
 	engine_entry,
 )
 
-PLAYBOOKS = Path(__file__).parent.parent.parent / "playbooks"
+PLAYBOOKS = Path(__file__).parent.parent / "playbooks"
 AGENT = PLAYBOOKS / "monitoring_agent"
 INFERENCE = PLAYBOOKS / "inference_server"
 # The exporters go on every box whoever owns it, so they live in the shared roles folder
@@ -420,17 +420,28 @@ class TestScrapePasswordHash(unittest.TestCase):
 		GroveSettings.set_scrape_password_hash(settings)
 		return settings.scrape_password_hash
 
-	def test_nginx_can_verify_what_grove_wrote(self):
+	def test_anything_reading_an_htpasswd_can_verify_what_grove_wrote(self):
 		hashed = self.hash_for("sc4ape")
-		self.assertTrue(sha256_crypt.verify("sc4ape", hashed))
-		self.assertFalse(sha256_crypt.verify("guess", hashed))
+		self.assertTrue(bcrypt.checkpw(b"sc4ape", hashed.encode()))
+		self.assertFalse(bcrypt.checkpw(b"guess", hashed.encode()))
+
+	def test_the_hash_is_bcrypt_so_go_and_nginx_both_read_it(self):
+		# The gateway verifies this in Go (x/crypto/bcrypt) and every inference box still verifies
+		# it in nginx through crypt(3). $2b$ is the prefix both accept; $2y$ is not.
+		self.assertTrue(self.hash_for("sc4ape").startswith("$2b$"))
+
+	def test_a_password_too_long_for_bcrypt_is_refused(self):
+		# bcrypt truncates silently past 72 bytes, which would make two different long passwords
+		# interchangeable. Refused rather than truncated.
+		with self.assertRaises(Exception):
+			self.hash_for("x" * 73)
 
 	def test_the_password_itself_is_never_in_it(self):
 		self.assertNotIn("sc4ape", self.hash_for("sc4ape"))
 
 	def test_an_unchanged_password_keeps_the_same_hash(self):
-		# The whole reason the hash is stored rather than computed per play: sha256_crypt salts
-		# randomly, so re-hashing on every save would rewrite the file on every box in the fleet.
+		# The whole reason the hash is stored rather than computed per play: bcrypt salts randomly,
+		# so re-hashing on every save would rewrite the file on every box in the fleet.
 		first = self.hash_for("sc4ape")
 		self.assertEqual(self.hash_for("sc4ape", stored=first), first)
 
@@ -440,8 +451,11 @@ class TestScrapePasswordHash(unittest.TestCase):
 
 	def test_a_corrupt_hash_is_replaced_rather_than_raised_on(self):
 		# The field is read-only, so anything unparseable in it came from an edit that should not
-		# survive the next save — and passlib raises rather than returning False.
-		self.assertTrue(sha256_crypt.verify("sc4ape", self.hash_for("sc4ape", stored="nonsense")))
+		# survive the next save. A sha256-crypt hash left over from the previous scheme lands here
+		# too, which is what makes the switch a no-op for an operator.
+		for stored in ("nonsense", "$5$rounds=535000$abc$def"):
+			with self.subTest(stored):
+				self.assertTrue(bcrypt.checkpw(b"sc4ape", self.hash_for("sc4ape", stored=stored).encode()))
 
 	def test_clearing_the_password_clears_the_hash(self):
 		self.assertEqual(self.hash_for("", stored=self.hash_for("sc4ape")), "")

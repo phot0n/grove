@@ -1,12 +1,12 @@
 ---
-# Push the fleet's wildcard certificate onto one already-provisioned Gateway Server and reload.
-# Nothing else — no packages, no Lua, no nginx.conf, no Go agent. Run by grove.tls after a
-# renewal, against every Active proxy at once, so it has to be safe on a live gateway: a reload
-# drops no connections, and the config on the box already names these paths.
+# Push the fleet's wildcard certificate onto one already-provisioned Gateway Server.
 #
-# Deliberately NOT gateway.yml with tags: a renewal happens unattended at midnight, and the smallest
-# play that can do the job is the one least likely to change something else while nobody is
-# watching.
+# Nothing else — no packages, no binary, no restart, no reload. The gateway watches its certificate
+# file's mtime and picks up a replacement on the next handshake, so a renewal is a file copy and
+# that is the whole play. This is what the nginx it replaced needed a config test and a reload for.
+#
+# Run by grove.tls after a renewal, against every Active gateway at once, so it has to be safe on a
+# live box: nothing here interrupts a request.
 - name: Install the fleet certificate on a Gateway Server
   hosts: all
   become: true
@@ -14,17 +14,3 @@
 
   roles:
     - fleet_tls
-
-  tasks:
-    # Reads the certificate that was just written, so a truncated or mismatched key fails here
-    # rather than at the reload. A failure aborts before handlers flush, leaving the box serving
-    # the certificate it already had.
-    - name: nginx config test
-      ansible.builtin.command: /usr/local/openresty/bin/openresty -t
-      changed_when: false
-
-  handlers:
-    - name: reload openresty
-      ansible.builtin.systemd:
-        name: openresty
-        state: reloaded

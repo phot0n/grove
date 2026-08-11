@@ -258,7 +258,12 @@ def _routes_for_proxy(proxy_name):
 		"Model Deployment",
 		fields=["name", "model", "engine_url", "status", "inference_server", "max_num_seqs"],
 	)
-	routes = {m: [] for m in frappe.get_all("Model", pluck="name")}
+	models = frappe.get_all("Model", fields=["name", "modality"])
+	routes = {m.name: [] for m in models}
+	# Which endpoints the model answers on. Stamped per row because deploy:<model> is the only
+	# thing pushed per model — a separate record would be a new namespace and a new push for one
+	# short string. Blank means unrestricted, which is what a Model predating the field reads as.
+	modality = {m.name: m.modality or "" for m in models}
 	targets = _ingress_targets()
 	# One row per (model, ingress), so several deployments behind one ingress fold together
 	# instead of each getting a row that names the same URL.
@@ -292,9 +297,10 @@ def _routes_for_proxy(proxy_name):
 			"deployment": d.name,
 			"server": d.inference_server or d.name,  # which box it is on
 			"kind": "direct",
+			"modality": modality.get(d.model, ""),
 		})
 	for (model, _ingress), row in folded.items():
-		routes[model].append(row)
+		routes[model].append({**row, "modality": modality.get(model, "")})
 
 	# Standalone serving Pods (a vLLM image serving the Model directly — no Model Deployment)
 	# register the same way: deploy:<model> → engine. Only Running pods with a derived
@@ -322,6 +328,7 @@ def _routes_for_proxy(proxy_name):
 			# Always direct: a pod has no Machine and so no Network, and cannot sit behind an
 			# ingress. Provider TLS already covers the hop.
 			"kind": "direct",
+			"modality": modality.get(p.model, ""),
 		})
 	return routes
 
@@ -533,13 +540,6 @@ def full_sync(proxies=None, trigger="Manual", ingresses=None, wait=60):
 		doc.release_lock()
 
 
-def sync_dirty(trigger="Scheduled"):
-	"""Background job (cron): push dirty groups + dirty users + dirty keys + the full route table
-	for every deployment to the relevant Active proxies, then clear each item that landed
-	(failures stay dirty → retried next tick). Routes are NOT dirty-gated — they're pushed
-	every run (idempotent). Skips (no doc) when there's nothing to push (nothing dirty and
-	no deployments).
-
 def resync_all(trigger="Scheduled"):
 	"""Hourly re-push of every record to every Active box, changed or not.
 
@@ -560,6 +560,13 @@ def resync_all(trigger="Scheduled"):
 	all, and this wait only covers a tick that overran."""
 	return full_sync(trigger=trigger, wait=90)
 
+
+def sync_dirty(trigger="Scheduled"):
+	"""Background job (cron): push dirty groups + dirty users + dirty keys + the full route table
+	for every deployment to the relevant Active proxies, then clear each item that landed
+	(failures stay dirty → retried next tick). Routes are NOT dirty-gated — they're pushed
+	every run (idempotent). Skips (no doc) when there's nothing to push (nothing dirty and
+	no deployments).
 
 	A group edit dirties ONE row here whatever it grants, and so does a user's access change or
 	budget flip — the fan-out both used to cause is exactly what the split into their own records

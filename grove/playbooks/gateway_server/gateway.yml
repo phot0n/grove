@@ -1,19 +1,25 @@
 ---
-# Provision a Grove Gateway Server (merged gateway+proxy): OpenResty + local Redis
-# (zero-loss persistence) + the Go agent. Idempotent. Codifies deploy.sh.
-# extra-vars: admin_token (control-plane admin API token), agent_source (path to
-# gateway_service source on control plane).
+# Provision a Grove Gateway Server: local Redis (zero-loss persistence) + the grove-gateway binary,
+# which owns the whole data path — TLS, routing, auth, metering. Idempotent.
+#
+# There is no OpenResty here any more. The play stops and disables it rather than ignoring it, so a
+# box provisioned before the cutover frees :80 and :443 for the process that now wants them.
+#
+# extra-vars: admin_token, agent_source, gateway_id, gateway_region, gateway_host, proxy_hostname,
+# the fleet TLS pair, the scrape hash, and the tunables in config.json.j2.
 - hosts: all
   become: true
   gather_facts: true
   vars:
     grove_dir: "{{ playbook_dir }}"
-    # Pinned to what the live gateway is verified on: from an upstream repo, not the distro, so
-    # "latest" would move under us on a rebuild — and it sits in the request path.
-    lua_resty_http_version: "0.17.1"
+    # No self-signed certificate on a front box. grove-gateway serves the fleet's real wildcard or
+    # it serves plaintext — one that nothing trusts, on the port customers dial, is worse than
+    # either. The reason this box ever had one (nginx will not start `listen 443 ssl` without a file
+    # on disk) left with nginx.
+    grove_tls_selfsigned: false
 
-  # Checked before the roles install anything: the agent refuses to start without this token, so a
-  # run that forgot it does not produce a half-provisioned box with grove-gateway crash-looping.
+  # Checked before anything installs: the gateway refuses to start without this token, so a run that
+  # forgot it would leave a box with grove-gateway crash-looping.
   pre_tasks:
     - name: refuse to provision without an admin token
       ansible.builtin.assert:
@@ -22,57 +28,104 @@
           No admin_token was passed — provision from the Gateway Server's Setup button, or pass the
           same extra-vars it does.
 
-  # openresty first (it removes any distro nginx holding :443), then grove_https — nginx.conf
-  # below declares a `listen 443 ssl` server and OpenResty will not start without a certificate on
-  # disk. The version pin lives in the openresty role, shared with every inference box's engine
-  # proxy so the whole fleet runs one build.
-  #
-  # fleet_tls after grove_https and before the nginx.conf task: with a Fleet Zone set the config
-  # names the wildcard's paths, so the files have to be there before `openresty -t` reads it. With
-  # no zone it writes nothing and the config falls back to grove_https's self-signed box.crt.
+  # grove_https is here for the metrics htpasswd only; fleet_tls writes the wildcard the gateway
+  # actually serves. Both before the binary starts, since it loads its certificate at boot — with
+  # no wildcard it comes up on :80 in the clear rather than refusing, which is the honest answer for
+  # a fleet that has not been given a zone.
   roles:
-    - openresty
     - grove_https
     - fleet_tls
     - build_gateway_agent
 
   tasks:
+    # Guarded and non-fatal: most boxes never had OpenResty, and the ones that did must give up the
+    # ports before grove-gateway asks for them. This is the task that performs the cutover.
+    - name: stop and disable openresty
+      ansible.builtin.systemd:
+        name: openresty
+        state: stopped
+        enabled: false
+      failed_when: false
+
+    # A box provisioned before this carries a self-signed certificate nothing now reads. Removed by
+    # file, never by directory: /etc/grove/tls also holds the fleet wildcard this box actually
+    # serves, and taking the directory would take that with it.
+    - name: remove the self-signed certificate this box no longer serves
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - "{{ grove_tls_cert }}"
+        - "{{ grove_tls_key }}"
+
     - name: install redis-server
       ansible.builtin.apt:
         name: redis-server
         state: present
         update_cache: true
 
-    - name: install lua-resty-http (opm)
-      ansible.builtin.command:
-        cmd: /usr/local/openresty/bin/opm get ledgetech/lua-resty-http={{ lua_resty_http_version }}
-        creates: /usr/local/openresty/site/lualib/resty/http.lua
-
+    # Usage counters are the only thing this box ORIGINATES — keys, users, groups and routes are
+    # projections the control plane can push again, but a token count that is lost is money that is
+    # lost. Hence appendfsync always rather than everysec.
     - name: redis zero-loss persistence
       ansible.builtin.blockinfile:
         path: /etc/redis/redis.conf
         marker: "# {mark} grove gateway zero-loss"
         block: |
           appendonly yes
-          appendfsync always
+          appendfsync {{ redis_appendfsync | default('always') }}
           maxmemory-policy noeviction
-      notify: restart redis
 
-    - name: grove lua dir
+    - name: redis started
+      ansible.builtin.systemd:
+        name: redis-server
+        enabled: true
+        state: started
+
+    # The block above is what a RESTART reads. This is what the process is doing right now, and the
+    # two had silently diverged on a live box: the block landed, its `notify: restart redis` never
+    # fired, and every run since reported the file unchanged — so it never notified again. The
+    # setting sat in the config, correct and inert, while Redis ran on the defaults for the life of
+    # the box. Nothing surfaced it, because a gateway with no AOF looks exactly like one with AOF
+    # until it restarts.
+    #
+    # A handler cannot fix that: it only fires when the file changes, and the file is already right.
+    # So this reconciles the RUNNING config every time, which is the only state that matters, and
+    # applies with CONFIG SET rather than a restart — a restart would drop the pushed keys and routes
+    # and 401 every caller until the next sync.
+    - name: enforce persistence on the running redis
+      ansible.builtin.shell: |
+        set -eu
+        changed=0
+        for setting in "appendonly yes" "appendfsync {{ redis_appendfsync | default('always') }}" "maxmemory-policy noeviction"; do
+          key=${setting%% *}
+          want=${setting#* }
+          have=$(redis-cli config get "$key" | tail -1)
+          if [ "$have" != "$want" ]; then
+            redis-cli config set "$key" "$want" > /dev/null
+            changed=1
+          fi
+        done
+        echo "$changed"
+      register: redis_runtime_persistence
+      changed_when: redis_runtime_persistence.stdout | trim == "1"
+
+    - name: grove-gateway directories
       ansible.builtin.file:
-        path: /etc/grove-gateway/lua
+        path: "{{ item }}"
         state: directory
         mode: "0755"
+      loop:
+        - /etc/grove-gateway
+        - /var/log/grove-gateway
 
-    # The log directory is created by the openresty role above, which every box that runs
-    # OpenResty needs it for.
-    - name: openresty logrotate
+    - name: access log rotation
       ansible.builtin.copy:
-        src: "{{ grove_dir }}/logrotate/openresty"
-        dest: /etc/logrotate.d/openresty
+        src: "{{ grove_dir }}/logrotate/grove-gateway"
+        dest: /etc/logrotate.d/grove-gateway
         mode: "0644"
 
-    - name: agent binary
+    - name: gateway binary
       ansible.builtin.copy:
         src: /tmp/grove-gateway
         dest: /usr/local/bin/grove-gateway
@@ -80,19 +133,38 @@
         remote_src: true
       notify: restart grove-gateway
 
-    - name: lua files
+    # Identity, secrets and sockets. Changing any of these makes this a different process, which is
+    # why they restart rather than reload.
+    - name: agent.env
       ansible.builtin.copy:
-        src: "{{ grove_dir }}/lua/"
-        dest: /etc/grove-gateway/lua/
-        mode: "0644"
-      notify: reload openresty
+        dest: /etc/grove-gateway/agent.env
+        content: |
+          GROVE_ADMIN_TOKEN={{ admin_token }}
+          GROVE_GATEWAY_ID={{ gateway_id | default('') }}
+          GROVE_GATEWAY_REGION={{ gateway_region | default('') }}
+          GROVE_REDIS_ADDR=127.0.0.1:6379
+          GROVE_LISTEN_HTTP=:80
+          GROVE_LISTEN_HTTPS=:443
+          GROVE_PUBLIC_HOST={{ gateway_host | default('') }}
+          GROVE_SELF_HOST={{ proxy_hostname | default('') }}
+          GROVE_TLS_CERT={{ fleet_tls_cert_path if (fleet_tls_cert | default('')) else '' }}
+          GROVE_TLS_KEY={{ fleet_tls_key_path if (fleet_tls_cert | default('')) else '' }}
+          GROVE_HTPASSWD={{ grove_metrics_htpasswd }}
+          GROVE_ACCESS_LOG=/var/log/grove-gateway/access.log
+          GROVE_CONFIG=/etc/grove-gateway/config.json
+          GROVE_PID_FILE=/run/grove-gateway.pid
+        mode: "0600"
+      no_log: true
+      notify: restart grove-gateway
 
-    - name: nginx.conf
+    # The tunables. Separate from agent.env because these are re-read on a signal, and a reload is
+    # cheaper than a restart on a box carrying live streams.
+    - name: config.json
       ansible.builtin.template:
-        src: "{{ grove_dir }}/nginx.conf.j2"
-        dest: /usr/local/openresty/nginx/conf/nginx.conf
+        src: "{{ grove_dir }}/config.json.j2"
+        dest: /etc/grove-gateway/config.json
         mode: "0644"
-      notify: reload openresty
+      notify: reload grove-gateway config
 
     - name: systemd unit
       ansible.builtin.copy:
@@ -103,28 +175,6 @@
         - reload systemd
         - restart grove-gateway
 
-    - name: agent.env (admin token from the control plane)
-      ansible.builtin.copy:
-        dest: /etc/grove-gateway/agent.env
-        content: |
-          GROVE_ADMIN_TOKEN={{ admin_token }}
-          GROVE_GATEWAY_ID={{ gateway_id | default('') }}
-          GROVE_GATEWAY_REGION={{ gateway_region | default('') }}
-          GROVE_SYNTHETIC_SESSION_TTL={{ synthetic_session_ttl | default('') }}
-        mode: "0600"
-      no_log: true
-      notify: restart grove-gateway
-
-    - name: redis started
-      ansible.builtin.systemd:
-        name: redis-server
-        enabled: true
-        state: started
-
-    - name: nginx config test
-      ansible.builtin.command: /usr/local/openresty/bin/openresty -t
-      changed_when: false
-
     - name: grove-gateway started
       ansible.builtin.systemd:
         name: grove-gateway
@@ -132,18 +182,7 @@
         state: started
         daemon_reload: true
 
-    - name: openresty started
-      ansible.builtin.systemd:
-        name: openresty
-        enabled: true
-        state: started
-
   handlers:
-    - name: restart redis
-      ansible.builtin.systemd:
-        name: redis-server
-        state: restarted
-
     - name: reload systemd
       ansible.builtin.systemd:
         daemon_reload: true
@@ -154,7 +193,8 @@
         state: restarted
         daemon_reload: true
 
-    - name: reload openresty
-      ansible.builtin.systemd:
-        name: openresty
-        state: reloaded
+    # SIGUSR1, not a restart: the tunables are re-read in place, so live streams are untouched.
+    - name: reload grove-gateway config
+      ansible.builtin.command: systemctl kill -s SIGUSR1 grove-gateway
+      changed_when: true
+      failed_when: false

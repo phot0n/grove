@@ -1,7 +1,10 @@
 ---
 # What a box needs before it can serve HTTPS with authenticated metrics: a certificate and the
-# htpasswd file guarding /metrics/*. Both the inference box's nginx (engine_proxy) and the proxy
-# box's OpenResty read these exact paths, which is why they are one role rather than two.
+# htpasswd file guarding /metrics/*.
+#
+# Two jobs, and only the inference boxes still want both. A Gateway or Ingress Server takes the
+# htpasswd and sets grove_tls_selfsigned: false — grove-gateway serves the fleet's real wildcard or
+# it serves plaintext, and a self-signed certificate on a customer-facing port is worse than either.
 grove_tls_dir: /etc/grove/tls
 grove_tls_cert: "{{ grove_tls_dir }}/box.crt"
 grove_tls_key: "{{ grove_tls_dir }}/box.key"
@@ -16,6 +19,10 @@ grove_tls_subject: /CN=grove-box
 # gets it by deleting the cert and re-running any play that includes this role. Boxes provisioned
 # before this was shortened keep whatever life they were issued with.
 grove_tls_days: 90
+
+# Whether to issue the certificate above at all. The inference box's nginx needs one on disk before
+# `listen 443 ssl` will start, which is the only reason this exists; nothing else does.
+grove_tls_selfsigned: true
 
 # The hash is computed in the control plane (Grove Settings) and arrives as an extra-var. Running
 # htpasswd here instead would put the password in argv — which /proc and the Ansible Task doc both

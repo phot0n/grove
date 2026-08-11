@@ -1,8 +1,8 @@
 ---
-# Deliberately notifies a handler it does not define. `reload openresty` belongs to the play —
-# gateway.yml, deploy_openresty.yml and deploy_tls.yml each declare one — because defining a second
-# handler by that name here would shadow theirs, and which one wins is not worth depending on. A
-# play that includes this role without the handler fails loudly on the first change.
+# Notifies nothing. The only consumers of this certificate are grove-gateway processes, and they
+# reload it from disk on the next handshake — so a renewal is a file copy and nothing else. This
+# role used to notify `reload openresty`, which is why every play that used it had to declare that
+# handler; both went with the nginx that needed them.
 - name: Install the fleet certificate
   when: fleet_tls_cert | length > 0 and fleet_tls_key | length > 0
   block:
@@ -17,7 +17,6 @@
         content: "{{ fleet_tls_cert }}"
         dest: "{{ fleet_tls_cert_path }}"
         mode: "0644"
-      notify: reload openresty
 
     # no_log because a task RESULT echoes the module args back, and Grove stores that JSON on an
     # Ansible Task doc — without this the fleet's private key is readable in the Desk UI and in
@@ -29,4 +28,3 @@
         dest: "{{ fleet_tls_key_path }}"
         mode: "0600"
       no_log: true
-      notify: reload openresty

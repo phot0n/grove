@@ -28,7 +28,7 @@ class Model(Document):
 		enable_prefix_caching: DF.Check
 		hf_repo: DF.Data | None
 		hidden_layers: DF.Int
-		modality: DF.Literal["text", "multimodal", "embedding"]
+		modality: DF.Literal["text", "multimodal", "embedding", "audio"]
 		published: DF.Check
 		reasoning_parser: DF.Data | None
 		scheduling_policy: DF.Literal["priority", "fcfs"]

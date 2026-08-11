@@ -209,6 +209,14 @@ class IngressServer(GeneratedName, FleetHost, Document):
 
 	@failure.reports_failure(mark_broken=False)
 	def _deploy_agent(self):
+		"""Build the binary on the box, ship it, and rewrite both halves of its configuration.
+
+		Resolved here rather than at enqueue: the certificate key would otherwise be serialised into
+		the job payload and sit in Redis. Dropped entirely — agent.env names the certificate's PATH,
+		which is a role default, and deploy_tls owns writing the material itself."""
+		settings = frappe.get_single("Grove Settings")
+		tls_variables = settings.tls_variables
+		tls_variables.pop("fleet_tls_key", None)
 		return self.run_playbook(
 			"deploy_agent.yml",
 			extravars={
@@ -216,30 +224,9 @@ class IngressServer(GeneratedName, FleetHost, Document):
 				"admin_token": self.get_password("admin_token"),
 				"data_token": self.get_password("data_token"),
 				"ingress_id": self.name,
-			},
-		)
-
-	@frappe.whitelist()
-	def deploy_openresty(self):
-		"""Button: push the nginx.conf this bench has, validate, graceful reload. Config only, so
-		Redis keeps its replica table and the agent is not restarted."""
-		frappe.enqueue_doc(self.doctype, self.name, "_deploy_openresty", queue="long", timeout=900)
-		frappe.msgprint(f"Deploying OpenResty config to {self.name} — watch its Ansible Plays.")
-
-	def _deploy_openresty(self):
-		"""Resolved here, not at enqueue: the scrape password hash would otherwise be serialised
-		into the job payload and sit in Redis."""
-		settings = frappe.get_single("Grove Settings")
-		# nginx.conf keys its shape on the certificate, so that one is here — but the key only
-		# feeds fleet_tls, which deploy_tls owns. Dropping it skips that role and keeps the
-		# fleet's private key out of a config push entirely.
-		tls_variables = settings.tls_variables
-		tls_variables.pop("fleet_tls_key", None)
-		return self.run_playbook(
-			"deploy_openresty.yml",
-			extravars={
 				"ingress_hostname": self.hostname,
-				**settings.scrape_auth_variables,
 				**tls_variables,
+				**settings.scrape_auth_variables,
+				**settings.gateway_variables,
 			},
 		)

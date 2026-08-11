@@ -43,7 +43,6 @@ class GatewayServer(GeneratedName, FleetHost, Document):
 
 	def validate(self):
 		self.set_admin_url()
-
 		self.set_admin_token()
 		self.validate_region_is_free()
 
@@ -98,6 +97,7 @@ class GatewayServer(GeneratedName, FleetHost, Document):
 		in if its __Auth row is lost, and precisely the state this is here to fix."""
 		if not self.get_password("admin_token", raise_exception=False):
 			self.admin_token = frappe.generate_hash(length=48)
+
 	def on_update(self):
 		# A newly-Active proxy needs the full current state now — the background
 		# job only pushes dirty deltas, so full-sync this one immediately.
@@ -178,38 +178,6 @@ class GatewayServer(GeneratedName, FleetHost, Document):
 			return None
 
 	@frappe.whitelist()
-	def deploy_openresty(self):
-		"""Button: push the Lua and nginx.conf this bench has, validate, graceful reload.
-
-		The data-path counterpart to deploy_agent: config only, so Redis keeps its routes and
-		usage counters and the agent is not restarted. Same extra-vars provision passes for the
-		same roles — the play refuses to render if the TLS ones are missing, since that would put
-		a live box back on plaintext :80."""
-		frappe.enqueue_doc(
-			self.doctype, self.name, "_deploy_openresty", queue="long", timeout=900
-		)
-		frappe.msgprint(f"Deploying OpenResty config to {self.name} — watch its Ansible Plays.")
-
-	@failure.reports_failure(mark_broken=False)
-	def _deploy_openresty(self):
-		"""Resolved here, not at enqueue: the certificate key and the scrape password would
-		otherwise be serialised into the job payload and sit in Redis."""
-		settings = frappe.get_single("Grove Settings")
-		# nginx.conf keys its shape on the certificate, so that one has to be here — but the key
-		# only feeds fleet_tls, which deploy_tls owns. Dropping it skips that role and keeps the
-		# fleet's private key out of a config push entirely.
-		tls_variables = settings.tls_variables
-		tls_variables.pop("fleet_tls_key", None)
-		return self.run_playbook(
-			"deploy_openresty.yml",
-			extravars={
-				"proxy_hostname": self.hostname,
-				**settings.scrape_auth_variables,
-				**tls_variables,
-			},
-		)
-
-	@frappe.whitelist()
 	def deploy_agent(self):
 		"""Button: build the latest gateway binary and deploy just it (copy +
 		service restart) to this already-provisioned proxy."""
@@ -222,22 +190,34 @@ class GatewayServer(GeneratedName, FleetHost, Document):
 		)
 		frappe.msgprint(f"Building + deploying latest agent to {self.name} — watch its Ansible Plays.")
 
+	@failure.reports_failure(mark_broken=False)
 	def _deploy_agent(self):
-		"""Push gateway_service source to Gateway Server, build + restart, and rewrite agent.env
-		(no OpenResty/Redis reinstall).
+		"""Build the binary on the box, ship it, and rewrite both halves of its configuration.
 
-		The env file rides along because the gateway's tuning lives in it. Written whole from the
-		same extra-vars provision passes, so a config-only run never blanks the admin token."""
+		One button for binary AND config, because the gateway has no other config surface: agent.env
+		names every listener, certificate and hostname, and config.json holds the tunables. Written
+		whole from the same extra-vars provision passes, so a config-only run never blanks the admin
+		token.
+
+		Resolved here rather than at enqueue, like the provision path: the certificate key would
+		otherwise be serialised into the job payload and sit in Redis. Only the key is dropped —
+		agent.env names the certificate's PATH, so the paths' role defaults still have to load, and
+		the play includes fleet_tls for exactly that."""
+		settings = frappe.get_single("Grove Settings")
+		tls_variables = settings.tls_variables
+		tls_variables.pop("fleet_tls_key", None)
 		return self.run_playbook(
 			"deploy_agent.yml",
 			extravars={
 				"agent_source": gateway_service_source(),
 				"admin_token": self.get_password("admin_token"),
-	@failure.reports_failure(mark_broken=True)
 				"gateway_id": self.name,
 				# Which routes this gateway prefers: a same-region row wins its tier outright.
 				"gateway_region": self.region or "",
-				**frappe.get_single("Grove Settings").gateway_variables,
+				"proxy_hostname": self.hostname,
+				**tls_variables,
+				**settings.scrape_auth_variables,
+				**settings.gateway_variables,
 			},
 		)
 
@@ -253,6 +233,7 @@ class GatewayServer(GeneratedName, FleetHost, Document):
 		)
 		frappe.msgprint(f"Provisioning {self.name} — watch its Ansible Plays.")
 
+	@failure.reports_failure(mark_broken=True)
 	def provision(self):
 		"""Run gateway.yml against the Gateway Server's Machine → OpenResty + Redis +
 		Go agent. On success, mark Active and project keys/routes."""

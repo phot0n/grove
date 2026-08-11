@@ -1,0 +1,20 @@
+{#
+  The gateway's tunables. Re-read on SIGUSR1, so changing one is a file write and a signal — not a
+  restart and not a re-provision. Identity, secrets and sockets live in agent.env instead; nothing
+  appears in both.
+
+  Every key is optional and an omitted one keeps its built-in default, so this template renders only
+  what Grove actually has an opinion about. `middleware` and `transforms` are deliberately absent:
+  the built-in order is the right one, and naming it here would freeze it against a binary that
+  later adds a stage.
+
+  A file the gateway cannot read is REFUSED WHOLE and the running configuration is kept — so a bad
+  render is one error line in the journal, never a gateway that quietly reverted to defaults.
+#}
+{
+  "log_level": {{ gateway_log_level | default('info') | to_json }},
+  "synthetic_session_ttl": {{ (synthetic_session_ttl | default('0') or '0') | to_json }},
+  "upstream_tls_verify": {{ (upstream_tls_verify | default(false)) | to_json }},
+  "drain_timeout": {{ gateway_drain_timeout | default('630s') | to_json }},
+  "lame_duck": {{ gateway_lame_duck | default('5s') | to_json }}
+}

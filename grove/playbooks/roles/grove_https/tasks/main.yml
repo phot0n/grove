@@ -12,6 +12,7 @@
 # a new key for free and leave the old one trusted by nothing, while changing no behaviour: no
 # consumer verifies this certificate.
 - name: Generate the self-signed certificate
+  when: grove_tls_selfsigned | bool
   ansible.builtin.command: >-
     openssl req -x509 -newkey rsa:2048 -nodes -days {{ grove_tls_days }}
     -subj "{{ grove_tls_subject }}"
@@ -20,6 +21,7 @@
     creates: "{{ grove_tls_cert }}"
 
 - name: Restrict the private key
+  when: grove_tls_selfsigned | bool
   ansible.builtin.file:
     path: "{{ grove_tls_key }}"
     mode: "0600"
@@ -27,7 +29,7 @@
 # 0644 because the unprivileged nginx worker reads it on every /metrics request — nginx does not
 # cache this file, so a changed hash takes effect with no reload. It holds a hash, not a password.
 #
-# Skipped when no hash was passed, rather than writing a line nothing can match: deploy_openresty
+# Skipped when no hash was passed, rather than writing a line nothing can match: a config push
 # is run by hand, and a play invoked without the Grove Settings vars would otherwise replace a
 # working file with one that locks the agent out of a box nobody is looking at. A box that has
 # never been given a hash has no file at all, so nginx refuses /metrics outright — still shut,
