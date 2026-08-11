@@ -105,6 +105,13 @@ class AnsibleCallback(CallbackBase):
 		self._stop_if_asked()
 		self.current_task = self.runner.add_task(task.get_name())
 
+	# Handlers are where a deploy actually restarts things, so they are where it fails. Without this
+	# the row is never created and the failure reaches the control plane as a bare "[failed] <name>"
+	# in the play output, with the module's message — the only thing that says why — dropped.
+	def v2_playbook_on_handler_task_start(self, task):
+		self._stop_if_asked()
+		self.current_task = self.runner.add_task(task.get_name())
+
 	# Fires on every attempt of a task with `until`/`retries` — the health gate is one task
 	# that can hold the play for 15 minutes, so this is where a stop lands for most of a
 	# serve run. Between tasks alone would not be enough.
