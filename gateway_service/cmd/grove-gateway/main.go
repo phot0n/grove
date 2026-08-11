@@ -1,12 +1,6 @@
-// Command grove-gateway is the Grove data plane. One binary, two planes: a Gateway Server holds
-// tenant state (keys, users, groups, usage) and picks a route; an Ingress Server holds none and
-// picks a replica inside one VPC. Which one this box is is decided entirely by which id it is given.
-//
-// Three signals, one meaning each:
-//
-//	SIGHUP   swap the binary, handing the listening sockets to a child (zero downtime)
-//	SIGUSR1  re-read the tunables file
-//	SIGTERM  drain and exit
+// Command grove-gateway is the Grove data plane. One binary, two planes: a gateway holds tenant
+// state and picks a route, an ingress holds none and picks a replica inside one VPC — decided by
+// which id it is given. Signals: SIGHUP upgrades, SIGUSR1 re-reads tunables, SIGTERM drains.
 package main
 
 import (

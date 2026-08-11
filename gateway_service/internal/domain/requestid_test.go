@@ -22,10 +22,9 @@ func TestCleanIDPart(t *testing.T) {
 
 func TestBuildRequestID(t *testing.T) {
 	const gateway = "proxy-sg"
-	// Every part is cleanIDPart'd, so the gateway's own '-' becomes '_' too and the only '-' left
-	// is the separator. Case is preserved: a target reads as the doc name it came from. The tail
-	// is left unsized — its length is a tunable, and pinning it here only breaks this test when
-	// someone deliberately changes the entropy.
+	// Every part is cleaned, so the only '-' left is the separator, and case is preserved so a target
+	// reads as its doc name. The tail is left unsized — pinning its length only breaks this test
+	// when someone deliberately changes the entropy.
 	shape := regexp.MustCompile(`^gr-proxy_sg-[A-Za-z0-9_]+-u4j55nfboc-[0-9a-f]+$`)
 
 	// Deployment present → used verbatim (sanitized), even though a server id is there too.

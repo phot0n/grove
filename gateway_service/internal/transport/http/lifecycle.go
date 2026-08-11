@@ -17,18 +17,9 @@ import (
 	"github.com/cloudflare/tableflip"
 )
 
-// Lifecycle owns the listeners, the drain flag and the upgrade handshake.
-//
-// Three separate events, deliberately not one mechanism:
-//
-//   - SIGTERM drains: stop accepting, let live handlers finish, then exit. This traffic is long — a
-//     streaming completion runs for minutes — so the drain window is minutes too.
-//   - The drain flag flips first, which takes the box out of any health check in front of it before
-//     the socket goes anywhere, and gives a new request on an already-open connection a real
-//     message instead of a reset.
-//   - SIGHUP upgrades: a child process inherits the listening sockets and starts accepting on them
-//     immediately, while the parent drains behind it. No connection is refused and none is queued
-//     unanswered, which a stop/start cannot manage when the drain takes minutes.
+// Lifecycle owns the listeners, the drain flag and the upgrade handshake. SIGTERM drains over
+// minutes, because a streaming completion runs that long; the flag flips first so anything in front
+// pulls the box before the socket goes. SIGHUP hands the sockets to a child that serves at once.
 type Lifecycle struct {
 	log      *slog.Logger
 	upgrader *tableflip.Upgrader
@@ -62,15 +53,9 @@ type DrainWindows struct {
 	// Total bounds how long live handlers get after the socket stops accepting. Longer than the
 	// upstream read timeout, so a stream the engine would have finished is never cut here first.
 	Total time.Duration
-	// LameDuck is how long the process keeps ACCEPTING connections after it has begun shutting
-	// down, answering them 503.
-	//
-	// Without it the drain flag is nearly unobservable: Server.Shutdown closes the listener at
-	// once, so a health checker or a client opening a NEW connection gets connection-refused and
-	// only an already-open keep-alive connection ever sees the flag. Refused is not wrong — a
-	// checker marks the box down either way — but it is a reset rather than an answer, and it gives
-	// a client nothing to retry on. One poll interval of honest 503s is what makes the box leave
-	// rotation before its socket does.
+	// LameDuck is how long the process keeps ACCEPTING after shutdown starts, answering 503.
+	// Shutdown closes the listener at once, so without it only an already-open keep-alive connection
+	// ever sees the drain flag — a new one is refused, which gives a client nothing to retry on.
 	LameDuck time.Duration
 }
 
@@ -100,11 +85,9 @@ func (o LifecycleOptions) withDefaults() LifecycleOptions {
 
 func NewLifecycle(opts LifecycleOptions, log *slog.Logger) (*Lifecycle, error) {
 	opts = opts.withDefaults()
-	// tableflip spawns the child from os.Args[0], resolved fresh at exec time — which is what makes
-	// an upgrade pick up a binary Ansible replaced underneath a running process. A relative argv[0]
-	// resolves against the working directory instead, so the upgrade would fail later for a reason
-	// nobody would connect back to how the process was started. Said once, at startup, rather than
-	// discovered during a deploy.
+	// tableflip execs os.Args[0] resolved at exec time, which is how an upgrade picks up a binary
+	// Ansible replaced underneath. A relative argv[0] resolves against the working directory and
+	// fails later, for a reason nobody connects back to startup — so warn once, here.
 	if !filepath.IsAbs(os.Args[0]) {
 		log.Warn("started with a relative path — SIGHUP upgrades will resolve it against the working "+
 			"directory and may fail; systemd's ExecStart gives an absolute one",
@@ -143,13 +126,9 @@ func (l *Lifecycle) Serve(server *http.Server, listener net.Listener) {
 	}()
 }
 
-// Run blocks until the process is told to stop, then drains.
-//
-// Ready() does two things that matter: it releases the parent across an upgrade, and it writes the
-// PID file. That file is how systemd follows the handover — it re-reads it when the main process
-// exits and adopts whatever pid is in it, which is why the unit needs no sd_notify handshake and no
-// NotifyAccess=all. Verified against systemd directly: three consecutive upgrades, MainPID tracking
-// the file each time.
+// Run blocks until told to stop, then drains. Ready() releases the parent across an upgrade and
+// writes the PID file, which is how systemd follows the handover — it re-reads the file when the
+// main process exits. That is why the unit needs no sd_notify. Verified over three upgrades.
 func (l *Lifecycle) Run() error {
 	defer l.upgrader.Stop()
 
@@ -200,11 +179,8 @@ func (l *Lifecycle) upgrade() {
 	}
 }
 
-// drain flips the flag, waits for live handlers, then stops hard.
-//
-// The flag goes first and on its own: a health check in front of this box sees 503 and stops
-// sending new work here before the socket closes, which is what makes an upgrade invisible on a
-// fleet with more than one gateway.
+// drain flips the flag, waits for live handlers, then stops hard. The flag goes first so a health
+// check sees 503 and stops sending work before the socket closes.
 func (l *Lifecycle) drain(lameDuck time.Duration) {
 	l.draining.Store(true)
 	if lameDuck > 0 {

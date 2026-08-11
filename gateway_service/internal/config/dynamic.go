@@ -10,16 +10,9 @@ import (
 	"time"
 )
 
-// Dynamic is the half of the configuration that is TUNED rather than declared: the knobs an
-// operator reaches for while the fleet is running. It lives in a JSON file, re-read on SIGUSR1, so
-// changing one is an edit and a signal rather than a deploy.
-//
-// The split is by lifetime, not by importance. Identity, secrets, sockets and paths stay in the
-// environment: changing any of them means the process is a different process, and a restart is the
-// honest way to say so. Everything here can change under a live request without the request
-// noticing.
-//
-// Durations are strings ("30m", "600s") so the file reads the way the documentation does.
+// Dynamic is the TUNED half: knobs an operator turns while the fleet runs, in a JSON file re-read
+// on SIGUSR1. Everything here can change under a live request without it noticing — identity,
+// secrets and paths stay in the environment because changing those makes it a different process.
 type Dynamic struct {
 	LogLevel string `json:"log_level"`
 

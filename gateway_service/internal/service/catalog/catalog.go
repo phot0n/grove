@@ -36,11 +36,9 @@ func (s *Service) ForIdentity(ctx context.Context, id admission.Identity) ([]str
 	return out, nil
 }
 
-// Public is what an unauthenticated caller is shown: the advertised set intersected with what is
-// actually deployed, so a prospect can see what is on offer before signing up.
-//
-// It grants nothing — CanUse is untouched, so calling any of these without a key is still refused
-// on the inference path.
+// Public is what an unauthenticated caller sees: the advertised set intersected with what is
+// actually deployed. It grants nothing — CanUse is untouched, so calling one without a key is still
+// refused on the inference path.
 func (s *Service) Public(ctx context.Context) ([]string, error) {
 	csv, found, err := s.catalog.Get(ctx)
 	if err != nil {
@@ -60,11 +58,9 @@ func (s *Service) Public(ctx context.Context) ([]string, error) {
 	return Intersect(advertised, deployed), nil
 }
 
-// Intersect keeps the deployed order, which routes.Models already sorted. Pure, so the rule that a
-// catalogue never names a model no engine serves is testable without a store.
-//
-// Advertising one that is gone is worse than omitting it: the caller signs up, calls it, and gets a
-// 503 from a route that was never there.
+// Intersect keeps the deployed order routes.Models already sorted, and is pure so the rule is
+// testable without a store. Advertising a model that is gone is worse than omitting it — the caller
+// signs up, calls it, and gets a 503.
 func Intersect(advertised map[string]bool, deployed []string) []string {
 	out := make([]string, 0, len(deployed))
 	for _, model := range deployed {

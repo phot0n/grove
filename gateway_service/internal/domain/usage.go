@@ -5,32 +5,21 @@ import (
 	"encoding/json"
 )
 
-// Usage is a normalized token count parsed from an engine response, whether the
-// response was OpenAI-shaped (prompt/completion/total_tokens) or Anthropic-shaped
-// (input/output_tokens + cache_read/creation_input_tokens — what vLLM's native
-// /v1/messages returns now that the gateway talks to vLLM directly, no LiteLLM).
-//
-// Normalized so both shapes mean the same thing: Prompt = FULL input processed
-// (including cache), Total = Prompt + Completion, Cached ⊆ Prompt. Budget then =
-// Total - Cached on either shape.
+// Usage is a token count normalized across the OpenAI and Anthropic response shapes, so both mean
+// the same thing: Prompt is the FULL input including cache, Total = Prompt + Completion, and
+// Cached ⊆ Prompt. Budget is Total - Cached on either.
 type Usage struct {
 	Prompt     int
 	Completion int
 	Total      int
-	// Cached = prompt tokens served from the prefix cache (credited).
-	//   OpenAI/vLLM shape: prompt_tokens_details.cached_tokens — a SUBSET already
-	//     inside prompt_tokens/total_tokens (needs vLLM --enable-prompt-tokens-details).
-	//   Anthropic shape: cache_read_input_tokens — SEPARATE from input_tokens (which
-	//     excludes it) and there's no total_tokens; we fold it (+ cache_creation)
-	//     back into Prompt/Total so the numbers match the OpenAI shape. cache_creation
-	//     is a WRITE (billed, not credited) so it lands in Prompt but NOT in Cached.
+	// Cached = prompt tokens served from the prefix cache, credited. Already inside prompt_tokens
+	// on the OpenAI shape; separate from input_tokens on the Anthropic one, so it is folded back in
+	// here. cache_creation is a write — billed, so it lands in Prompt but never in Cached.
 	Cached int
 }
 
-// ParseUsage extracts a token count from a JSON blob. It accepts either a full
-// response object containing a "usage" field, or the usage object itself, and
-// handles both OpenAI and Anthropic key names. Returns ok=false if no token
-// fields are present (e.g. a streaming chunk before the final usage arrives).
+// ParseUsage reads a token count from either a full response or a bare usage object, in either key
+// dialect. ok=false when no token fields are present — a streaming chunk before the final frame.
 func ParseUsage(raw []byte) (Usage, bool) {
 	var m map[string]json.RawMessage
 	if err := json.Unmarshal(TrimSSE(raw), &m); err != nil {

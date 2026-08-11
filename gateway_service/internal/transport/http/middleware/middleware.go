@@ -69,14 +69,9 @@ func Registered() []string {
 	return sortedLocked()
 }
 
-// GatewayChain is the tenant plane's order. It is not arbitrary:
-//
-//   - recover is outermost so a panic anywhere below is still answered.
-//   - accesslog wraps everything it needs to time, including the refusals above auth.
-//   - drain sits above auth: a restarting gateway answers the same way whether or not the caller's
-//     key is any good.
-//   - meter sits directly below route, because route claims an in-flight slot and everything below
-//     it must give that slot back, whatever happens.
+// GatewayChain's order is load-bearing: recover outermost so a panic below is still answered,
+// accesslog around everything it times, drain above auth so a restarting box answers the same
+// whatever the key, and meter directly below route because route claims a slot that must come back.
 var GatewayChain = []string{
 	"recover", "accesslog", "drain",
 	"auth", "quota", "body", "modelaccess",
@@ -90,10 +85,8 @@ var IngressChain = []string{
 	"ingressauth", "pick", "upstreamauth",
 }
 
-// Chain resolves names to middleware and folds them into one, applied in the order given.
-//
-// An unknown name is a startup error rather than a warning: a misspelt `quota` would silently stop
-// enforcing the monthly budget, and nothing downstream would look wrong.
+// Chain resolves names to middleware and folds them into one, in the order given. An unknown name
+// is a startup error, not a warning: a misspelt `quota` would silently stop enforcing the budget.
 func Chain(deps Deps, names []string) (Middleware, error) {
 	mu.RLock()
 	defer mu.RUnlock()

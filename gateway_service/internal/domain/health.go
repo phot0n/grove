@@ -5,10 +5,9 @@ import (
 	"strings"
 )
 
-// Passive health, from traffic the gateway is already sending. No prober, no extra endpoint: every
-// admitted request reports how its hop went, and a target that keeps failing stops being chosen.
-// That is cheaper than active probing and strictly better informed — a probe tests a path no
-// customer is on.
+// Passive health, from traffic already flowing: every admitted request reports how its hop went and
+// a target that keeps failing stops being chosen. Better informed than a probe, which tests a path
+// no customer is on.
 
 const (
 	// EjectAfter is how many consecutive failures retire a target. One is noise — a client
@@ -17,13 +16,9 @@ const (
 	EjectAfter = 3
 )
 
-// IsHopFailure reports whether this outcome says the target is broken, rather than that the
-// request was.
-//
-// The distinction that matters is which failures count. A connection error, a 502 or a 504 mean
-// the hop itself is broken. A 503 carrying X-Grove-Reason: no-replica means the ingress answered
-// perfectly well and one model has nowhere to go behind it; counting that would let a single
-// unplaced model pull an ingress out of rotation for every other model on it.
+// IsHopFailure reports whether the TARGET is broken rather than the request. A connection error,
+// 502 or 504 is the hop. A 503 with X-Grove-Reason: no-replica is not — the ingress answered fine
+// and one model has nowhere to go, and counting it would eject the ingress for every other model.
 func IsHopFailure(upstreamStatus, reason string) bool {
 	// A no-replica 503 is the ingress working correctly. Checked before the status, because the
 	// status alone cannot tell it from an ingress that is down.
@@ -45,11 +40,8 @@ func IsHopSuccess(upstreamStatus string) bool {
 	return status > 0 && status < 500
 }
 
-// firstStatus reads an upstream status. Historically this was nginx's $upstream_status, a
-// comma-and-colon separated list when a request touched more than one upstream; the first entry is
-// the one this gateway chose. The Go proxy reports a single status, so the split is vestigial and
-// costs one IndexAny.
-//
+// firstStatus reads an upstream status. nginx wrote a comma-separated list when a request touched
+// several upstreams; the Go proxy reports one, so the split is vestigial and costs one IndexAny.
 // ponytail: the list form dies with the last OpenResty box; drop the split then.
 func firstStatus(raw string) int {
 	raw = strings.TrimSpace(raw)

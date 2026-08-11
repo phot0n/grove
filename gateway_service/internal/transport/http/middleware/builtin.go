@@ -157,10 +157,9 @@ func newBody(deps Deps) (Middleware, error) {
 			state := From(r)
 			maxBytes := limit()
 
-			// A protocol upgrade — a realtime WebSocket session — carries no body at all, so the
-			// model comes from the query string, which is where the OpenAI realtime API puts it.
-			// Nothing here reads or restores the body: stamping Content-Length on an upgrade would
-			// break the handshake before it reached an engine.
+			// A WebSocket upgrade carries no body, so the model comes from the query string — where
+			// the OpenAI realtime API puts it. Nothing reads or restores the body here: stamping
+			// Content-Length on an upgrade breaks the handshake.
 			if isUpgrade(r) {
 				query := r.URL.Query()
 				state.Model = strings.TrimSpace(query.Get("model"))

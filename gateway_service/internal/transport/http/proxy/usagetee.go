@@ -9,13 +9,9 @@ import (
 // is what matters, because the usage object is at the end of it.
 const carryLimit = 256 << 10
 
-// usageTee copies the response through untouched and keeps the last newline-delimited line that
-// contains "usage": the final frame of an OpenAI stream, or the whole of a non-streaming body.
-//
-// It reads what it is already copying and writes nothing back, so the stream reaches the client
-// byte-for-byte and at the same time it would have without it. That property is the whole contract
-// here — a metering feature that buffered or reordered a token stream would be worse than no
-// metering.
+// usageTee keeps the last newline-delimited line containing "usage" — the final frame of a stream,
+// or a whole non-streaming body. It reads what it is already copying and writes nothing back, so
+// the stream reaches the client byte-for-byte and on time. That property is the contract.
 type usageTee struct {
 	body  io.ReadCloser
 	carry []byte

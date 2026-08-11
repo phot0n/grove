@@ -12,12 +12,9 @@ import (
 	"golang.org/x/crypto/bcrypt"
 )
 
-// /metrics/node — the Monitoring Agent scrapes node_exporter through here rather than over :9100,
-// so the box needs nothing open beyond 22/80/443.
-//
-// The credential is the same htpasswd file the nginx it replaces read. The control plane hashes it
-// with bcrypt, which nginx also accepts through crypt(3) — so the inference boxes, which still run
-// nginx for their own /metrics, verify the identical file.
+// /metrics/node — the Monitoring Agent scrapes node_exporter through here rather than :9100, so the
+// box needs nothing open beyond 22/80/443. The htpasswd is bcrypt, which nginx also accepts via
+// crypt(3), so inference boxes still running nginx verify the identical file.
 type metricsProxy struct {
 	username string
 	hash     string
@@ -50,11 +47,9 @@ func (m *metricsProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	m.upstream.ServeHTTP(w, r)
 }
 
-// authorized compares the username in constant time and the password against its stored hash.
-//
-// A blank hash matches nothing, so a box whose htpasswd never rendered keeps metrics shut rather
-// than opening up — bcrypt would reject it anyway, but relying on that would make the safe outcome
-// an accident of the library.
+// authorized compares the username in constant time and the password against its hash. A blank hash
+// matches nothing, so a box whose htpasswd never rendered stays shut — bcrypt would reject it too,
+// but relying on that would make the safe outcome an accident of the library.
 func (m *metricsProxy) authorized(user, password string) bool {
 	if m.hash == "" {
 		return false

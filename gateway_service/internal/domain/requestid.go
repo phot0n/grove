@@ -8,15 +8,9 @@ import (
 	"strings"
 )
 
-// BuildRequestID stamps a traceable id on every admitted request:
-// gr-<gateway>-<deployment>-<key prefix>-<random>. The key prefix is the API Key's unique doc
-// name (already unique per key); the random tail makes each request unique. Parts are sanitized
-// so the only '-' is the separator.
-//
-// The target is the Model Deployment, not the box: a box can serve one model from two
-// deployments, and naming the box makes those two requests indistinguishable. Falls back to the
-// server for routes pushed before the deployment field existed, then to a short hash of the
-// engine URL — each tier a strictly worse name, none of them wrong.
+// BuildRequestID stamps gr-<gateway>-<deployment>-<key prefix>-<random>, sanitized so the only '-'
+// is the separator. The target is the Model Deployment, not the box: one box can serve a model from
+// two deployments. Falls back to the server, then a hash of the engine URL — each worse, none wrong.
 func BuildRequestID(gatewayID string, route Route, keyPrefix string) string {
 	target := route.Deployment
 	if target == "" {

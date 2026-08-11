@@ -29,10 +29,9 @@ func (u usage) Add(ctx context.Context, prefix string, fields map[string]int64) 
 	return err
 }
 
-// drainScript atomically READS and DELETES one live counter — the snapshot is returned and the
-// counter removed in one Redis call. Redis is single-threaded, so a request metered mid-pull lands
-// either fully in the returned snapshot (before the DEL) or on a fresh key (after), never split.
-// HGETALL on a missing key is empty and DEL is a no-op, so no EXISTS guard is needed.
+// drainScript READS and DELETES one counter in a single call. Redis is single-threaded, so a
+// request metered mid-pull lands either wholly in the snapshot or wholly on a fresh key, never
+// split. HGETALL on a missing key is empty and DEL a no-op, so no EXISTS guard is needed.
 var drainScript = redis.NewScript(`
 local h = redis.call('HGETALL', KEYS[1])
 redis.call('DEL', KEYS[1])

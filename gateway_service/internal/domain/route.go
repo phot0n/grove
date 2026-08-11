@@ -35,17 +35,9 @@ func (r Route) IsIngress() bool { return r.Kind == "ingress" }
 // --max-num-seqs set has no number to hold it to, so it is never held back.
 func (r Route) HasRoom() bool { return r.Capacity <= 0 || r.InFlight < r.Capacity }
 
-// nearest narrows a model's routes to the ones in this gateway's own region, when there are any.
-// Everything after it — stickiness, the capacity gate, least-in-flight — then runs inside the
-// winning tier, so an idle replica on another continent never wins on in-flight count alone.
-//
-// Two tiers and no further ordering: a cross-region hop costs so much more than the difference
-// between two remote regions that ranking the far ones would be precision nobody can feel. A
-// route with no Region is treated as remote — every route carried one before this mattered, and
-// the safe reading of "unknown" is "not local".
-//
-// Falls through unchanged when the gateway has no region of its own, or when nothing local is
-// left: a far replica beats a 503.
+// nearest narrows to routes in this gateway's region when there are any, so stickiness and
+// least-in-flight run inside the winning tier. Two tiers only — ranking remote regions is precision
+// nobody can feel. Blank Region reads as remote; nothing local falls through, since far beats 503.
 func nearest(routes []Route, region string) []Route {
 	if region == "" {
 		return routes
@@ -62,18 +54,9 @@ func nearest(routes []Route, region string) []Route {
 	return local
 }
 
-// PickRoute implements Tier-1 selection with session stickiness (§6 jobs 5-6): among the healthy
-// routes for a model, reuse the sticky one if it is still healthy and has room, else take the one
-// with the fewest requests in flight. The model is invariant — callers only ever pass routes that
-// host the requested model, so failover keeps the model and swaps the place.
-//
-// Returns the status the caller should answer with: 200 to admit, 503 when the model has nowhere
-// healthy to go, and 429 when every healthy replica is already at --max-num-seqs. The two are
-// different answers — a 503 says the model is down, a 429 says come back shortly — and only the
-// second is the client's cue to back off rather than to page someone.
-//
-// A tie keeps the first, which is all two idle engines need to alternate: the caller claims the
-// engine it was given, so the next request no longer sees a tie.
+// PickRoute reuses the sticky route when healthy and with room, else fewest in-flight. 200 admits,
+// 503 means nowhere healthy, 429 means every replica is at capacity — only 429 says retry. A tie
+// keeps the first; the caller's claim breaks it next time.
 func PickRoute(routes []Route, stickyURL, region string) (Route, int) {
 	var healthy []Route
 	for _, r := range routes {

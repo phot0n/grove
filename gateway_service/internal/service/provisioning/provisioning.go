@@ -35,10 +35,9 @@ func (s *Service) DeleteUsers(ctx context.Context, ids []string) (int, error) {
 	return s.store.Users.Delete(ctx, ids)
 }
 
-// UpsertGroups also replaces the pooled public catalogue when one is given. Replaced whole, never
-// merged: the control plane pools it across every group that still exists, so this is also how a
-// deleted group stops being advertised. A nil pointer is a control plane that predates the
-// catalogue and leaves the current one alone instead of clearing it.
+// UpsertGroups also replaces the pooled public catalogue when given one. Replaced whole, never
+// merged — that is how a deleted group stops being advertised. A nil pointer predates the catalogue
+// and leaves the current one alone rather than clearing it.
 func (s *Service) UpsertGroups(ctx context.Context, records []repository.GroupUpsert, publicCatalog *string) error {
 	if err := s.store.Groups.Upsert(ctx, records); err != nil {
 		return err
@@ -52,14 +51,9 @@ func (s *Service) UpsertGroups(ctx context.Context, records []repository.GroupUp
 	return s.store.Catalog.Set(ctx, *publicCatalog)
 }
 
-// ReplaceRoutes replaces the table for each model named. An empty list retires that model, which is
-// what makes it 503 rather than silently keeping a stale placement.
-//
-// `prune` says the payload is the COMPLETE table, so any model not named in it is gone and its key
-// is deleted here. Without it, the only way to retire a model is to send it with an empty list —
-// which means naming every model in the catalogue on every push, most of them empty, to delete keys
-// that mostly do not exist. An ingress holds replicas for a handful of models and the catalogue runs
-// to hundreds, so that is nearly all of the payload and all of the work.
+// ReplaceRoutes replaces the table per model named; an empty list retires that model, which is what
+// makes it 503 rather than keep a stale placement. `prune` says the payload is the COMPLETE table,
+// so anything unnamed is deleted — otherwise retiring one model means naming all of them.
 func (s *Service) ReplaceRoutes(ctx context.Context, table map[string][]domain.Route, prune bool) (models, pruned int, err error) {
 	var retired []string
 	for model, routes := range table {
@@ -106,10 +100,9 @@ func (s *Service) staleModels(ctx context.Context, keep map[string][]domain.Rout
 	return stale, nil
 }
 
-// DrainUsage atomically reads and deletes every live counter. Mutating by design: the counters are
-// removed so new requests accrue on a fresh key, and the snapshot returned is the only copy. There
-// is no second round trip, so a failed insert control-plane-side drops that cycle's delta rather
-// than double-counting it.
+// DrainUsage atomically reads and deletes every live counter, so the snapshot returned is the only
+// copy. No second round trip: a failed insert control-plane-side drops that cycle rather than
+// double-counting it.
 func (s *Service) DrainUsage(ctx context.Context) (map[string]map[string]string, error) {
 	return s.store.Usage.Drain(ctx)
 }

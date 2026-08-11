@@ -16,10 +16,8 @@ const (
 	// inflightWindow bounds how long an admitted request counts against its engine — longer than
 	// any real generation, short enough that a lost release clears on its own.
 	inflightWindow = 15 * time.Minute
-	// healthTTL is how long a target stays retired with nothing further said about it. The counter
-	// is what holds it out, so this is really "how long before we let traffic try again" — short,
-	// because the only way back in is for a request to succeed, and no request is sent while it is
-	// out.
+	// healthTTL is how long a target stays retired in silence — really "how long before traffic
+	// tries again". Short, because the only way back in is a success, and nothing is sent while out.
 	healthTTL = 60 * time.Second
 )
 
@@ -45,11 +43,9 @@ type inFlight struct{ rdb *redis.Client }
 
 func inflightKey(engineURL string) string { return "inflight:" + engineURL }
 
-// Counts trims entries older than the window on the way past, then counts what is left.
-//
-// A sorted set of request ids scored by admit time, not a counter: metering is best effort, and a
-// counter that missed one release would count that request forever and retire the engine. Here the
-// entry ages out instead.
+// Counts trims entries older than the window, then counts what is left. A sorted set scored by
+// admit time rather than a counter: metering is best effort, and a counter that missed one release
+// would hold that request forever and retire the engine. Here the entry ages out.
 func (f inFlight) Counts(ctx context.Context, engineURLs []string) ([]int, error) {
 	cutoff := strconv.FormatInt(time.Now().Add(-inflightWindow).Unix(), 10)
 	cards := make([]*redis.IntCmd, len(engineURLs))
@@ -126,10 +122,9 @@ func (h health) Failures(ctx context.Context, targets []string) ([]int, error) {
 
 func (h health) RecordFailure(ctx context.Context, target string) error {
 	key := healthKey(target)
-	// Transactional, and this is the one that matters. The TTL is the ONLY way an ejected target
-	// comes back: it is out of rotation, so it receives no traffic, so no success ever arrives to
-	// clear the counter and no further failure ever arrives to re-set the expiry. An INCR that
-	// landed without its EXPIRE would eject a healthy engine permanently.
+	// Transactional, and this is the one that matters: the TTL is the ONLY way back. An ejected
+	// target gets no traffic, so no success clears the counter and no failure re-sets the expiry —
+	// an INCR that landed without its EXPIRE would eject a healthy engine permanently.
 	_, err := h.rdb.TxPipelined(ctx, func(p redis.Pipeliner) error {
 		p.Incr(ctx, key)
 		p.Expire(ctx, key, healthTTL)

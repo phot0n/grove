@@ -50,10 +50,9 @@ type Service struct {
 
 	gatewayID string
 	region    string
-	// syntheticTTL is how long a caller that names no session is pinned to one engine. 0 = not at
-	// all, which balances every such request. A function, not a value: it is the knob most likely
-	// to be turned while the fleet is running, and reading it per request is what makes turning it
-	// an edit rather than a deploy.
+	// syntheticTTL is how long a caller naming no session is pinned to one engine; 0 balances every
+	// such request. A function, not a value, so turning it is an edit to the tunables file rather
+	// than a deploy.
 	syntheticTTL func() time.Duration
 }
 
@@ -98,10 +97,9 @@ func (s *Service) Pick(ctx context.Context, req Request) (Decision, error) {
 		return Decision{}, domain.Deny(503, "model unavailable")
 	}
 
-	// Every row of a model carries the same modality — it is the model's, stamped per row — so the
-	// first one answers for the table. Refused here rather than forwarded: the engine would 404 it
-	// anyway, and this stage sits above meter, so a wrong-surface call costs nothing and bills
-	// nothing.
+	// Modality is the model's, stamped on every row, so the first answers for the table. Refused
+	// here rather than forwarded: the engine would 404 it, and this sits above meter, so a
+	// wrong-surface call bills nothing.
 	if !domain.Serves(table[0].Modality, req.Path) {
 		return Decision{}, domain.Deny(404, req.Model+" does not serve "+req.Path)
 	}
@@ -188,10 +186,9 @@ func (s *Service) Release(ctx context.Context, engineURL, requestID string) {
 	}
 }
 
-// fillInFlight sets each route's InFlight to what is running on its engine right now.
-//
-// A store failure leaves every count at zero, which degrades to taking the first healthy route.
-// Refusing the request instead would 503 a working engine over an unreadable counter.
+// fillInFlight sets each route's InFlight to what its engine is running now. A store failure leaves
+// every count at zero, degrading to the first healthy route — refusing instead would 503 a working
+// engine over an unreadable counter.
 func (s *Service) fillInFlight(ctx context.Context, table []domain.Route) {
 	urls := make([]string, len(table))
 	for i, r := range table {
@@ -207,12 +204,9 @@ func (s *Service) fillInFlight(ctx context.Context, table []domain.Route) {
 	}
 }
 
-// markUnhealthy flips Healthy off on every route whose target has failed too often in a row.
-// PickRoute's existing Healthy check does the rest.
-//
-// A store failure leaves every route as the control plane pushed it, which is the safe direction:
-// ejection is an optimisation on top of a table that is already correct, and refusing to route
-// because a health counter is unreadable would turn one broken store into an outage.
+// markUnhealthy flips Healthy off where a target has failed too often in a row; PickRoute's own
+// check does the rest. A store failure leaves the table as the control plane pushed it — ejection
+// is an optimisation on something already correct, so an unreadable counter must not cause an outage.
 func (s *Service) markUnhealthy(ctx context.Context, table []domain.Route) {
 	targets := make([]string, len(table))
 	for i, r := range table {

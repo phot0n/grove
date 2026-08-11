@@ -1,12 +1,8 @@
 package domain
 
-// Denial is a refusal with the status the caller should be answered with. Every gate in the
-// admission path speaks this vocabulary — 401 the credential, 403 the grant, 429 the budget or a
-// full engine, 503 the model or the store — so a handler translates one type rather than mapping
-// each service's own errors.
-//
-// A store failure is a Denial too (503): from the caller's side "we cannot read your key" and "we
-// cannot reach an engine" are the same answer, and the difference belongs in the log, not the body.
+// Denial carries the status to answer with — 401 credential, 403 grant, 429 budget or full engine,
+// 503 model or store — so a handler translates one type instead of each service's own errors. A
+// store failure is a 503 Denial too: to the caller it is the same answer, and the why goes in the log.
 type Denial struct {
 	Status int
 	Reason string

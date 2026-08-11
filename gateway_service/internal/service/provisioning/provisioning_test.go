@@ -16,11 +16,9 @@ func serving(model string) []domain.Route {
 	return []domain.Route{{EngineURL: "https://box/e/" + model, Healthy: true}}
 }
 
-// Prune decides which models survive a complete push. The rule is the whole reason an ingress can
-// stop naming every model in the catalogue on every sync.
-//
-// Tested through the store rather than by re-deriving the rule beside it: the old test computed
-// the stale set itself and compared it to itself, which passed whatever the service did.
+// Prune decides which models survive a complete push — the reason an ingress need not name every
+// model in the catalogue every sync. Tested through the store, not by re-deriving the rule: the old
+// test computed the stale set itself and compared it to itself, passing whatever the service did.
 func TestPruneKeepsOnlyWhatThePayloadNames(t *testing.T) {
 	for _, c := range []struct {
 		name    string

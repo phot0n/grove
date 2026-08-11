@@ -1,9 +1,6 @@
-// Package memory is a repository implementation held in maps. Test-only, and the reason the
-// services can be tested at all — none of them has ever had a test that reached storage, because
-// reaching storage meant reaching Redis.
-//
-// Deliberately not a mock: it behaves, so a test says what the store held and what the service
-// should therefore answer, rather than which calls it expected.
+// Package memory is a map-backed repository, test-only, and the reason the services are testable at
+// all. Deliberately not a mock: it behaves, so a test states what the store held and what the
+// service should answer, rather than which calls it expected.
 package memory
 
 import (

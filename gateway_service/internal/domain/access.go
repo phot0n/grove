@@ -2,11 +2,9 @@ package domain
 
 import "strings"
 
-// KeyRecord is what the agent reads out of key:<sha256(secret)>. Deliberately thin: a credential's
-// only fact of its own is whether it has been revoked. Who holds it, what they may call and
-// whether they are over budget are facts about the PERSON and live in user:<name> — so one
-// leaked key dies without touching the rest, and a budget flip is one write however many keys
-// they hold.
+// KeyRecord is key:<sha256(secret)>, deliberately thin: a credential's only fact of its own is
+// whether it is revoked. Who holds it and what they may call belong to the PERSON, in user:<name>
+// — so one leaked key dies alone, and a budget flip is one write however many keys they hold.
 type KeyRecord struct {
 	Status    string // "active" | "revoked"
 	User      string // Grove User doc name — the pointer to the UserRecord below
@@ -82,13 +80,9 @@ func CanUse(usr UserRecord, grp GroupRecord, model string) bool {
 	return grp.Models[model] || usr.Allow[model]
 }
 
-// Evaluate is the pure admission decision. Returns an HTTP status (200 = admit) and a short reason.
-// Rate limiting is a per-user monthly TOKEN BUDGET enforced by the control plane
-// (grove.usage_pull), which flags the USER when they are over — the gateway keeps no counters of
-// its own, it just honors the pushed flag.
-//
-// The credential is checked before the budget: a revoked key is 401 even for a user who is also
-// over their quota, because the key is the thing that is wrong.
+// Evaluate is the pure admission decision: an HTTP status (200 admits) and a reason. The only limit
+// is a monthly token budget the control plane flags on the USER; the gateway keeps no counters. The
+// credential is checked first, so a revoked key is 401 even for someone also over quota.
 func Evaluate(rec KeyRecord, usr UserRecord, grp GroupRecord, model string) (int, string) {
 	if rec.Status != "active" {
 		return 401, "key revoked or inactive"

@@ -9,15 +9,9 @@ import (
 	"path/filepath"
 )
 
-// Loggers are deliberately two.
-//
-// Process is diagnostics — why a route was chosen, why a request was denied, what an upstream did.
-// JSON on stdout, which systemd captures into journald and the shipper reads from there.
-//
-// Access is one line per request, in its own file. Separate because it is a RECORD rather than a
-// diagnostic: it is what someone greps months later for a request id, it must not move when the log
-// level does, and mixing it into stdout would bury it under debug output at exactly the times
-// anyone turns debug on.
+// Two loggers on purpose. Process is diagnostics, JSON on stdout for journald. Access is one line
+// per request in its own file, because it is a RECORD rather than a diagnostic: it must not move
+// with the log level, and stdout would bury it under debug exactly when someone turns debug on.
 type Loggers struct {
 	Process *slog.Logger
 	Access  *slog.Logger

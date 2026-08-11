@@ -51,23 +51,18 @@ func (k keys) Upsert(ctx context.Context, records []repository.KeyUpsert) error 
 			continue
 		}
 		redisKey := "key:" + rec.MeterID
-		// One transaction, so a request never reads this record half-updated: the write and the
-		// strip below are one change or neither. Two commands left a window where a reader saw the
-		// new fields beside the stale legacy ones — inert today, because the legacy set is only
-		// consulted when user:<name> is missing, but it is a torn read either way and the fix costs
-		// nothing.
+		// One transaction, so a reader never sees this record half-updated: the write and the strip
+		// below land together or not at all. Two commands left a window showing new fields beside
+		// stale legacy ones — inert today, a torn read regardless, and free to fix.
 		_, err := k.rdb.TxPipelined(ctx, func(p redis.Pipeliner) error {
 			p.HSet(ctx, redisKey, map[string]any{
 				"status": rec.Status,
 				"user":   rec.User,
 				"prefix": rec.Prefix,
 			})
-			// A pre-group control plane resolved access to a flat model set on the key; that set is
-			// stale the moment a group is pushed, so it goes.
-			//
-			// `group`/`allow`/`deny` are deliberately NOT dropped. This cannot tell a current push
-			// from one by a control plane that still writes them, and dropping them under the second
-			// would leave the record with no access at all. They are inert once user:<name> exists.
+			// A pre-group control plane flattened access onto the key; that set is stale the moment a
+			// group is pushed. `group`/`allow`/`deny` stay: this cannot tell a current push from an
+			// older plane still writing them, and dropping them there would leave no access at all.
 			p.HDel(ctx, redisKey, "models", "priority")
 			return nil
 		})

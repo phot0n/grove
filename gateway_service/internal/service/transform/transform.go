@@ -59,11 +59,9 @@ func Registered() []string {
 // sees an earlier one's output.
 var Default = []string{"streamusage"}
 
-// Chain is an ordered, resolved set of transforms.
-//
-// Replaceable in place, under its own lock: the transform middleware holds a pointer to it, and
-// rebuilding the whole middleware chain to change which body rewrites run would be a much larger
-// swap for a much smaller change.
+// Chain is an ordered, resolved set of transforms, replaceable in place under its own lock — the
+// middleware holds a pointer, and rebuilding the whole chain to change which rewrites run would be
+// a much larger swap for a much smaller change.
 type Chain struct {
 	mu         sync.RWMutex
 	transforms []Request

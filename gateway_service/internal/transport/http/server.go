@@ -71,10 +71,8 @@ func New(cfg config.Config, svc Services, log *slog.Logger) *Server {
 }
 
 // DataHandler is the customer-facing surface: /v1/, plus the model list the gateway answers itself.
-//
-// The chain is resolved here rather than per request, so an unknown middleware name is a startup
-// failure. A misspelt `quota` that merely warned would silently stop enforcing the monthly budget
-// and nothing downstream would look wrong.
+// The chain resolves here rather than per request, so an unknown middleware name fails at startup —
+// a misspelt `quota` that merely warned would silently stop enforcing the budget.
 func (s *Server) DataHandler(chain []string) (http.Handler, error) {
 	if err := s.SetChain(chain); err != nil {
 		return nil, err

@@ -11,10 +11,9 @@ import (
 	"strings"
 )
 
-// Multipart bodies reach the gateway from the OpenAI endpoints that carry a file —
-// /v1/audio/transcriptions, /v1/audio/translations, /v1/images/edits, /v1/files. They need the same
-// two facts every other request gives up in its JSON: which model to route to, and optionally a
-// session hint. The difference is that the body must not be materialised to get them.
+// The OpenAI endpoints that carry a file — audio/transcriptions, audio/translations, images/edits,
+// files — need the same two facts as any other request: the model, and optionally a session hint.
+// The difference is that the body must not be materialised to get them.
 
 const (
 	modelField   = "model"
@@ -102,20 +101,9 @@ func multipartBoundary(r *http.Request) string {
 	return params["boundary"]
 }
 
-// readMultipart pulls the routing fields out of a multipart body and hands the body on unchanged.
-//
-// The parse reads through a tee, so every byte the multipart reader consumes — including what its
-// internal buffering read ahead but has not returned — is kept. The body handed on is that capture
-// followed by whatever is still unread, which is the exact byte stream the client sent: the engine
-// sees its own boundary, part ordering and encoding.
-//
-// It stops at `model`, so a client that sends the field before its file captures almost nothing at
-// all, and one that sends it last spills the difference to disk rather than to memory. `user` is
-// taken only if it happens to appear first; X-Grove-Session is the reliable way to pin a multipart
-// request, and the caller applies it after this returns.
-//
-// A form that ends with no model part is not an error here. It reaches the access check and is
-// refused there, which is the same answer the JSON path gives a body with no model.
+// readMultipart takes the routing fields and hands the body on byte-exact, replaying what the tee
+// captured (including read-ahead) before the unread rest. It stops at `model`, so a form leading
+// with it captures almost nothing. No model part is refused later by the access check, as with JSON.
 func readMultipart(w http.ResponseWriter, r *http.Request, boundary string, limit int64, log *slog.Logger) (model, session string, err error) {
 	original := r.Body
 	limited := http.MaxBytesReader(w, original, limit)

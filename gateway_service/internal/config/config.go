@@ -1,11 +1,6 @@
-// Package config splits what this process was told into two halves by LIFETIME.
-//
-//	Config  — environment. Identity, secrets, sockets, paths. Changing one makes this a different
-//	          process, so it takes a restart and says so.
-//	Dynamic — a JSON file, re-read when it changes. Tunables an operator turns while the fleet runs.
-//
-// Nothing appears in both. A value that lives in the environment is not overridable by the file and
-// the other way round, so there is never a question of which one won.
+// Package config splits configuration by LIFETIME. Config is environment — identity, secrets,
+// sockets, paths — and takes a restart. Dynamic is a JSON file re-read on SIGUSR1. Nothing appears
+// in both, so there is never a question of which one won.
 package config
 
 import (
@@ -107,12 +102,9 @@ func Load() (Config, error) {
 	return cfg, nil
 }
 
-// ResolveMode reads the two id variables and returns the ingress id, or "" for a gateway.
-//
-// One binary, two planes, and which one this box is is decided entirely by what it was given. Both
-// ids set is refused rather than resolved by precedence: it would be a box serving customer keys
-// from inside a VPC, and the whole point of the split is that no box does both. Neither set is a
-// gateway, which is what every box was before ingresses existed.
+// ResolveMode returns the ingress id, or "" for a gateway. Both ids set is refused rather than
+// resolved by precedence — that would be a box serving customer keys from inside a VPC, which is
+// what the split exists to prevent.
 func ResolveMode(gatewayID, ingressID string) (string, error) {
 	gatewayID, ingressID = strings.TrimSpace(gatewayID), strings.TrimSpace(ingressID)
 	if gatewayID != "" && ingressID != "" {
@@ -123,11 +115,9 @@ func ResolveMode(gatewayID, ingressID string) (string, error) {
 	return ingressID, nil
 }
 
-// RequireAdminToken reads GROVE_ADMIN_TOKEN, which the agent refuses to start without. /admin is
-// the only path the control plane has to this box, and treating a blank token as "admin off" left
-// a box serving the keys and routes it last had, with nothing but one startup line to say why the
-// pushes stopped landing. Whitespace is blank: an env file written from an empty template renders
-// the value as spaces, and that is the same missing token.
+// RequireAdminToken reads GROVE_ADMIN_TOKEN; the process refuses to start without it. Treating
+// blank as "admin off" left a box serving whatever keys and routes it last had, with one startup
+// line to explain the silence. Whitespace is blank — an empty template renders spaces.
 func RequireAdminToken(raw string) (string, error) {
 	token := strings.TrimSpace(raw)
 	if token == "" {
@@ -148,13 +138,9 @@ func GatewayID() string {
 	return "gw"
 }
 
-// parseDurationStrict rejects what it cannot read rather than falling back.
-//
-// The opposite of what the environment variables used to do, and deliberately. A tunable is edited
-// by hand and read back by nobody, so a value that silently became its default is a knob the
-// operator believes they turned — exactly the old GROVE_SYNTHETIC_SESSION_TTL, where a typo meant
-// "balance everything" while the person who typed it thought it meant "pin everything". Here the
-// file is refused whole and the running value is kept.
+// parseDurationStrict refuses what it cannot read rather than defaulting. A tunable is typed by
+// hand and read back by nobody, so one that silently became its default is a knob the operator
+// believes they turned. The file is refused whole and the running value kept.
 func parseDurationStrict(raw string) (time.Duration, error) {
 	value, err := time.ParseDuration(strings.TrimSpace(raw))
 	if err != nil {

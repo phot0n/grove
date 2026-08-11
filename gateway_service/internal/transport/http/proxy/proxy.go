@@ -31,10 +31,8 @@ type Options struct {
 	// ReadTimeout bounds a whole generation. Long: a large completion legitimately takes minutes.
 	ReadTimeout time.Duration
 	DialTimeout time.Duration
-	// VerifyUpstream turns on certificate verification for engine and ingress hops. Off matches
-	// what the nginx data path could do at all — proxy_ssl_verify is a per-location directive and
-	// the target was a variable, so one self-signed box pinned it off for every target sharing the
-	// location. Here it is per target, so this is a fleet default rather than a ceiling.
+	// VerifyUpstream turns on certificate verification for engine and ingress hops. Per target here,
+	// so it is a fleet default rather than the ceiling nginx's per-location directive imposed.
 	VerifyUpstream bool
 }
 
@@ -62,13 +60,9 @@ func New(opts Options, log *slog.Logger) *Proxy {
 	return &Proxy{opts: opts.withDefaults(), log: log, transports: map[string]http.RoundTripper{}}
 }
 
-// Reconfigure replaces the options and DROPS the transport pool.
-//
-// Dropping it is the point: TLS verification and the response-header timeout are baked into a
-// transport when it is built, so keeping the pool would leave every engine already talked to on the
-// old setting and apply the new one only to engines first seen afterwards — a fleet in two states,
-// with no way to tell which was which. Existing connections finish on the old transport; it is
-// garbage once its last request does.
+// Reconfigure replaces the options and DROPS the transport pool. Verification and the header
+// timeout are baked in at build time, so keeping it would leave engines already dialled on the old
+// setting and new ones on the new. Live connections finish on the old transport, then it is garbage.
 func (p *Proxy) Reconfigure(opts Options) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -76,11 +70,9 @@ func (p *Proxy) Reconfigure(opts Options) {
 	p.transports = map[string]http.RoundTripper{}
 }
 
-// Forward proxies the request to target and returns what the hop did. target is a base URL; the
-// path the client asked for is appended to it, exactly as the Lua data path did.
-//
-// The returned Outcome is filled whatever happens, including a dial failure — a hop with no status
-// is itself a signal, and dropping it would leave a dead engine in rotation.
+// Forward proxies to target (a base URL; the client's path is appended) and reports what the hop
+// did. The Outcome is filled even on a dial failure — a hop with no status is itself the signal
+// that ejects a dead engine.
 func (p *Proxy) Forward(w http.ResponseWriter, r *http.Request, target string) Outcome {
 	base, err := url.Parse(target)
 	if err != nil || base.Host == "" {
@@ -99,10 +91,9 @@ func (p *Proxy) Forward(w http.ResponseWriter, r *http.Request, target string) O
 			pr.Out.URL.RawQuery = pr.In.URL.RawQuery
 			// SNI and virtual hosts: the target's name, not the one the client asked us for.
 			pr.Out.Host = base.Host
-			// ReverseProxy deletes the inbound X-Forwarded-* from Out whenever Rewrite is set, so
-			// that a rewrite cannot forward a header a client spoofed. Ours are not the client's:
-			// the upstreamauth stage overwrote them from the peer address a moment ago, so they are
-			// put back deliberately rather than by SetXForwarded, which would append instead.
+			// ReverseProxy drops inbound X-Forwarded-* whenever Rewrite is set, so a rewrite cannot
+			// carry a spoofed header. Ours are not the client's — upstreamauth just wrote them from
+			// the peer address — so they go back explicitly, not via SetXForwarded, which appends.
 			for _, header := range []string{"X-Forwarded-For", "X-Real-IP", "X-Forwarded-Proto"} {
 				if value := pr.In.Header.Get(header); value != "" {
 					pr.Out.Header.Set(header, value)
@@ -118,10 +109,9 @@ func (p *Proxy) Forward(w http.ResponseWriter, r *http.Request, target string) O
 			outcome.Status = resp.StatusCode
 			outcome.Deployment = resp.Header.Get("X-Grove-Engine")
 			outcome.Reason = resp.Header.Get("X-Grove-Reason")
-			// A 101 hands the connection over to ReverseProxy, which needs the body to stay an
-			// io.ReadWriteCloser so it can write back to the engine. The tee is read-only, so
-			// wrapping it here fails the handshake outright. Nothing is lost by skipping it: a
-			// hijacked stream carries no usage frame to scrape.
+			// A 101 hands the connection to ReverseProxy, which needs the body to stay an
+			// io.ReadWriteCloser to write back to the engine. The tee is read-only and would fail
+			// the handshake — and a hijacked stream has no usage frame to scrape anyway.
 			if resp.StatusCode == http.StatusSwitchingProtocols {
 				return nil
 			}

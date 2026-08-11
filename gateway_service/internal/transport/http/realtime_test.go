@@ -118,10 +118,9 @@ func TestARealtimeUpgradeReachesTheEngineAndCarriesBytes(t *testing.T) {
 		t.Errorf("echo = %q, want %q", strings.TrimSpace(line), "echo:hello")
 	}
 
-	// Metering is deferred, and for a hijacked connection the handler does not return until the
-	// session ends — so usage lands at DISCONNECT, not at connect, and an open session is unbilled
-	// for as long as it stays open. Nothing waits on a hijacked handler (httptest.Close does not
-	// either), so poll through Drain, which takes the store's lock and so cannot race the write.
+	// Metering is deferred and a hijacked handler does not return until the session ends, so usage
+	// lands at DISCONNECT — an open session is unbilled while it stays open. Nothing waits on such a
+	// handler (httptest.Close included), so poll through Drain, which locks and cannot race.
 	conn.Close()
 	var drained map[string]map[string]string
 	for deadline := time.Now().Add(3 * time.Second); time.Now().Before(deadline); {

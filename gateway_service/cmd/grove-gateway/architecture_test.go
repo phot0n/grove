@@ -9,11 +9,8 @@ import (
 	"testing"
 )
 
-// The layering is only worth having if it is enforced. Every rule below is one an import statement
-// can break in a single line, with nothing failing and nothing looking wrong — the service would go
-// on working while the property that made it testable quietly went away.
-//
-// Lives beside main because this is the one package that legitimately knows every ring exists.
+// Every rule below is one an import can break in a single line, with nothing failing and nothing
+// looking wrong. Lives beside main, the one package that legitimately knows every ring exists.
 
 const internalDir = "../../internal"
 
@@ -92,13 +89,9 @@ func TestDomainIsPure(t *testing.T) {
 	}
 }
 
-// The services orchestrate; they must not reach past the interfaces to a concrete store. This is
-// the inversion the whole arrangement rests on, and the one an autocomplete import undoes silently.
-//
-// Test files are exempt, and only here: reaching for repository/memory is exactly what the
-// inversion bought, so a service test naming an implementation is the rule working rather than
-// breaking. Every other rule below applies to tests too — a test that needed a live Redis, or a
-// domain test that reached the network, would be the same mistake as the production code doing it.
+// Services must not reach past the interfaces to a concrete store — the inversion everything rests
+// on, and the one an autocomplete import undoes silently. Test files are exempt HERE only: reaching
+// for repository/memory is what the inversion bought. Every other rule below applies to tests too.
 func TestServicesDependOnInterfacesNotImplementations(t *testing.T) {
 	skipTests := func(path string) bool { return strings.HasSuffix(path, "_test.go") }
 	for file, paths := range imports(t, filepath.Join(internalDir, "service"), skipTests) {

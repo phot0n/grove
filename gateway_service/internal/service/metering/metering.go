@@ -56,11 +56,9 @@ func (s *Service) Record(ctx context.Context, rep Report) {
 	}
 }
 
-// UsageFields is the whole accounting rule, kept pure so it is testable without a store.
-//
-// Each metric is written flat and, when known, as m:<metric>:<model> and m:<metric>:<deployment> in
-// the SAME hash — so a single drain carries both the aggregate and the breakdown. Zero values are
-// skipped: a field that never moved should not appear at all.
+// UsageFields is the whole accounting rule, pure so it is testable without a store. Each metric is
+// written flat and, when known, as m:<metric>:<model> and m:<metric>:<deployment> in the SAME hash,
+// so one drain carries aggregate and breakdown. Zero values are skipped.
 func UsageFields(rep Report) map[string]int64 {
 	model := strings.TrimSpace(rep.Model)
 	deployment := strings.TrimSpace(rep.Deployment)

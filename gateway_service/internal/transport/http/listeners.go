@@ -8,12 +8,9 @@ import (
 	"grove-gateway/internal/config"
 )
 
-// The two listeners that replace both shapes of the nginx config this gateway used to render.
-//
-// Host routing needs no code beyond what ServeMux already does: a Go 1.22 pattern takes a host, so
-// the two server blocks become two patterns on one mux. Customer traffic answers on the shared name
-// that GeoDNS points at whichever gateway is nearest; the admin plane and the scrape answer on this
-// box's own name, which reaches this box and no other.
+// Host routing needs no code beyond ServeMux: a Go 1.22 pattern takes a host, so the two nginx
+// server blocks become two patterns on one mux. Customer traffic answers on the shared GeoDNS name;
+// the admin plane and the scrape answer on this box's own name, which reaches no other.
 
 // Handlers builds the mux for the TLS listener.
 func (s *Server) Handlers(cfg config.Config, chain []string) (http.Handler, error) {
@@ -63,10 +60,9 @@ func (s *Server) Handlers(cfg config.Config, chain []string) (http.Handler, erro
 	return mux, nil
 }
 
-// RedirectHandler is the plaintext listener when TLS is configured: health, and a redirect for
-// everything else. No ACME challenge location — the fleet certificate is issued on the control
-// plane over DNS-01, which is the only thing that works when the shared name resolves to a
-// different box depending on where the client asks from.
+// RedirectHandler is the plaintext listener when TLS is configured: health, redirect everything
+// else. No ACME location — the fleet certificate is issued on the control plane over DNS-01, the
+// only method that works when the shared name resolves to a different box per client.
 func (s *Server) RedirectHandler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", s.Health)
@@ -89,12 +85,9 @@ func (s *Server) TLSConfig(cfg config.Config) (*tls.Config, error) {
 	}, nil
 }
 
-// NewHTTPServer builds a server with the timeouts a token stream needs.
-//
-// WriteTimeout is deliberately zero. It bounds the whole response, and a completion legitimately
-// takes minutes to write — any value here would cut long generations at exactly the point they
-// become valuable. ReadHeaderTimeout does the work a WriteTimeout is usually reached for: it is
-// what stops a connection that sends nothing from holding a slot.
+// NewHTTPServer builds a server with the timeouts a token stream needs. WriteTimeout is zero on
+// purpose: it bounds the whole response, and a completion takes minutes, so any value would cut
+// long generations. ReadHeaderTimeout is what stops a silent connection holding a slot.
 func NewHTTPServer(addr string, handler http.Handler, tlsConfig *tls.Config) *http.Server {
 	return &http.Server{
 		Addr:              addr,

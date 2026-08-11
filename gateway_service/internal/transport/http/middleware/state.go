@@ -10,12 +10,9 @@ import (
 	"grove-gateway/internal/service/transform"
 )
 
-// State is what one request accumulates as it moves down the chain. One struct in the context
-// rather than a context key per field: the stages are ordered and each reads what the ones above it
-// wrote, so a single scoped record is what that actually is.
-//
-// Scoped to the request and never shared: nothing here outlives the handler, and no two requests
-// see the same State.
+// State is what one request accumulates down the chain — one struct in the context rather than a
+// key per field, since the stages are ordered and each reads what the ones above wrote. Scoped to
+// the request: nothing outlives the handler and no two requests share one.
 type State struct {
 	Started time.Time
 

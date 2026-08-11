@@ -9,11 +9,9 @@ import (
 	"time"
 )
 
-// certLoader serves the certificate from disk and picks up a replacement without a restart.
-//
-// This is what makes a renewal a file copy: the control plane issues the fleet wildcard over DNS-01
-// and pushes it, and the next handshake uses it. The nginx it replaces needed a reload for the same
-// thing.
+// certLoader serves the certificate from disk and picks up a replacement without a restart, which
+// is what makes a renewal a file copy — the control plane pushes the fleet wildcard and the next
+// handshake uses it. nginx needed a reload for the same thing.
 type certLoader struct {
 	certPath, keyPath string
 	log               *slog.Logger
