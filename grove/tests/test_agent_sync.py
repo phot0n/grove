@@ -8,12 +8,13 @@ unmarshals it (`gateway_service/routing.go`, `admin.go`), Lua puts one of them o
 and both run on a box that is updated separately. So the shape is asserted rather than assumed.
 """
 
+import inspect
 import unittest
 import unittest.mock
 
 import frappe
 
-from grove import agent_sync
+from grove import agent_sync, hooks
 from grove.serve_command import DEFAULT_MAX_NUM_SEQS
 
 
@@ -407,3 +408,53 @@ class TestPushOrder(unittest.TestCase):
 
 if __name__ == "__main__":
 	unittest.main()
+class TestResyncAll(unittest.TestCase):
+	"""The hourly backstop for a box that lost its store.
+
+	sync_dirty clears each dirty flag once it lands, so nothing re-derives what a box holds. Routes
+	are pushed every tick and repair themselves; credentials are pushed once and never again. A
+	wiped gateway therefore answers /v1/models and reads as healthy while 401ing every credential,
+	with no way back but a human pressing Full Sync."""
+
+	def slot(self):
+		(cron,) = [
+			key for key, jobs in hooks.scheduler_events["cron"].items()
+			if "grove.agent_sync.resync_all" in jobs
+		]
+		return cron
+
+	def test_it_forces_a_complete_push_and_labels_the_run_scheduled(self):
+		calls = []
+		with unittest.mock.patch.object(agent_sync, "full_sync", lambda **kw: calls.append(kw)):
+			agent_sync.resync_all()
+		self.assertEqual(calls, [{"trigger": "Scheduled", "wait": 90}])
+
+	def test_it_waits_for_the_lock_instead_of_skipping(self):
+		# sync_dirty holds the same Projection lock. A backstop that gave up because the 2-minute
+		# tick happened to be running would silently not happen, which is the failure it exists to
+		# prevent — so it queues, and one redundant push an hour is the price.
+		calls = []
+		with unittest.mock.patch.object(agent_sync, "full_sync", lambda **kw: calls.append(kw)):
+			agent_sync.resync_all()
+		self.assertGreater(calls[0]["wait"], 0)
+
+	def test_it_does_not_share_a_minute_with_the_dirty_tick(self):
+		# sync_dirty is */2, so it runs on every EVEN minute. An even slot here would put both jobs
+		# on the same lock at the same instant every hour and one of them would lose.
+		minute = int(self.slot().split()[0])
+		self.assertEqual(minute % 2, 1, f"minute {minute} collides with sync_dirty's */2 tick")
+		self.assertIn("*/2 * * * *", hooks.scheduler_events["cron"])
+
+	def test_a_forced_full_sync_still_queues_for_a_full_minute(self):
+		# The buttons, provisioning and activation must not inherit the backstop's wait. Those
+		# callers mean "this box missed something", so a short wait would drop the push they asked
+		# for.
+		self.assertEqual(inspect.signature(agent_sync.full_sync).parameters["wait"].default, 60)
+
+	def test_the_scheduler_runs_it_hourly(self):
+		# The hook is a dotted string, so renaming the function fails silently at runtime rather
+		# than at import.
+		self.assertTrue(self.slot().endswith(" * * * *"))
+		self.assertTrue(callable(agent_sync.resync_all))
+
+

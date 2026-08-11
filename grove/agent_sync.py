@@ -477,7 +477,7 @@ def sync_routes(proxy, models=_ALL):
 
 # --- Sync runs -------------------------------------------------------------
 
-def full_sync(proxies=None, trigger="Manual", ingresses=None):
+def full_sync(proxies=None, trigger="Manual", ingresses=None, wait=60):
 	"""Push the COMPLETE group + user + key set + routing table to each target proxy, and the
 	replica table to each target ingress. Used by buttons, proxy activation, provisioning.
 
@@ -491,7 +491,7 @@ def full_sync(proxies=None, trigger="Manual", ingresses=None):
 	"this one gateway missed something", and a gateway's table has nothing to do with an
 	ingress's."""
 	doc = _new_run("Projection", trigger)
-	if not doc.acquire_lock(wait=60):  # forced → queue behind an in-flight run
+	if not doc.acquire_lock(wait=wait):  # forced → queue behind an in-flight run
 		return None
 	try:
 		all_active = _active_proxies()
@@ -539,6 +539,27 @@ def sync_dirty(trigger="Scheduled"):
 	(failures stay dirty → retried next tick). Routes are NOT dirty-gated — they're pushed
 	every run (idempotent). Skips (no doc) when there's nothing to push (nothing dirty and
 	no deployments).
+
+def resync_all(trigger="Scheduled"):
+	"""Hourly re-push of every record to every Active box, changed or not.
+
+	sync_dirty sends only flagged rows and clears each flag once it lands, so the control plane's
+	record of what a box holds IS that flag — nothing re-derives it. A box that loses its store gets
+	its ROUTES back on the next tick, because those are pushed unconditionally, and its groups, users
+	and keys never: nothing is dirty, so nothing is sent, and every authenticated request 401s until
+	a human presses Full Sync. The routes returning is what hides it — the box answers /v1/models and
+	reads as healthy while no credential on it works.
+
+	This bounds that to an hour.
+
+	It WAITS for the Projection lock rather than skipping. sync_dirty takes the same lock, and a
+	backstop that gives up because the 2-minute tick happened to be running would silently not
+	happen — which is the failure it exists to prevent. Queueing behind a full sync that is already
+	in flight costs one redundant push an hour; the alternative costs the guarantee. The cron minute
+	is odd for the same reason: sync_dirty runs on even minutes, so they do not normally contend at
+	all, and this wait only covers a tick that overran."""
+	return full_sync(trigger=trigger, wait=90)
+
 
 	A group edit dirties ONE row here whatever it grants, and so does a user's access change or
 	budget flip — the fan-out both used to cause is exactly what the split into their own records
