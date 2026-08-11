@@ -17,6 +17,7 @@ import requests
 import frappe
 
 from grove import log_relay
+from grove import failure
 from grove.cloud_provider.runpod import RunPodClient, RunPodError, pod_status
 from grove.grove.doctype.ssh_key.ssh_key import injected_public_keys
 
@@ -436,6 +437,10 @@ class PodProvisioner:
 		if not frappe.db.get_value("Pod", self.pod.name, "pod_id"):
 			self.set_state({"status": "Stopped"})
 		frappe.log_error(title=title)
+		# Reported rather than decorated: this path deliberately does not raise, so there is no
+		# exception for the decorator to catch. mark_broken is left off because a Pod has no Broken
+		# status — the docstring above is the reason, and the reconcile owns the real one.
+		failure.report("Pod", self.pod.name, title, str(error))
 		return {"status": "error", "message": str(error)}
 
 

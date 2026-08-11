@@ -7,6 +7,7 @@ import secrets
 import frappe
 from frappe.model.document import Document
 
+from grove import failure
 from grove.utils import is_env_key, is_env_value
 from grove.serve_command import ServeCommand
 
@@ -457,6 +458,7 @@ def _vllm_extravars(md, m, inf, key):
 	return extravars
 
 
+@failure.reports_failure(mark_broken=True, doctype="Model Deployment")
 def deploy_model(model_deployment):
 	"""Serve a Model Deployment on its Inference Server via the playbooks/inference_server vllm role.
 	Every vLLM arg is assembled from the Model launch profile ⊕ this deployment
@@ -522,6 +524,7 @@ def deploy_model(model_deployment):
 	return play_name, rc
 
 
+@failure.reports_failure(mark_broken=True, doctype="Model Deployment")
 def reconfigure_deployment(model_deployment):
 	"""Re-render the engine config and restart it for an already-served deployment, applying
 	edited per-box tuning (kv cache dtype / gpu_memory_utilization / batch caps /
@@ -588,6 +591,7 @@ def _post_play_state(md, rc):
 	return {"status": "Active", "engine_url": md.derived_engine_url}
 
 
+@failure.reports_failure(mark_broken=False, doctype="Model Deployment")
 def teardown_deployment(model_deployment):
 	"""Stop + remove ONE deployment's container, the run script and env file that would
 	restart it, and its key file (multi-tenant teardown). Leaves the box-shared

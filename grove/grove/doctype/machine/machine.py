@@ -9,6 +9,7 @@ import subprocess
 import frappe
 from frappe.model.document import Document
 
+from grove import failure
 from grove.ansible import AnsibleHost
 from grove.cloud_provider.base import CloudClientError, build_cloud_client
 from grove.grove.doctype.ssh_key.ssh_key import injected_public_keys
@@ -171,6 +172,7 @@ class Machine(AnsibleHost, Document):
 				f"{self.name}, or on its Network."
 			)
 
+	@failure.reports_failure(mark_broken=False)
 	def launch(self):
 		"""Job: run the instance, wait for it to be reachable, then record what AWS gave back
 		and seed the GPU table from the instance type. A failure before instance_id is set
@@ -189,11 +191,11 @@ class Machine(AnsibleHost, Document):
 				root_volume_gb=self.root_volume_gb,
 				ssh_public_keys=injected_public_keys(),
 			)
-		except Exception as e:
-			# On the doc, not only in the job's Error Log: InsufficientInstanceCapacity is the
-			# ordinary answer for a GPU type, and an operator watching this snap back to Pending
-			# has nothing else to read.
-			self.add_comment("Comment", f"Provision failed: {e}")
+		except Exception:
+			# Back to Pending, not Broken: a Machine has no failed state, and an instance that was
+			# never launched is exactly as un-launched as it was before. The comment, toast and
+			# notification that used to be written here come from the decorator now — this keeps
+			# only the part that is specific to launching.
 			self.db_set("status", "Pending", commit=True)
 			raise
 		# Committed before the poll: a timeout further down must not roll this back and leave
@@ -357,6 +359,7 @@ class Machine(AnsibleHost, Document):
 		)
 		frappe.msgprint(f"Growing {self.name}'s root volume to {size_gb} GB — watch its Ansible Plays.")
 
+	@failure.reports_failure(mark_broken=False)
 	def grow_root(self, size_gb):
 		"""Job: enlarge the volume at the provider, then grow the partition and filesystem on
 		the box. root_volume_gb is written only once the box reports the space, so the field
@@ -386,6 +389,7 @@ class Machine(AnsibleHost, Document):
 		frappe.msgprint(f"Terminated {self.name}.")
 
 	def require_instance(self):
+	@failure.reports_failure(mark_broken=False)
 		if not self.instance_id:
 			frappe.throw(f"Machine {self.name} has no EC2 instance — provision it first.")
 

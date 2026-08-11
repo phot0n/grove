@@ -4,8 +4,31 @@
 import frappe
 from frappe.model.document import Document
 
+from grove import failure
+
 
 class AnsiblePlay(Document):
+	def on_update(self):
+		"""Announce a failed play, once, wherever it came from.
+
+		The highest-leverage place in the app to do this: run_play returns (name, 1) rather than
+		raising, so whether a failed play is visible has always been the caller's choice — and six
+		of them discard the code entirely, including the certificate push that runs against every
+		box at midnight. Hooking the play itself covers all of them without touching any.
+
+		update_play writes through doc.save(), which is what makes this fire at all; the status
+		writes on the server docs themselves go through db.set_value and would not.
+
+		Does not mark anything Broken. The callers that consider a failed play fatal already do,
+		and the ones that deliberately do not — write_targets neither installs nor breaks an
+		agent — should keep that judgement.
+		"""
+		if self.status != "Failure" or not self.has_value_changed("status"):
+			return
+		doctype = self.reference_doctype or self.server_type
+		name = self.reference_docname or self.server
+		failure.report(doctype, name, f"{self.playbook} failed", f"See Ansible Play {self.name}")
+
 	@frappe.whitelist()
 	def stop(self):
 		"""Button: stop this play where it is. Writes the intent only — the worker running
