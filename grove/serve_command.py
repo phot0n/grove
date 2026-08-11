@@ -18,10 +18,14 @@ DEFAULT_PORT = 8080
 DEFAULT_MAX_MODEL_LEN = 8192
 DEFAULT_GPU_MEMORY_UTILIZATION = 0.9
 DEFAULT_SCHEDULING_POLICY = "priority"
-# What the engine runs concurrently when nobody says otherwise. vLLM's own V1 default happens to
-# be this too, but the flag is passed anyway rather than left off: the gateway holds admissions to
-# this number (Route.Capacity), and it cannot hold an engine to a default that moves with the
-# image tag — which is per Engine Image doc and defaults to `latest`.
+# What the ROUTING side assumes an engine runs concurrently when the placement names no number.
+# Not passed to vLLM: a placement that states nothing gets vLLM's own sizing, which reads the model
+# and the KV cache it actually ended up with and is a better number than one imposed from here.
+#
+# So this is an assumption, not a contract, and the two can drift: vLLM's V1 default is 1024 today
+# but moves with the image tag, which is per Engine Image and defaults to `latest`. Drift only
+# costs accuracy in the capacity gate — the engine queues what it cannot run, and a placement that
+# needs the number held exactly should set max_num_seqs, which pins both sides to it.
 DEFAULT_MAX_NUM_SEQS = 1024
 
 
@@ -61,7 +65,9 @@ class ServeCommand:
 		# prefill and the model kind, and nothing reads it back the way the gateway reads the
 		# sequence cap.
 		self.max_num_batched_tokens = int(max_num_batched_tokens or 0)
-		self.max_num_seqs = int(max_num_seqs or DEFAULT_MAX_NUM_SEQS)
+		# 0 = leave it to vLLM, same as max_num_batched_tokens above. The routing side still needs
+		# a number to hold the engine to and assumes DEFAULT_MAX_NUM_SEQS.
+		self.max_num_seqs = int(max_num_seqs or 0)
 		self.attention_backend = attention_backend or "auto"
 		self.aliases = (aliases or "").replace(",", " ").split()
 		self.extra_serve_args = (extra_serve_args or "").split()
@@ -212,8 +218,11 @@ class ServeCommand:
 			args += ["--kv-cache-dtype", self.kv_cache_dtype]
 		if self.max_num_batched_tokens:
 			args += ["--max-num-batched-tokens", str(self.max_num_batched_tokens)]
-		# Always passed, never left to the image's default — see DEFAULT_MAX_NUM_SEQS.
-		args += ["--max-num-seqs", str(self.max_num_seqs)]
+		# Only when the placement states one. Unset means vLLM sizes it off the model and the KV
+		# cache it ends up with, which is a better number than any we would impose — see
+		# DEFAULT_MAX_NUM_SEQS for what the routing side assumes in that case.
+		if self.max_num_seqs:
+			args += ["--max-num-seqs", str(self.max_num_seqs)]
 		# A flag, not VLLM_ATTENTION_BACKEND: that env var is gone in vLLM 0.24 (nothing in
 		# the package reads it), so setting it silently left the engine auto-selecting.
 		if self.attention_backend != "auto":

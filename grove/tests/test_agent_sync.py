@@ -106,10 +106,11 @@ class TestRoutesForProxy(unittest.TestCase):
 		[route] = self.routes(pods=[pod("POD-1", max_num_seqs=16)])["qwen3-35b"]
 		self.assertEqual(route["capacity"], 16)
 
-	def test_an_unset_cap_resolves_to_what_the_engine_was_started_with(self):
-		# Blank is not "no cap": the serve command fills the same default in, so the number the
-		# gateway holds the engine to is the number the engine is running. Drift between the two
-		# is the one way this whole mechanism can be quietly wrong.
+	def test_an_unset_cap_falls_back_to_the_assumed_one(self):
+		# Blank is not "no cap": the route still carries a number, because the capacity gate has to
+		# hold the engine to something. It is an ASSUMPTION though — the serve command passes no
+		# --max-num-seqs when the placement names none, so vLLM sizes its own and the two can
+		# differ. A placement that needs them identical sets max_num_seqs, which pins both.
 		[route] = self.routes([deployment("MD-00007")])["qwen3-35b"]
 		self.assertEqual(route["capacity"], DEFAULT_MAX_NUM_SEQS)
 

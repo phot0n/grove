@@ -126,11 +126,18 @@ class TestServeCommand(unittest.TestCase):
 				args = serve(model=model).args
 				self.assertEqual(args[args.index("--fingerprint-mode") + 1], "none")
 
-	def test_the_sequence_cap_is_always_stated(self):
-		# The one tuning flag that is never left off. The gateway holds admissions to this number,
-		# and it cannot hold an engine to a default that moves with the image tag.
-		args = serve().args
-		self.assertEqual(args[args.index("--max-num-seqs") + 1], str(DEFAULT_MAX_NUM_SEQS))
+	def test_an_unstated_sequence_cap_is_left_to_vllm(self):
+		# Nothing is imposed when the placement names no number: vLLM sizes the cap off the model
+		# and the KV cache it actually got, which beats a figure chosen from the control plane.
+		# The routing side still needs one and assumes DEFAULT_MAX_NUM_SEQS — an assumption, not a
+		# contract, and deliberately so.
+		self.assertNotIn("--max-num-seqs", serve().args)
+
+	def test_a_stated_sequence_cap_pins_both_sides(self):
+		# Setting it is how a placement that needs the number held exactly gets the engine and the
+		# capacity gate onto the same one.
+		args = serve(max_num_seqs=64).args
+		self.assertEqual(args[args.index("--max-num-seqs") + 1], "64")
 
 	def test_kv_cache_dtype_and_batch_caps_when_set(self):
 		args = serve(kv_cache_dtype="fp8", max_num_batched_tokens=8192, max_num_seqs=64).args
