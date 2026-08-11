@@ -13,7 +13,7 @@ import yaml
 from grove import ansible
 from grove.ansible import AnsibleHost
 
-PLAYBOOKS = Path(__file__).parent.parent.parent / "playbooks"
+PLAYBOOKS = Path(__file__).parent.parent / "playbooks"
 SHARED_ROLES = PLAYBOOKS / "roles"
 
 
