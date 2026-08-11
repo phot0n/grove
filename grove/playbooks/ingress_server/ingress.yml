@@ -107,6 +107,7 @@
           GROVE_TLS_KEY={{ fleet_tls_key_path if (fleet_tls_cert | default('')) else '' }}
           GROVE_HTPASSWD={{ grove_metrics_htpasswd }}
           GROVE_ACCESS_LOG=/var/log/grove-gateway/access.log
+          GROVE_ERROR_LOG=/var/log/grove-gateway/error.log
           GROVE_CONFIG=/etc/grove-gateway/config.json
           GROVE_PID_FILE=/run/grove-gateway.pid
         mode: "0600"

@@ -38,6 +38,7 @@ KNOWN_ENV = {
 	"GROVE_HTPASSWD",
 	"GROVE_NODE_EXPORTER_URL",
 	"GROVE_ACCESS_LOG",
+	"GROVE_ERROR_LOG",
 	"GROVE_CONFIG",
 	"GROVE_PID_FILE",
 }
@@ -123,6 +124,7 @@ class TestAgentEnvIsWrittenWhole(unittest.TestCase):
 	REQUIRED = {
 		"GROVE_ADMIN_TOKEN", "GROVE_REDIS_ADDR", "GROVE_LISTEN_HTTP", "GROVE_LISTEN_HTTPS",
 		"GROVE_TLS_CERT", "GROVE_TLS_KEY", "GROVE_CONFIG", "GROVE_ACCESS_LOG",
+		"GROVE_ERROR_LOG",
 	}
 
 	def test_every_play_writes_the_whole_file(self):

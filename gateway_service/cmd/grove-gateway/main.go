@@ -44,6 +44,7 @@ func run() error {
 	log, closeLogs, err := observability.New(observability.Options{
 		Level:         level,
 		AccessLogPath: cfg.AccessLogPath,
+		ErrorLogPath:  cfg.ErrorLogPath,
 	})
 	if err != nil {
 		return err

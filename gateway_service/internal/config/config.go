@@ -43,6 +43,7 @@ type Config struct {
 	NodeExporterURL string
 
 	AccessLogPath string
+	ErrorLogPath  string
 	PIDFile       string
 }
 
@@ -77,6 +78,7 @@ func Load() (Config, error) {
 		NodeExporterURL: env("GROVE_NODE_EXPORTER_URL", "http://127.0.0.1:9100/metrics"),
 
 		AccessLogPath: strings.TrimSpace(os.Getenv("GROVE_ACCESS_LOG")),
+		ErrorLogPath:  strings.TrimSpace(os.Getenv("GROVE_ERROR_LOG")),
 		PIDFile:       strings.TrimSpace(os.Getenv("GROVE_PID_FILE")),
 	}
 

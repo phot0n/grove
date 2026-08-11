@@ -9,9 +9,9 @@ import (
 	"path/filepath"
 )
 
-// Two loggers on purpose. Process is diagnostics, JSON on stdout for journald. Access is one line
-// per request in its own file, because it is a RECORD rather than a diagnostic: it must not move
-// with the log level, and stdout would bury it under debug exactly when someone turns debug on.
+// Two loggers on purpose. Process is diagnostics on stdout for journald, mirrored at Warn and above
+// into error.log so a failure is greppable without journalctl. Access is one line per request in its
+// own file: a RECORD, not a diagnostic, so it must not move when the log level does.
 type Loggers struct {
 	Process *slog.Logger
 	Access  *slog.Logger
@@ -25,30 +25,56 @@ type Options struct {
 	// the diagnostics, which is what a local run wants and what a box gets before the directory
 	// exists.
 	AccessLogPath string
+	// ErrorLogPath receives Warn and above, in addition to stdout. Blank keeps stdout alone.
+	ErrorLogPath string
 }
 
-// New builds both loggers and returns a close for the access-log file.
+// New builds both loggers and returns a close for the files it opened.
 func New(opts Options) (Loggers, func(), error) {
 	level := opts.Level
 	if level == nil {
 		level = new(slog.LevelVar)
 	}
-	process := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: level}))
-	noop := func() {}
+	var open []*os.File
+	closeAll := func() {
+		for _, f := range open {
+			_ = f.Close()
+		}
+	}
+
+	handlers := []slog.Handler{slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: level})}
+	if opts.ErrorLogPath != "" {
+		file, err := openLog(opts.ErrorLogPath)
+		if err != nil {
+			closeAll()
+			return Loggers{}, func() {}, err
+		}
+		open = append(open, file)
+		// Pinned at Warn: the point of a separate file is that turning the process log down to Error
+		// or up to Debug does not change what a failure hunt finds in it.
+		handlers = append(handlers, slog.NewJSONHandler(file, &slog.HandlerOptions{Level: slog.LevelWarn}))
+	}
+	process := slog.New(fanout{handlers: handlers})
 
 	if opts.AccessLogPath == "" {
-		return Loggers{Process: process, Access: process}, noop, nil
+		return Loggers{Process: process, Access: process}, closeAll, nil
 	}
-	if err := os.MkdirAll(filepath.Dir(opts.AccessLogPath), 0o755); err != nil {
-		return Loggers{}, noop, err
-	}
-	file, err := os.OpenFile(opts.AccessLogPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o640)
+	file, err := openLog(opts.AccessLogPath)
 	if err != nil {
-		return Loggers{}, noop, err
+		closeAll()
+		return Loggers{}, func() {}, err
 	}
+	open = append(open, file)
 	// Always at Info: the access line is the record, and a level change is about diagnostics.
 	access := slog.New(slog.NewJSONHandler(file, &slog.HandlerOptions{Level: slog.LevelInfo}))
-	return Loggers{Process: process, Access: access}, func() { _ = file.Close() }, nil
+	return Loggers{Process: process, Access: access}, closeAll, nil
+}
+
+func openLog(path string) (*os.File, error) {
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return nil, err
+	}
+	return os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o640)
 }
 
 // Discard is for tests, which want neither file.

@@ -187,6 +187,8 @@ behind a "framework-agnostic" layer would buy portability nobody needs at the co
 having to learn a second vocabulary.
 
 No metrics-per-anything. The access log carries what a request did; the process log carries why.
+Warnings and worse are mirrored into `error.log` as well, pinned at Warn so moving the process log
+level while hunting a failure never changes what that file holds.
 A Prometheus surface is a middleware whenever someone wants one.
 
 ### State, and who owns it
@@ -574,6 +576,7 @@ Split by **lifetime**, and disjoint — nothing appears in both halves.
 | `GROVE_HTPASSWD` | bcrypt htpasswd for `/metrics/node` |
 | `GROVE_NODE_EXPORTER_URL` | default `http://127.0.0.1:9100/metrics` |
 | `GROVE_ACCESS_LOG` | file for the per-request line; blank → stdout |
+| `GROVE_ERROR_LOG` | file mirroring Warn and above out of the process log; blank → stdout only |
 | `GROVE_CONFIG` | tunables path; default `/etc/grove-gateway/config.json` |
 | `GROVE_PID_FILE` | optional |
 
