@@ -4,6 +4,7 @@
 import frappe
 from frappe.model.document import Document
 
+from grove import failure
 from grove import agent_sync
 from grove.cloud_provider.route53 import Route53Error
 from grove.fleet import FleetHost
@@ -189,6 +190,7 @@ class GatewayServer(GeneratedName, FleetHost, Document):
 		)
 		frappe.msgprint(f"Deploying OpenResty config to {self.name} — watch its Ansible Plays.")
 
+	@failure.reports_failure(mark_broken=False)
 	def _deploy_openresty(self):
 		"""Resolved here, not at enqueue: the certificate key and the scrape password would
 		otherwise be serialised into the job payload and sit in Redis."""
@@ -231,6 +233,7 @@ class GatewayServer(GeneratedName, FleetHost, Document):
 			extravars={
 				"agent_source": gateway_service_source(),
 				"admin_token": self.get_password("admin_token"),
+	@failure.reports_failure(mark_broken=True)
 				"gateway_id": self.name,
 				# Which routes this gateway prefers: a same-region row wins its tier outright.
 				"gateway_region": self.region or "",

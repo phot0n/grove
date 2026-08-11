@@ -4,6 +4,7 @@
 import frappe
 from frappe.model.document import Document
 
+from grove import failure
 from grove import agent_sync
 from grove.cloud_provider.route53 import Route53Error
 from grove.fleet import FleetHost
@@ -152,6 +153,7 @@ class IngressServer(GeneratedName, FleetHost, Document):
 		frappe.enqueue_doc(self.doctype, self.name, "provision", queue="long", timeout=1800)
 		frappe.msgprint(f"Provisioning {self.name} — watch its Ansible Plays.")
 
+	@failure.reports_failure(mark_broken=True)
 	def provision(self):
 		"""Run ingress.yml against this box's Machine. On success, mark Active and put it in DNS —
 		nothing resolves either of its names until that runs."""
@@ -205,6 +207,7 @@ class IngressServer(GeneratedName, FleetHost, Document):
 		frappe.enqueue_doc(self.doctype, self.name, "_deploy_agent", queue="long", timeout=1200)
 		frappe.msgprint(f"Building + deploying latest agent to {self.name} — watch its Ansible Plays.")
 
+	@failure.reports_failure(mark_broken=False)
 	def _deploy_agent(self):
 		return self.run_playbook(
 			"deploy_agent.yml",
