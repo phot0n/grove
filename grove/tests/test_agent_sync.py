@@ -181,21 +181,18 @@ class TestEffectiveGroups(unittest.TestCase):
 		with unittest.mock.patch.object(frappe, "get_all", side_effect=get_all):
 			return agent_sync._effective_groups()
 
-	def test_a_group_carries_its_models_and_flipped_priority(self):
+	def test_a_group_carries_its_name_and_models(self):
 		[group] = self.groups(
-			[frappe._dict(name="acme", priority=10)],
+			["acme"],
 			[frappe._dict(parent="acme", model="qwen3-35b", parentfield="models")],
 		)
-		self.assertEqual(group["name"], "acme")
-		self.assertEqual(group["models"], "qwen3-35b")
-		# Grove stores "higher = more important"; vLLM serves the lowest number first.
-		self.assertEqual(group["priority"], -10)
+		self.assertEqual(group, {"name": "acme", "models": "qwen3-35b"})
 
 	def test_models_are_one_sorted_comma_list(self):
 		# The agent splits on commas (gateway_service/main.go modelSet), so the join is the
 		# wire format, not a display choice.
 		[group] = self.groups(
-			[frappe._dict(name="acme", priority=0)],
+			["acme"],
 			[
 				frappe._dict(parent="acme", model="b", parentfield="models"),
 				frappe._dict(parent="acme", model="a", parentfield="models"),
@@ -206,12 +203,12 @@ class TestEffectiveGroups(unittest.TestCase):
 	def test_a_group_that_grants_nothing_is_still_pushed_as_blank(self):
 		# Blank means "grants nothing", not "unset" — an emptied group has to overwrite the
 		# grant already in Redis, so it cannot be omitted.
-		[group] = self.groups([frappe._dict(name="acme", priority=0)])
+		[group] = self.groups(["acme"])
 		self.assertEqual(group["models"], "")
 
 	def test_one_row_query_covers_every_group(self):
 		groups = self.groups(
-			[frappe._dict(name="a", priority=0), frappe._dict(name="b", priority=1)],
+			["a", "b"],
 			[
 				frappe._dict(parent="a", model="m1", parentfield="models"),
 				frappe._dict(parent="b", model="m2", parentfield="models"),

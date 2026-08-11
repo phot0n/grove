@@ -8,7 +8,6 @@
   "description",
   "dirty",
   "column_break_sfxr",
-  "priority",
   "public_catalog",
   "section_models",
   "models"
@@ -28,13 +27,6 @@
    "fieldtype": "Small Text",
    "in_list_view": 1,
    "label": "Description"
-  },
-  {
-   "default": "0",
-   "description": "How far ahead of everyone else this group's requests are served when an engine is saturated. Higher = more important; 0 is the baseline every ungrouped user gets. The gateway stamps it on each request as vLLM's `priority` (flipping the sign, since vLLM serves the lowest number first). Only bites on models whose Scheduling Policy is `priority`. Note there is no aging: under sustained load from a higher group, a lower one can wait a long time and have running requests preempted.",
-   "fieldname": "priority",
-   "fieldtype": "Int",
-   "label": "Priority"
   },
   {
    "description": "Models the members may call. This is the main way access is granted \u2014 add the model here and everyone in the group can reach it. Membership is set on each Grove User, not here.",

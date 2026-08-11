@@ -2,7 +2,6 @@ package redis
 
 import (
 	"context"
-	"strconv"
 	"strings"
 
 	"github.com/redis/go-redis/v9"
@@ -38,7 +37,6 @@ func (k keys) Get(ctx context.Context, meterID string) (domain.KeyRecord, bool, 
 			Models:   domain.ModelSet(h["models"]),
 		},
 	}
-	rec.Legacy.Priority, _ = strconv.Atoi(strings.TrimSpace(h["priority"])) // absent/garbage → 0
 	// Status used to carry the holder's budget flag as a third value. Lift it off here, so Status
 	// means only "is this credential live" — which is all a current record puts there.
 	if rec.Status == "rate_limited" {
@@ -141,9 +139,7 @@ func (g groups) Get(ctx context.Context, name string) (domain.GroupRecord, error
 	if err != nil {
 		return domain.GroupRecord{}, err
 	}
-	grp := domain.GroupRecord{Models: domain.ModelSet(h["models"])}
-	grp.Priority, _ = strconv.Atoi(strings.TrimSpace(h["priority"]))
-	return grp, nil
+	return domain.GroupRecord{Models: domain.ModelSet(h["models"])}, nil
 }
 
 func (g groups) Upsert(ctx context.Context, records []repository.GroupUpsert) error {
@@ -152,8 +148,7 @@ func (g groups) Upsert(ctx context.Context, records []repository.GroupUpsert) er
 			continue
 		}
 		if err := g.rdb.HSet(ctx, "group:"+rec.Name, map[string]any{
-			"models":   rec.Models,
-			"priority": rec.Priority,
+			"models": rec.Models,
 		}).Err(); err != nil {
 			return err
 		}

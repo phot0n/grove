@@ -31,7 +31,6 @@ class Model(Document):
 		modality: DF.Literal["text", "multimodal", "embedding", "audio"]
 		published: DF.Check
 		reasoning_parser: DF.Data | None
-		scheduling_policy: DF.Literal["priority", "fcfs"]
 		thinking: DF.Check
 		tool_call_parser: DF.Data | None
 		weights_gb: DF.Float
@@ -44,14 +43,6 @@ class Model(Document):
 		self.name = slugify(self.display_name)
 		if not self.name:
 			frappe.throw("Display Name must contain at least one letter or digit.")
-
-	def validate(self):
-		# The read-only-when-published rule, enforced past the client.
-		if is_scheduling_policy_frozen(self.get_doc_before_save(), self):
-			frappe.throw(
-				"Scheduling Policy is frozen while the model is published — it is baked into "
-				"the running engines. Tear its placements down to change it."
-			)
 
 		# `published` means "reachable" — it tracks whether a live route exists, and is
 		# never a manual claim. It is not an access gate: access is granted per user, via
@@ -144,14 +135,6 @@ def is_root_weights_file(path, suffix):
 	listing is requested non-recursively, so this is a second line of defence: a repo keeps
 	its other quantizations in subfolders, and counting those bills the same model twice."""
 	return path.endswith(suffix) and "/" not in path
-
-
-def is_scheduling_policy_frozen(before, after):
-	"""True when a save would move the Scheduling Policy of a model that is already
-	serving. The live engines were started with the stored policy, so a new one would name
-	a --scheduling-policy nothing is running. `before` is None on insert — nothing live yet
-	— and the stored `published` is what counts, since after.published is recomputed."""
-	return bool(before and before.published and before.scheduling_policy != after.scheduling_policy)
 
 
 def has_active_deployment(model, exclude=None):

@@ -111,10 +111,9 @@ class TestServeCommand(unittest.TestCase):
 		self.assertEqual(args[args.index("--max-model-len") + 1], "8192")
 		self.assertEqual(args[args.index("--gpu-memory-utilization") + 1], "0.9")
 		self.assertEqual(args[args.index("--tensor-parallel-size") + 1], "1")
-		self.assertEqual(args[args.index("--scheduling-policy") + 1], "priority")
 		# Blank tuning → vLLM's own sizing. Never --dtype: the weight dtype is the repo's to
 		# declare, and passing one is how a bf16 checkpoint gets silently served as fp16.
-		for flag in ("--dtype", "--kv-cache-dtype", "--max-num-batched-tokens"):
+		for flag in ("--dtype", "--kv-cache-dtype", "--max-num-batched-tokens", "--scheduling-policy"):
 			self.assertNotIn(flag, args, flag)
 
 	def test_the_engine_build_is_not_advertised_to_callers(self):
@@ -144,10 +143,6 @@ class TestServeCommand(unittest.TestCase):
 		self.assertEqual(args[args.index("--kv-cache-dtype") + 1], "fp8")
 		self.assertEqual(args[args.index("--max-num-batched-tokens") + 1], "8192")
 		self.assertEqual(args[args.index("--max-num-seqs") + 1], "64")
-
-	def test_scheduling_policy_comes_from_the_model(self):
-		args = serve(dict(CHAT_MODEL, scheduling_policy="fcfs")).args
-		self.assertEqual(args[args.index("--scheduling-policy") + 1], "fcfs")
 
 	def test_embedding_modality_drops_chat_flags(self):
 		args = serve(dict(CHAT_MODEL, modality="embedding")).args

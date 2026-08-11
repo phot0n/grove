@@ -118,7 +118,6 @@ type UserUpsert struct {
 }
 
 type GroupUpsert struct {
-	Name     string
-	Priority int
-	Models   string // comma list
+	Name   string
+	Models string // comma list
 }

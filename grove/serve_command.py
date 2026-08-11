@@ -11,13 +11,12 @@ import frappe
 MODEL_FIELDS = (
 	"hf_repo", "modality", "enable_prefix_caching",
 	"enable_auto_tool_choice", "tool_call_parser", "thinking", "reasoning_parser",
-	"attention_heads", "weights_gb", "scheduling_policy",
+	"attention_heads", "weights_gb",
 )
 
 DEFAULT_PORT = 8080
 DEFAULT_MAX_MODEL_LEN = 8192
 DEFAULT_GPU_MEMORY_UTILIZATION = 0.9
-DEFAULT_SCHEDULING_POLICY = "priority"
 # What the ROUTING side assumes an engine runs concurrently when the placement names no number.
 # Not passed to vLLM: a placement that states nothing gets vLLM's own sizing, which reads the model
 # and the KV cache it actually ended up with and is a better number than one imposed from here.
@@ -167,12 +166,6 @@ class ServeCommand:
 		return self.model.get("hf_repo")
 
 	@property
-	def scheduling_policy(self):
-		"""→ --scheduling-policy. Owned by the Model, so every placement of it queues the
-		same way."""
-		return self.model.get("scheduling_policy") or DEFAULT_SCHEDULING_POLICY
-
-	@property
 	def is_embedding(self):
 		"""Pooling model: serves /v1/embeddings, so the chat-only flags are meaningless."""
 		return self.model.get("modality") == "embedding"
@@ -187,10 +180,6 @@ class ServeCommand:
 			"--tensor-parallel-size", str(self.tensor_parallel_size),
 			"--gpu-memory-utilization", str(self.gpu_memory_utilization),
 			"--max-model-len", str(self.max_model_len),
-			# TODO: "priority" only bites once the gateway stamps a per-request `priority` on
-			# the body (off the caller's tier) — until then everything arrives at the default
-			# priority, which queues exactly like fcfs.
-			"--scheduling-policy", self.scheduling_policy,
 			# Surfaces usage.prompt_tokens_details.cached_tokens so cached-token accounting
 			# works (billable = total - cached). Reporting-only.
 			"--enable-prompt-tokens-details",

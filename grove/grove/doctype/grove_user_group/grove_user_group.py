@@ -25,12 +25,11 @@ class GroveUserGroup(Document):
 		description: DF.SmallText | None
 		dirty: DF.Check
 		models: DF.Table[GroveModelRow]
-		priority: DF.Int
 		public_catalog: DF.Check
 	# end: auto-generated types
 
 	def on_update(self):
-		# The model list, the priority or the catalogue flag moved → this group's own record is
+		# The model list or the catalogue flag moved → this group's own record is
 		# stale. The members are not: they carry the group's NAME, which has not changed.
 		# Joining or leaving is an edit on Grove User, whose own on_update dirties it.
 		if not self.dirty:

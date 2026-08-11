@@ -79,7 +79,7 @@ func TestStreamUsageLeavesANonStreamingBodyAlone(t *testing.T) {
 func TestTransformsAreGatedToTheirEndpoints(t *testing.T) {
 	for _, path := range []string{"/v1/embeddings", "/v1/messages", "/v1/rerank"} {
 		body := decode(t, `{"model":"m","stream":true}`)
-		changed, err := chain(t, "streamusage", "priority").Apply(Context{Path: path, Priority: -10}, body)
+		changed, err := chain(t, "streamusage").Apply(Context{Path: path}, body)
 		if err != nil || changed {
 			t.Errorf("%s: changed=%v err=%v", path, changed, err)
 		}
@@ -89,34 +89,10 @@ func TestTransformsAreGatedToTheirEndpoints(t *testing.T) {
 	}
 }
 
-// Stamped unconditionally, including the baseline 0 — this is what stops a client naming its own
-// priority and jumping the queue.
-func TestPriorityOverwritesWhateverTheClientSent(t *testing.T) {
-	body := decode(t, `{"model":"m","priority":-999}`)
-	changed, err := chain(t, "priority").Apply(Context{Path: "/v1/completions", Priority: 0}, body)
-	if err != nil || !changed {
-		t.Fatalf("changed=%v err=%v", changed, err)
-	}
-	if got := string(body["priority"]); got != "0" {
-		t.Errorf("priority = %s, want 0 — the client elevated itself", got)
-	}
-}
-
-func TestPriorityIsStampedWhenAbsent(t *testing.T) {
-	body := decode(t, `{"model":"m"}`)
-	if _, err := chain(t, "priority").Apply(Context{Path: "/v1/completions", Priority: -10}, body); err != nil {
-		t.Fatal(err)
-	}
-	if got := string(body["priority"]); got != "-10" {
-		t.Errorf("priority = %s, want -10", got)
-	}
-}
-
 // A body no transform touched must be forwarded byte-for-byte rather than re-encoded for nothing.
 func TestNothingToDoReportsNoChange(t *testing.T) {
 	body := decode(t, `{"model":"m","priority":-10}`)
-	changed, err := chain(t, "streamusage", "priority").Apply(
-		Context{Path: "/v1/completions", Priority: -10}, body)
+	changed, err := chain(t, "streamusage").Apply(Context{Path: "/v1/completions"}, body)
 	if err != nil || changed {
 		t.Errorf("changed=%v err=%v, want no change", changed, err)
 	}
@@ -127,7 +103,7 @@ func TestNothingToDoReportsNoChange(t *testing.T) {
 func TestUntouchedFieldsKeepTheirExactBytes(t *testing.T) {
 	const big = `12345678901234567890`
 	body := decode(t, `{"model":"m","seed":`+big+`,"stream":true}`)
-	if _, err := chain(t, "streamusage", "priority").Apply(
+	if _, err := chain(t, "streamusage").Apply(
 		Context{Path: "/v1/chat/completions"}, body); err != nil {
 		t.Fatal(err)
 	}

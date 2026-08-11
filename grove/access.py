@@ -11,16 +11,6 @@ a one-row edit on a group or a user from invalidating every key beneath it."""
 import frappe
 
 
-def vllm_priority(group_priority):
-	"""The `priority` the gateway stamps on a request, from a group's Priority.
-
-	The two conventions are opposites, so the sign flips here and nowhere else: Grove
-	stores "higher = more important", which is how an operator reads a tier, while vLLM
-	serves the LOWEST number first. Baseline 0 is what an ungrouped user gets, so a group
-	above 0 jumps ahead of them and one below 0 falls behind."""
-	return -(group_priority or 0)
-
-
 def model_rows(parenttype, parents=None):
 	"""`{parent: {parentfield: sorted models}}` for every Grove Model Row under `parenttype`, or
 	just `parents`. One query however many parents — reading a parent's rows one at a time is what

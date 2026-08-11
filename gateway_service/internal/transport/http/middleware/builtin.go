@@ -293,10 +293,7 @@ func newTransform(deps Deps) (Middleware, error) {
 				next.ServeHTTP(w, r)
 				return
 			}
-			changed, err := deps.Transform.Apply(transform.Context{
-				Path:     r.URL.Path,
-				Priority: state.Identity.Priority(),
-			}, state.Body)
+			changed, err := deps.Transform.Apply(transform.Context{Path: r.URL.Path}, state.Body)
 			if err != nil {
 				deps.Log.Error("request transform failed", "path", r.URL.Path, "err", err)
 				deny(w, r, domain.Deny(http.StatusInternalServerError, "gateway error"))

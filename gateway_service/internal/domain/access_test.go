@@ -101,15 +101,6 @@ func TestTheKeyAndItsHolderAreJudgedSeparately(t *testing.T) {
 	}
 }
 
-func TestPriorityComesFromTheGroup(t *testing.T) {
-	if got := PriorityOf(holder("tier"), GroupRecord{Priority: -10}); got != -10 {
-		t.Fatalf("priority = %d, want -10", got)
-	}
-	if got := PriorityOf(holder(""), GroupRecord{}); got != 0 {
-		t.Fatalf("ungrouped priority = %d, want the baseline 0", got)
-	}
-}
-
 // A key written before access moved onto the user still carries a group pointer and the holder's
 // own lists. synthUser lifts them so the one decision path serves both shapes — which is what lets
 // the control plane and the agent deploy in either order. Delete with the shim.
@@ -171,15 +162,12 @@ func TestAPreSplitKeyIsRecognisedAsOne(t *testing.T) {
 // A record written before the group split has no `group` field at all, so it still carries a
 // flattened set and its own priority.
 func TestPreGroupRecordStillResolves(t *testing.T) {
-	rec := KeyRecord{Status: "active", Legacy: LegacyKey{Models: set("a"), Priority: -5}}
+	rec := KeyRecord{Status: "active", Legacy: LegacyKey{Models: set("a")}}
 	usr := SynthUser(rec)
 	if got, reason := Evaluate(rec, usr, GroupRecord{}, "a"); got != 200 {
 		t.Fatalf("status = %d (%q), want 200", got, reason)
 	}
 	if got, _ := Evaluate(rec, usr, GroupRecord{}, "b"); got != 403 {
 		t.Fatalf("status = %d, want 403 — a legacy set still fails closed", got)
-	}
-	if got := PriorityOf(usr, GroupRecord{Priority: -10}); got != -5 {
-		t.Fatalf("priority = %d, want the record's own -5", got)
 	}
 }

@@ -26,7 +26,6 @@ type LegacyKey struct {
 	Deny     map[string]bool //
 	Limited  bool            // the monthly-budget flag, which used to ride on Status
 	Models   map[string]bool // pre-group: access already resolved to one flat set
-	Priority int             // pre-group: the resolved priority
 }
 
 // HasProjection reports whether this key was written by a control plane that put access on the
@@ -50,15 +49,12 @@ type UserRecord struct {
 	// access down to one model set. Nothing read from Redis sets it.
 	Flattened bool
 	Models    map[string]bool
-	Priority  int
 }
 
 // GroupRecord is what a Grove User Group grants everyone in it, stored under group:<name>. A group
-// the control plane has not pushed (or has removed) reads back as the zero value, which grants
-// nothing and sits at the baseline priority.
+// the control plane has not pushed reads back as the zero value, which grants nothing.
 type GroupRecord struct {
-	Priority int             // vLLM `priority` to stamp on the body; lower is served first
-	Models   map[string]bool // models the group grants
+	Models map[string]bool // models the group grants
 }
 
 // SynthUser builds the UserRecord a pre-split key record implies. Called only when user:<name> is
@@ -71,7 +67,6 @@ func SynthUser(rec KeyRecord) UserRecord {
 		Limited:   rec.Legacy.Limited,
 		Flattened: !rec.Legacy.HasGroup,
 		Models:    rec.Legacy.Models,
-		Priority:  rec.Legacy.Priority,
 	}
 }
 
@@ -85,15 +80,6 @@ func CanUse(usr UserRecord, grp GroupRecord, model string) bool {
 		return false
 	}
 	return grp.Models[model] || usr.Allow[model]
-}
-
-// PriorityOf is the number stamped on an admitted body. It belongs to the group — there is no
-// per-user override — so an ungrouped user sits at the baseline 0.
-func PriorityOf(usr UserRecord, grp GroupRecord) int {
-	if usr.Flattened {
-		return usr.Priority
-	}
-	return grp.Priority
 }
 
 // Evaluate is the pure admission decision. Returns an HTTP status (200 = admit) and a short reason.

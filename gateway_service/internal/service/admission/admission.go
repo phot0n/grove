@@ -21,10 +21,6 @@ type Identity struct {
 // Prefix is the API Key doc name: what usage accrues against and what appears in logs.
 func (i Identity) Prefix() string { return i.Key.KeyPrefix }
 
-// Priority is the queueing rank stamped on an admitted body, from the caller's group and never
-// from the caller.
-func (i Identity) Priority() int { return domain.PriorityOf(i.User, i.Group) }
-
 type Service struct {
 	keys   repository.Keys
 	users  repository.Users

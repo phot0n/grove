@@ -2,7 +2,6 @@ package http
 
 import (
 	"bytes"
-	"fmt"
 	"io"
 	"mime/multipart"
 	"net/http"
@@ -307,8 +306,8 @@ func TestAnEnormousModelFieldIsBounded(t *testing.T) {
 	}
 }
 
-// The JSON path must not notice any of this. A body that is not multipart still decodes, still
-// transforms, and still carries its priority.
+// The JSON path must not notice any of this: a body that is not multipart still decodes, routes
+// and meters.
 func TestJSONBodiesAreUnaffectedByTheMultipartBranch(t *testing.T) {
 	f := newFixture(t, jsonEngine(`{`+usageObject+`}`))
 
@@ -317,7 +316,7 @@ func TestJSONBodiesAreUnaffectedByTheMultipartBranch(t *testing.T) {
 	if resp.Code != http.StatusOK {
 		t.Fatalf("status = %d, body = %s", resp.Code, resp.Body)
 	}
-	if !strings.Contains(string(f.seen.body), fmt.Sprintf(`"priority":%d`, -10)) {
-		t.Errorf("priority was not injected into the JSON body: %s", f.seen.body)
+	if got := f.store.Usage["abc123"]["m:total_tokens:qwen3-4b"]; got != 120 {
+		t.Errorf("m:total_tokens:qwen3-4b = %d, want 120", got)
 	}
 }

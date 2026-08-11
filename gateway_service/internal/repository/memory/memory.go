@@ -161,7 +161,7 @@ func (g groups) Upsert(_ context.Context, records []repository.GroupUpsert) erro
 			continue
 		}
 		g.s.Groups[rec.Name] = domain.GroupRecord{
-			Priority: rec.Priority, Models: domain.ModelSet(rec.Models),
+			Models: domain.ModelSet(rec.Models),
 		}
 	}
 	return nil

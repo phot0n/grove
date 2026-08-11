@@ -17,9 +17,6 @@ type Body map[string]json.RawMessage
 // Context is what a transform may know about the request beyond its body.
 type Context struct {
 	Path string
-	// Priority is the caller's queueing rank, resolved from their group. Stamped, never read from
-	// the body: a client-supplied value would otherwise elevate itself.
-	Priority int
 }
 
 // Request is one body rewrite. Apply reports whether it changed anything, so a body that no
@@ -58,9 +55,9 @@ func Registered() []string {
 	return names
 }
 
-// Default is what runs when nothing is configured: the two rules the Lua data path always applied.
-// Order matters only in that a later transform sees an earlier one's output.
-var Default = []string{"streamusage", "priority"}
+// Default is what runs when nothing is configured. Order matters only in that a later transform
+// sees an earlier one's output.
+var Default = []string{"streamusage"}
 
 // Chain is an ordered, resolved set of transforms.
 //
@@ -72,9 +69,8 @@ type Chain struct {
 	transforms []Request
 }
 
-// NewChain resolves names to transforms. An unknown name is a startup error rather than a warning:
-// a misspelt `priority` would silently stop stamping the field that keeps a client from elevating
-// itself, and nothing downstream would look wrong.
+// NewChain resolves names to transforms. An unknown name is a startup error, not a warning: a
+// misspelt one would silently stop rewriting bodies with nothing downstream looking wrong.
 func NewChain(names []string) (*Chain, error) {
 	mu.RLock()
 	defer mu.RUnlock()

@@ -23,7 +23,7 @@ func TestIdentifyFollowsKeyToUserToGroup(t *testing.T) {
 	store := memory.New()
 	store.Keys[meterID()] = domain.KeyRecord{Status: "active", User: "ritwik", KeyPrefix: "abc123"}
 	store.Users["ritwik"] = domain.UserRecord{Group: "acme", Email: "r@example.com"}
-	store.Groups["acme"] = domain.GroupRecord{Priority: -10, Models: domain.ModelSet("qwen3-4b")}
+	store.Groups["acme"] = domain.GroupRecord{Models: domain.ModelSet("qwen3-4b")}
 
 	id, err := serviceOver(store).Identify(context.Background(), "Bearer "+secret)
 	if err != nil {
@@ -31,9 +31,6 @@ func TestIdentifyFollowsKeyToUserToGroup(t *testing.T) {
 	}
 	if id.Prefix() != "abc123" {
 		t.Errorf("prefix = %q, want abc123 — usage would accrue to the wrong bucket", id.Prefix())
-	}
-	if id.Priority() != -10 {
-		t.Errorf("priority = %d, want -10 (the group's, sign already flipped by Grove)", id.Priority())
 	}
 }
 
@@ -74,7 +71,7 @@ func TestAPreSplitKeyFallsBackToItsOwnProjection(t *testing.T) {
 	store := memory.New()
 	store.Keys[meterID()] = domain.KeyRecord{
 		Status: "active", User: "ritwik",
-		Legacy: domain.LegacyKey{Models: domain.ModelSet("qwen3-4b"), Priority: -5},
+		Legacy: domain.LegacyKey{Models: domain.ModelSet("qwen3-4b")},
 	}
 	// No user:ritwik record.
 
@@ -84,9 +81,6 @@ func TestAPreSplitKeyFallsBackToItsOwnProjection(t *testing.T) {
 	}
 	if err := serviceOver(store).Authorize(id, "qwen3-4b"); err != nil {
 		t.Errorf("a pre-split key lost the access its own record granted: %v", err)
-	}
-	if id.Priority() != -5 {
-		t.Errorf("priority = %d, want -5 from the flattened record", id.Priority())
 	}
 }
 

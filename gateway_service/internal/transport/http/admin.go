@@ -31,9 +31,8 @@ type adminUser struct {
 }
 
 type adminGroup struct {
-	Name     string `json:"name"`
-	Priority int    `json:"priority"` // vLLM `priority`, sign already flipped by Grove
-	Models   string `json:"models"`   // comma list; "" = grants nothing
+	Name   string `json:"name"`
+	Models string `json:"models"` // comma list; "" = grants nothing
 }
 
 // PUT /admin/keys — upsert. DELETE /admin/keys — remove them. Revocation deletes the credential
@@ -102,7 +101,7 @@ func (s *Server) handleAdminGroups(w http.ResponseWriter, r *http.Request) {
 	records := make([]repository.GroupUpsert, 0, len(body.Groups))
 	for _, g := range body.Groups {
 		records = append(records, repository.GroupUpsert{
-			Name: g.Name, Priority: g.Priority, Models: g.Models,
+			Name: g.Name, Models: g.Models,
 		})
 	}
 	if err := s.provisioning.UpsertGroups(r.Context(), records, body.Catalog); err != nil {

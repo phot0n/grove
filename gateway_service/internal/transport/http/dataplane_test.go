@@ -76,7 +76,7 @@ func newFixture(t *testing.T, engineHandler http.HandlerFunc) *fixture {
 		Status: "active", User: "ritwik", KeyPrefix: "abc123",
 	}
 	store.Users["ritwik"] = domain.UserRecord{Group: "acme"}
-	store.Groups["acme"] = domain.GroupRecord{Priority: -10, Models: domain.ModelSet("qwen3-4b")}
+	store.Groups["acme"] = domain.GroupRecord{Models: domain.ModelSet("qwen3-4b")}
 	store.Routes["qwen3-4b"] = []domain.Route{{
 		EngineURL: engine.URL + "/e/md1", InternalKey: "engine-key",
 		Healthy: true, Deployment: "MD-00007", Server: "INF-1", Kind: "direct",
@@ -180,11 +180,11 @@ func TestTheEngineSeesTheRewrittenRequest(t *testing.T) {
 	}
 }
 
-// The two transforms, seen from the engine's side: this is what actually guarantees a usage frame
-// and what stops a client naming its own priority.
+// The transform, seen from the engine's side: a streaming request is guaranteed a usage frame,
+// which is what lets metering trust the stream.
 func TestTheBodyReachesTheEngineTransformed(t *testing.T) {
 	f := newFixture(t, jsonEngine(`{`+usageObject+`}`))
-	f.post("/v1/chat/completions", `{"model":"qwen3-4b","stream":true,"priority":-999}`)
+	f.post("/v1/chat/completions", `{"model":"qwen3-4b","stream":true}`)
 
 	var body map[string]any
 	if err := json.Unmarshal(f.seen.body, &body); err != nil {
@@ -194,8 +194,17 @@ func TestTheBodyReachesTheEngineTransformed(t *testing.T) {
 	if options["include_usage"] != true {
 		t.Errorf("include_usage not forced; body = %s", f.seen.body)
 	}
-	if body["priority"] != float64(-10) {
-		t.Errorf("priority = %v, want -10 — the client elevated itself", body["priority"])
+}
+
+// Nothing rewrites a non-streaming body any more, so it reaches the engine exactly as sent —
+// including a `priority` the client chose. Engines run fcfs, which ignores it.
+func TestANonStreamingBodyIsForwardedUnchanged(t *testing.T) {
+	f := newFixture(t, jsonEngine(`{`+usageObject+`}`))
+	sent := `{"model":"qwen3-4b","messages":[],"priority":-999}`
+	f.post("/v1/chat/completions", sent)
+
+	if string(f.seen.body) != sent {
+		t.Errorf("engine body = %s, want it byte-for-byte as sent", f.seen.body)
 	}
 }
 

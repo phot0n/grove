@@ -6,7 +6,7 @@ source of truth. The gateway `/groups`, `/users`, `/keys` and `/routes` endpoint
 UPSERTs (they never prune), so we can push either everything or just a delta.
 
 Access is pushed in three pieces, deliberately, one per thing that can change on its own. A group
-carries the model grant and the priority for everyone in it (group:<name>); a user carries which
+carries the model grant for everyone in it (group:<name>); a user carries which
 group they belong to, their own allow/deny, and whether they are over budget (user:<name>); a key
 carries only whose it is and whether it has been revoked. So a group edit is ONE record however
 many members, a budget flip is ONE record however many keys, and the gateway resolves the three at
@@ -37,7 +37,7 @@ import requests
 
 import frappe
 
-from grove.access import model_rows, vllm_priority
+from grove.access import model_rows
 from grove.net import private_url
 from grove.serve_command import DEFAULT_MAX_NUM_SEQS
 
@@ -112,18 +112,15 @@ def _post(admin_url, token, path, payload, method="POST"):
 
 
 def _effective_groups():
-	"""Every Grove User Group projected for the gateway: what it grants and how far ahead of
-	the baseline its members are served. One record per group however many keys point at it —
-	the reason the group is not flattened onto each key."""
+	"""Every Grove User Group projected for the gateway: what it grants. One record per group
+	however many keys point at it — the reason the group is not flattened onto each key."""
 	granted = model_rows("Grove User Group")
 	return [
 		{
-			"name": g.name,
-			# Already in vLLM's convention — the gateway just stamps it.
-			"priority": vllm_priority(g.priority),
-			"models": ",".join(granted.get(g.name, {}).get("models", [])),
+			"name": name,
+			"models": ",".join(granted.get(name, {}).get("models", [])),
 		}
-		for g in frappe.get_all("Grove User Group", fields=["name", "priority"])
+		for name in frappe.get_all("Grove User Group", pluck="name")
 	]
 
 

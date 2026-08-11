@@ -13,7 +13,6 @@
   "modality",
   "column_break_launch",
   "enable_prefix_caching",
-  "scheduling_policy",
   "section_shape",
   "attention_heads",
   "hidden_layers",
@@ -74,15 +73,6 @@
    "fieldname": "enable_prefix_caching",
    "fieldtype": "Check",
    "label": "Enable Prefix Caching"
-  },
-  {
-   "default": "priority",
-   "description": "\u2192 --scheduling-policy, for every placement of this model. priority = serve by the request's priority field first (lower value first), ties broken by arrival; with no per-request priority set yet, that is the same order as fcfs. Frozen while Published \u2014 it is baked into the running engines.",
-   "fieldname": "scheduling_policy",
-   "fieldtype": "Select",
-   "label": "Scheduling Policy",
-   "options": "priority\nfcfs",
-   "read_only_depends_on": "eval:doc.published"
   },
   {
    "description": "From the repo's config.json. Used to reject a GPU split the model can't run before it reaches the box. Blank = that check is skipped.",

@@ -10,7 +10,6 @@ var completions = []string{"/v1/chat/completions", "/v1/completions"}
 
 func init() {
 	Register(streamUsage{})
-	Register(priority{})
 }
 
 // streamUsage guarantees a usage frame on a streaming response. Without it a streaming request
@@ -49,26 +48,5 @@ func (streamUsage) Apply(_ Context, body Body) (bool, error) {
 		return false, err
 	}
 	body["stream_options"] = encoded
-	return true, nil
-}
-
-// priority stamps the caller's queueing rank. Written unconditionally, including the baseline 0, so
-// a client-supplied `priority` cannot elevate itself. The value comes from the caller's group, sign
-// already flipped by Grove into vLLM's convention (lowest served first). Only engines running
-// --scheduling-policy priority act on it.
-type priority struct{}
-
-func (priority) Name() string        { return "priority" }
-func (priority) Endpoints() []string { return completions }
-
-func (priority) Apply(ctx Context, body Body) (bool, error) {
-	encoded, err := json.Marshal(ctx.Priority)
-	if err != nil {
-		return false, err
-	}
-	if existing, ok := body["priority"]; ok && string(existing) == string(encoded) {
-		return false, nil
-	}
-	body["priority"] = encoded
 	return true, nil
 }
