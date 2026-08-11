@@ -268,23 +268,52 @@ class Machine(AnsibleHost, Document):
 		self.sync_instance_type(client)
 
 	def sync_dependent_servers(self):
-		"""Reflect this Machine no longer serving onto every Proxy/Inference Server and
-		Monitoring Agent built on it — Active there would be a lie once the box itself is
+		"""Reflect this Machine no longer serving onto every Gateway, Ingress and Inference Server
+		and Monitoring Agent built on it — Active there would be a lie once the box itself is
 		Terminated, Offline or Draining. Terminated propagates as Terminated (the box is gone
 		for good, along with whatever was on it); Offline/Draining propagate as Broken
 		(stopped, but Start can still bring it back). Only touches ones that were Active —
 		Pending/Installing/Broken/Terminated already say what's true.
 
 		An agent matters most here: it is the only doc whose silence looks exactly like a
-		healthy idle fleet, so a stopped agent box has to say so on the doc."""
+		healthy idle fleet, so a stopped agent box has to say so on the doc.
+
+		The Ingress Server was missing from this list until it bit: it carries a machine, a status
+		and DNS records of its own, so a terminated box left one Active and still resolving, with
+		nothing else in the fleet that would ever correct it."""
 		if self.status not in ("Terminated", "Offline", "Draining"):
 			return
 		dependent_status = "Terminated" if self.status == "Terminated" else "Broken"
-		for doctype in ("Gateway Server", "Inference Server", "Monitoring Agent"):
+		for doctype in ("Gateway Server", "Ingress Server", "Inference Server", "Monitoring Agent"):
 			for name in frappe.get_all(
 				doctype, filters={"machine": self.name, "status": "Active"}, pluck="name"
 			):
-				frappe.db.set_value(doctype, name, "status", dependent_status)
+				self.mark_dependent(doctype, name, dependent_status)
+
+	def mark_dependent(self, doctype, name, status):
+		"""Write the status THROUGH the document, not with db.set_value.
+
+		The write has consequences, and they live in on_update: a Terminated gateway or ingress has
+		to give up its DNS records, and a gateway leaving also has to come out of the inference
+		security groups. db.set_value skips validate and on_update entirely, so none of that ran —
+		terminating a Machine left a latency record in Route53 pointing at a box that no longer
+		existed, which is a black hole for every client that resolves to it.
+
+		Guarded per document on purpose. save() runs validate, so a dependent that will not validate
+		for some unrelated reason would otherwise abort the termination halfway and leave the
+		machine gone with its siblings still claiming to be Active. Reported rather than swallowed,
+		so a dependent that could not be updated says so."""
+		try:
+			doc = frappe.get_doc(doctype, name)
+			doc.status = status
+			doc.save(ignore_permissions=True)
+		except Exception as error:
+			failure.report(
+				doctype,
+				name,
+				f"Could not mark {status.lower()} after {self.name} went {self.status.lower()}",
+				str(error),
+			)
 
 	def sync_instance_type(self, client):
 		"""Record what this instance type is and ships: its architecture, whether it is bare
@@ -330,6 +359,7 @@ class Machine(AnsibleHost, Document):
 		frappe.enqueue_doc(self.doctype, self.name, "resume", queue="long", timeout=3000)
 		frappe.msgprint(f"Starting {self.name} — reload when it reports Active.")
 
+	@failure.reports_failure(mark_broken=False)
 	def resume(self):
 		"""Job: start the instance and record the address AWS gives it this time. A start costs
 		the same firmware POST a launch does, so it waits as long."""
@@ -389,7 +419,6 @@ class Machine(AnsibleHost, Document):
 		frappe.msgprint(f"Terminated {self.name}.")
 
 	def require_instance(self):
-	@failure.reports_failure(mark_broken=False)
 		if not self.instance_id:
 			frappe.throw(f"Machine {self.name} has no EC2 instance — provision it first.")
 
