@@ -43,6 +43,60 @@ class GatewayServer(GeneratedName, FleetHost, Document):
 	def validate(self):
 		self.set_admin_url()
 
+		self.set_admin_token()
+		self.validate_region_is_free()
+
+	def validate_region_is_free(self):
+		"""One gateway per region, because Route53 allows exactly one.
+
+		A latency record set is keyed on (name, type, REGION) — SetIdentifier names the row but does
+		not make two rows in the same region distinct. A second gateway there is refused by AWS with
+		`InvalidChangeBatch ... a latency RRSet with the same name, type and region already exists`,
+		twenty minutes into a provision, after the binary has been built.
+
+		Checked only when the region CHANGES, and only on a fleet that has DNS configured. Both
+		matter: validating unconditionally would block every unrelated edit to a box that is already
+		in a conflicting state — including the edit that fixes it — and a fleet with no zone writes
+		no records at all, so it has no constraint to honour.
+
+		Terminated boxes are ignored: their records are removed on the way out, so their region is
+		free."""
+		if not self.region or not self.has_value_changed("region"):
+			return
+		settings = frappe.get_single("Grove Settings")
+		if not all(settings.get(field) for field in self.dns_settings):
+			return
+		clash = frappe.db.get_value(
+			"Gateway Server",
+			{"region": self.region, "status": ("!=", "Terminated"), "name": ("!=", self.name)},
+			"name",
+		)
+		if clash:
+			frappe.throw(
+				f"{clash} is already the gateway for {self.region}, and Route53 allows one latency "
+				f"record per region — a second one there is refused by AWS. Give this box a "
+				f"different Region, or terminate {clash} first."
+			)
+
+	def set_admin_token(self):
+		"""The credential the control plane authenticates every push with.
+
+		Generated rather than typed: the field is read-only, so there was no way to enter one in the
+		UI at all — a Gateway Server was created with a blank token and every path that needed one
+		raised "Password not found", including a twenty-minute provision that got as far as building
+		the binary before it failed. The Ingress Server has always minted its own; this is the same
+		credential and had no business behaving differently.
+
+		In validate rather than before_insert, so it also heals the docs that already exist without
+		one. Clearing the field and saving is how it is rotated — which then needs a Deploy Agent,
+		because the box holds the old value until agent.env is rewritten.
+
+		Tested through get_password, NOT `if not self.admin_token`. A saved Password field puts a
+		row of asterisks in the doc's own column and the real value in __Auth, so the field reads
+		back truthy even when the actual secret is gone — which is precisely the state a doc lands
+		in if its __Auth row is lost, and precisely the state this is here to fix."""
+		if not self.get_password("admin_token", raise_exception=False):
+			self.admin_token = frappe.generate_hash(length=48)
 	def on_update(self):
 		# A newly-Active proxy needs the full current state now — the background
 		# job only pushes dirty deltas, so full-sync this one immediately.
