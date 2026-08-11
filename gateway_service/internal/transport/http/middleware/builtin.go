@@ -195,7 +195,6 @@ func newBody(deps Deps) (Middleware, error) {
 				return
 			}
 			_ = r.Body.Close()
-			state.RawBody = raw
 
 			// A body that is not a JSON object is not an error here: some /v1 endpoints take none
 			// at all, and the engine is the right place to reject a malformed one.

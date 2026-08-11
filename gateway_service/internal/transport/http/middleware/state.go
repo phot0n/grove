@@ -23,9 +23,6 @@ type State struct {
 	Model    string
 	Session  string
 	Body     transform.Body
-	// RawBody is the body as it arrived. Kept so a request no transform touched is forwarded
-	// byte-for-byte rather than re-encoded for nothing.
-	RawBody []byte
 
 	Decision routing.Decision
 
