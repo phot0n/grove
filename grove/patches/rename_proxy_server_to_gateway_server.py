@@ -5,7 +5,7 @@ def execute():
 	"""Rename the Proxy Server doctype to Gateway Server.
 
 	The doc runs auth, quota, usage and routing — it is the gateway, and everything around it
-	already said so (gateway_service, gateway_sync, GROVE_GATEWAY_ID, Grove Settings.gateway_host).
+	already said so (grove-gateway, gateway_sync, GROVE_GATEWAY_ID, Grove Settings.gateway_host).
 	The doctype was the last holdout, and once an Ingress Server exists "proxy" is actively wrong:
 	the ingress is the thing that is actually a proxy.
 

@@ -8,7 +8,7 @@
 # the parent, so a reload would not pick it up. That is the one case here that drains, and it is
 # rare.
 #
-# extra-vars: agent_source, admin_token, gateway_id, gateway_region, plus whatever config.json.j2
+# extra-vars: agent_version, admin_token, gateway_id, gateway_region, plus whatever config.json.j2
 # reads.
 - hosts: all
   become: true
@@ -25,7 +25,7 @@
   roles:
     - grove_https
     - fleet_tls
-    - build_gateway_agent
+    - install_gateway_agent
 
   tasks:
     # The play is hand-runnable and this file holds the token every /grove-admin push authenticates

@@ -16,10 +16,12 @@ import re
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
+import frappe
 import yaml
 
+from grove.fleet import GATEWAY_AGENT_VERSION, FleetHost
 from grove.grove.doctype.gateway_server.gateway_server import GatewayServer
 from grove.grove.doctype.ingress_server.ingress_server import IngressServer
 
@@ -43,11 +45,15 @@ SETTINGS = SimpleNamespace(
 def extravars_for(doctype_class, module, doc):
 	"""Run _deploy_agent against a fake doc and return the extra-vars it passed."""
 	sent = {}
-	doc.run_playbook = lambda play, extravars: sent.update({"play": play, **extravars})
-	with (
-		patch("frappe.get_single", return_value=SETTINGS),
-		patch(f"{module}.gateway_service_source", return_value="/tmp/src"),
-	):
+
+	def run_playbook(play, extravars):
+		sent.update({"play": play, **extravars})
+		return "play-1", 0
+
+	doc.run_playbook = run_playbook
+	# Recording is FleetHost's, and TestTheInstalledVersionIsRecorded holds it to account.
+	doc.record_agent_version = lambda rc: None
+	with patch("frappe.get_single", return_value=SETTINGS):
 		doctype_class._deploy_agent(doc)
 	return sent
 
@@ -87,6 +93,11 @@ def rendered_variables(play_path, task_name, field):
 def upgrade_handler(plane):
 	handlers = yaml.safe_load((PLAYBOOKS / plane / "deploy_agent.yml").read_text())[0]["handlers"]
 	return next(handler for handler in handlers if handler["name"] == "upgrade grove-gateway")
+
+
+def install_role_tasks():
+	path = PLAYBOOKS / "roles" / "install_gateway_agent" / "tasks" / "main.yml"
+	return yaml.safe_load(path.read_text())
 
 
 def agent_env_variables(plane):
@@ -165,6 +176,12 @@ class TestDeployAgentShipsBothHalves(unittest.TestCase):
 	def test_the_tuning_comes_from_grove_settings(self):
 		self.assertEqual(TTL, gateway_extravars()["synthetic_session_ttl"])
 
+	def test_it_asks_for_the_release_the_control_plane_is_pinned_to(self):
+		# The agent lives in its own repo, so this variable is the only thing that decides which
+		# binary a box ends up running.
+		self.assertEqual(GATEWAY_AGENT_VERSION, gateway_extravars()["agent_version"])
+		self.assertEqual(GATEWAY_AGENT_VERSION, ingress_extravars()["agent_version"])
+
 	def test_the_fleet_private_key_never_rides_along(self):
 		# A config push has no business carrying it: agent.env names the certificate's PATH, and
 		# deploy_tls owns writing the material. Resolved in _deploy_agent rather than at enqueue so
@@ -173,3 +190,47 @@ class TestDeployAgentShipsBothHalves(unittest.TestCase):
 			with self.subTest(plane):
 				self.assertNotIn("fleet_tls_key", sent)
 				self.assertIn("fleet_tls_cert", sent)
+
+
+class TestTheBinaryComesOffTheInternetSafely(unittest.TestCase):
+	"""The agent is built in its own repo now, so a box downloads a release instead of compiling a
+	source tree the control plane handed it."""
+
+	def test_the_download_is_checksummed(self):
+		# Without this the play installs whatever answers the URL, which is a worse failure than
+		# the one it replaced: the old source tree at least came from the control plane's own disk.
+		download = next(task for task in install_role_tasks() if "ansible.builtin.get_url" in task)
+		self.assertTrue(download["ansible.builtin.get_url"]["checksum"].startswith("sha256:"))
+
+	def test_the_release_it_reaches_for_is_the_pinned_one(self):
+		defaults = PLAYBOOKS / "roles" / "install_gateway_agent" / "defaults" / "main.yml"
+		self.assertIn("agent_version", yaml.safe_load(defaults.read_text())["agent_release_url"])
+
+	def test_nothing_compiles_on_the_target_any_more(self):
+		# A box that still installs Go is a box that needs a toolchain and outbound access to the
+		# module proxy — the two things this split was meant to take off the fleet.
+		self.assertNotIn("go build", yaml.dump(install_role_tasks()))
+
+
+class TestTheInstalledVersionIsRecorded(unittest.TestCase):
+	"""One repo made version skew impossible. Two makes it the thing to watch, and the doc is where
+	it shows."""
+
+	def set_value_after(self, rc):
+		# frappe.db is a Local and unbound without a site, so the whole thing is swapped — the
+		# same way test_agent_sync reaches it.
+		doc = SimpleNamespace(doctype="Gateway Server", name="gw-1")
+		db = Mock()
+		with patch.object(frappe, "db", db):
+			FleetHost.record_agent_version(doc, rc)
+		return db.set_value
+
+	def test_a_finished_play_records_what_it_installed(self):
+		self.set_value_after(0).assert_called_once_with(
+			"Gateway Server", "gw-1", "agent_version", GATEWAY_AGENT_VERSION
+		)
+
+	def test_a_failed_play_leaves_the_old_version_standing(self):
+		# The box is still running whatever it was running. Claiming the new one would hide exactly
+		# the skew this field exists to show.
+		self.set_value_after(1).assert_not_called()

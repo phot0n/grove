@@ -5,7 +5,7 @@
 # There is no OpenResty here any more. The play stops and disables it rather than ignoring it, so a
 # box provisioned before the cutover frees :80 and :443 for the process that now wants them.
 #
-# extra-vars: admin_token, agent_source, gateway_id, gateway_region, gateway_host, proxy_hostname,
+# extra-vars: admin_token, agent_version, gateway_id, gateway_region, gateway_host, proxy_hostname,
 # the fleet TLS pair, the scrape hash, and the tunables in config.json.j2.
 - hosts: all
   become: true
@@ -35,7 +35,7 @@
   roles:
     - grove_https
     - fleet_tls
-    - build_gateway_agent
+    - install_gateway_agent
 
   tasks:
     # Guarded and non-fatal: most boxes never had OpenResty, and the ones that did must give up the

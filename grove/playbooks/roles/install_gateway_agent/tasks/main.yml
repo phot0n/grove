@@ -1,0 +1,32 @@
+---
+# Install the pinned grove-gateway release on the target server.
+# Requires: agent_version (a release tag in the agent's own repo)
+# Provides: /tmp/grove-gateway binary
+
+- name: map system arch to a released asset arch
+  ansible.builtin.set_fact:
+    agent_arch: "{{ {'x86_64': 'amd64', 'aarch64': 'arm64'}.get(ansible_architecture, '') }}"
+
+# Only two architectures are published. A blank here would build a 404 URL and fail three tasks
+# later with nothing naming the cause, so it fails here instead.
+- name: refuse an architecture the agent does not publish
+  ansible.builtin.fail:
+    msg: "no grove-gateway release for {{ ansible_architecture }} — only x86_64 and aarch64 are built"
+  when: not agent_arch
+
+# The checksum is the whole reason this is safe: the binary now comes off the internet rather than
+# out of a source tree the control plane owns. get_url matches the dest basename against a line in
+# sha256sums.txt, which is why it lands under the asset's own name.
+- name: download grove-gateway {{ agent_version }}
+  ansible.builtin.get_url:
+    url: "{{ agent_release_url }}/grove-gateway-linux-{{ agent_arch }}"
+    dest: "/tmp/grove-gateway-linux-{{ agent_arch }}"
+    checksum: "sha256:{{ agent_release_url }}/sha256sums.txt"
+    mode: "0755"
+
+- name: stage the binary under the name the install task copies from
+  ansible.builtin.copy:
+    src: "/tmp/grove-gateway-linux-{{ agent_arch }}"
+    dest: /tmp/grove-gateway
+    mode: "0755"
+    remote_src: true

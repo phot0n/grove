@@ -5,7 +5,8 @@ nothing else is reachable — a user with no grant gets no models.
 
 The precedence itself is NOT applied here: Grove pushes the group as its own Redis record
 (group:<name>), the user as theirs (user:<name>) pointing at it, and each key as a pointer to the
-user; the gateway resolves the three at request time (gateway_service/eval.go). That is what stops
+user; the gateway resolves the three at request time (grove-gateway, internal/domain/access.go
+`Evaluate`). That is what stops
 a one-row edit on a group or a user from invalidating every key beneath it."""
 
 import frappe

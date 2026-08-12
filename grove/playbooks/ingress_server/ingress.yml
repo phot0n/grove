@@ -8,7 +8,7 @@
 # the in-flight counters are re-derived, so this box takes the default persistence rather than the
 # gateway's appendfsync always.
 #
-# extra-vars: admin_token, data_token, agent_source, ingress_id, ingress_hostname, the fleet TLS
+# extra-vars: admin_token, data_token, agent_version, ingress_id, ingress_hostname, the fleet TLS
 # pair, the scrape hash.
 - hosts: all
   become: true
@@ -40,7 +40,7 @@
   roles:
     - grove_https
     - fleet_tls
-    - build_gateway_agent
+    - install_gateway_agent
 
   tasks:
     - name: stop and disable openresty

@@ -19,12 +19,6 @@ def vram_gb_from_mib(mib):
 	return int(mib // MIB_PER_GB + (1 if mib % MIB_PER_GB * 2 >= MIB_PER_GB else 0))
 
 
-def app_grove_root():
-	"""Path to .../apps/grove — the parent of the `grove` python package, i.e. the repo
-	root where gateway_service/ lives."""
-	return os.path.dirname(frappe.get_app_path("grove"))
-
-
 def playbooks_root():
 	"""Path to grove/playbooks — every ansible project this app ships."""
 	return os.path.join(frappe.get_app_path("grove"), "playbooks")
@@ -44,12 +38,6 @@ def shared_roles_dir():
 	return os.path.join(playbooks_root(), "roles")
 
 
-def gateway_service_source():
-	"""Path to the gateway agent's Go source. Shipped to the proxy, which builds it there
-	for its own architecture — nothing is compiled here."""
-	return os.path.join(app_grove_root(), "gateway_service")
-
-
 def is_env_key(name):
 	"""True for a POSIX-shaped env var name. Env rows are interpolated into a systemd unit
 	and a `docker run` argv, so anything else is rejected before it gets there."""
@@ -66,11 +54,12 @@ def is_env_value(value):
 def is_id_safe(name):
 	"""True when a doc name survives the gateway's request-id sanitiser without losing itself.
 
-	`cleanIDPart` (gateway_service/main.go) keeps letters, digits and '_', rewrites '-' to '_' so
-	the only '-' left in an id is its own separator, and silently DROPS everything else. That
-	rewrite is only reversible while the name carries no '_' of its own: `inf-a` and `inf_a` both
-	arrive as `inf_a`, and `inf.a` arrives as `infa`. Restricted to letters, digits and '-', an
-	id reads back to the doc that produced it by replacing '_' with '-'."""
+	`CleanIDPart` (grove-gateway, internal/domain/requestid.go) keeps letters, digits and '_',
+	rewrites '-' to '_' so the only '-' left in an id is its own separator, and silently DROPS
+	everything else. That rewrite is only reversible while the name carries no '_' of its own:
+	`inf-a` and `inf_a` both arrive as `inf_a`, and `inf.a` arrives as `infa`. Restricted to
+	letters, digits and '-', an id reads back to the doc that produced it by replacing '_'
+	with '-'."""
 	return bool(re.fullmatch(r"[A-Za-z0-9-]+", name or ""))
 
 

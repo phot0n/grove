@@ -7,10 +7,9 @@ from frappe.model.document import Document
 from grove import failure
 from grove import agent_sync
 from grove.cloud_provider.route53 import Route53Error
-from grove.fleet import FleetHost
+from grove.fleet import GATEWAY_AGENT_VERSION, FleetHost
 from grove.grove.doctype.network.network import sync_fleet_ingress
 from grove.naming import GeneratedName
-from grove.utils import gateway_service_source
 
 
 class IngressServer(GeneratedName, FleetHost, Document):
@@ -29,6 +28,7 @@ class IngressServer(GeneratedName, FleetHost, Document):
 
 		admin_token: DF.Password | None
 		admin_url: DF.Data | None
+		agent_version: DF.Data | None
 		data_token: DF.Password | None
 		machine: DF.Link
 		monitoring_agent: DF.Link | None
@@ -171,6 +171,7 @@ class IngressServer(GeneratedName, FleetHost, Document):
 			self.name,
 			{"status": "Active" if rc == 0 else "Broken", "admin_url": self.admin_url},
 		)
+		self.record_agent_version(rc)
 		frappe.db.commit()
 
 		if rc == 0:
@@ -189,7 +190,7 @@ class IngressServer(GeneratedName, FleetHost, Document):
 		return {
 			"admin_token": self.get_password("admin_token"),
 			"data_token": self.get_password("data_token"),
-			"agent_source": gateway_service_source(),
+			"agent_version": GATEWAY_AGENT_VERSION,
 			"ingress_id": self.name,
 			"ingress_hostname": self.hostname,
 			# nginx.conf declares a metrics server on :443 — grove_https puts the certificate and
@@ -202,14 +203,14 @@ class IngressServer(GeneratedName, FleetHost, Document):
 
 	@frappe.whitelist()
 	def deploy_agent(self):
-		"""Button: build the latest agent binary and deploy just it (copy + service restart) to
+		"""Button: install the pinned agent release and deploy just it (copy + service restart) to
 		this already-provisioned ingress."""
 		frappe.enqueue_doc(self.doctype, self.name, "_deploy_agent", queue="long", timeout=1200)
-		frappe.msgprint(f"Building + deploying latest agent to {self.name} — watch its Ansible Plays.")
+		frappe.msgprint(f"Deploying agent {GATEWAY_AGENT_VERSION} to {self.name} — watch its Ansible Plays.")
 
 	@failure.reports_failure(mark_broken=False)
 	def _deploy_agent(self):
-		"""Build the binary on the box, ship it, and rewrite both halves of its configuration.
+		"""Install the pinned agent release on the box and rewrite both halves of its configuration.
 
 		Resolved here rather than at enqueue: the certificate key would otherwise be serialised into
 		the job payload and sit in Redis. Dropped entirely — agent.env names the certificate's PATH,
@@ -217,10 +218,10 @@ class IngressServer(GeneratedName, FleetHost, Document):
 		settings = frappe.get_single("Grove Settings")
 		tls_variables = settings.tls_variables
 		tls_variables.pop("fleet_tls_key", None)
-		return self.run_playbook(
+		play_name, rc = self.run_playbook(
 			"deploy_agent.yml",
 			extravars={
-				"agent_source": gateway_service_source(),
+				"agent_version": GATEWAY_AGENT_VERSION,
 				"admin_token": self.get_password("admin_token"),
 				"data_token": self.get_password("data_token"),
 				"ingress_id": self.name,
@@ -230,3 +231,5 @@ class IngressServer(GeneratedName, FleetHost, Document):
 				**settings.gateway_variables,
 			},
 		)
+		self.record_agent_version(rc)
+		return play_name, rc

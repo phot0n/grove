@@ -4,8 +4,9 @@
 resolves through — group, then user, then key. Pure — the docs are mocked, no site.
 
 Every field here is read by something that cannot be changed in the same deploy: the Go agent
-unmarshals it (`gateway_service/routing.go`, `admin.go`), Lua puts one of them on the access line,
-and both run on a box that is updated separately. So the shape is asserted rather than assumed.
+unmarshals it (grove-gateway, `internal/domain/route.go` and `internal/transport/http/admin.go`),
+and it lives in its own repo on a box that is updated separately — a released binary, not a tree
+this deploy compiles. So the shape is asserted rather than assumed.
 """
 
 import inspect
@@ -189,8 +190,8 @@ class TestEffectiveGroups(unittest.TestCase):
 		self.assertEqual(group, {"name": "acme", "models": "qwen3-35b"})
 
 	def test_models_are_one_sorted_comma_list(self):
-		# The agent splits on commas (gateway_service/main.go modelSet), so the join is the
-		# wire format, not a display choice.
+		# The agent splits on commas (grove-gateway, internal/domain/access.go `ModelSet`), so the
+		# join is the wire format, not a display choice.
 		[group] = self.groups(
 			["acme"],
 			[
@@ -299,8 +300,8 @@ class TestEffectiveUsers(unittest.TestCase):
 		self.assertIs(user["limited"], True)
 
 	def test_the_lists_are_sorted_comma_joins(self):
-		# The agent splits on commas (gateway_service/main.go modelSet), so the join is the wire
-		# format, not a display choice.
+		# The agent splits on commas (grove-gateway, internal/domain/access.go `ModelSet`), so the
+		# join is the wire format, not a display choice.
 		[user] = self.users(
 			[frappe._dict(name="GU-1", user="a@x.com", user_group="", rate_limited=0)],
 			[

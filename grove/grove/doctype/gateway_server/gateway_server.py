@@ -7,10 +7,9 @@ from frappe.model.document import Document
 from grove import failure
 from grove import agent_sync
 from grove.cloud_provider.route53 import Route53Error
-from grove.fleet import FleetHost
+from grove.fleet import GATEWAY_AGENT_VERSION, FleetHost
 from grove.grove.doctype.network.network import sync_fleet_ingress
 from grove.naming import GeneratedName
-from grove.utils import gateway_service_source
 
 
 class GatewayServer(GeneratedName, FleetHost, Document):
@@ -24,6 +23,7 @@ class GatewayServer(GeneratedName, FleetHost, Document):
 
 		admin_token: DF.Password | None
 		admin_url: DF.Data | None
+		agent_version: DF.Data | None
 		is_static_ip: DF.Check
 		machine: DF.Link
 		monitoring_agent: DF.Link | None
@@ -179,7 +179,7 @@ class GatewayServer(GeneratedName, FleetHost, Document):
 
 	@frappe.whitelist()
 	def deploy_agent(self):
-		"""Button: build the latest gateway binary and deploy just it (copy +
+		"""Button: install the pinned gateway release and deploy just it (copy +
 		service restart) to this already-provisioned proxy."""
 		frappe.enqueue_doc(
 			self.doctype,
@@ -188,11 +188,11 @@ class GatewayServer(GeneratedName, FleetHost, Document):
 			queue="long",
 			timeout=1200,
 		)
-		frappe.msgprint(f"Building + deploying latest agent to {self.name} — watch its Ansible Plays.")
+		frappe.msgprint(f"Deploying agent {GATEWAY_AGENT_VERSION} to {self.name} — watch its Ansible Plays.")
 
 	@failure.reports_failure(mark_broken=False)
 	def _deploy_agent(self):
-		"""Build the binary on the box, ship it, and rewrite both halves of its configuration.
+		"""Install the pinned agent release on the box and rewrite both halves of its configuration.
 
 		One button for binary AND config, because the gateway has no other config surface: agent.env
 		names every listener, certificate and hostname, and config.json holds the tunables. Written
@@ -206,10 +206,10 @@ class GatewayServer(GeneratedName, FleetHost, Document):
 		settings = frappe.get_single("Grove Settings")
 		tls_variables = settings.tls_variables
 		tls_variables.pop("fleet_tls_key", None)
-		return self.run_playbook(
+		play_name, rc = self.run_playbook(
 			"deploy_agent.yml",
 			extravars={
-				"agent_source": gateway_service_source(),
+				"agent_version": GATEWAY_AGENT_VERSION,
 				"admin_token": self.get_password("admin_token"),
 				"gateway_id": self.name,
 				# Which routes this gateway prefers: a same-region row wins its tier outright.
@@ -220,6 +220,8 @@ class GatewayServer(GeneratedName, FleetHost, Document):
 				**settings.gateway_variables,
 			},
 		)
+		self.record_agent_version(rc)
+		return play_name, rc
 
 	@frappe.whitelist()
 	def setup(self):
@@ -245,7 +247,7 @@ class GatewayServer(GeneratedName, FleetHost, Document):
 			"gateway.yml",
 			extravars={
 				"admin_token": self.get_password("admin_token"),
-				"agent_source": gateway_service_source(),
+				"agent_version": GATEWAY_AGENT_VERSION,
 				"gateway_id": self.name,
 				# Which routes this gateway prefers: a same-region row wins its tier outright.
 				"gateway_region": self.region or "",
@@ -268,6 +270,7 @@ class GatewayServer(GeneratedName, FleetHost, Document):
 			self.name,
 			{"status": "Active" if rc == 0 else "Broken", "admin_url": self.admin_url},
 		)
+		self.record_agent_version(rc)
 		frappe.db.commit()
 
 		if rc == 0:

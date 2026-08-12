@@ -6,7 +6,7 @@
 # and starts serving immediately while the old process drains behind it. agent.env still restarts —
 # the child reads its environment from systemd, not from the parent.
 #
-# extra-vars: agent_source, admin_token, data_token, ingress_id, ingress_hostname.
+# extra-vars: agent_version, admin_token, data_token, ingress_id, ingress_hostname.
 - hosts: all
   become: true
   gather_facts: true
@@ -22,7 +22,7 @@
   roles:
     - grove_https
     - fleet_tls
-    - build_gateway_agent
+    - install_gateway_agent
 
   tasks:
     - name: refuse to write agent.env without an admin token
