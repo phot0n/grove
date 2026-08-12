@@ -88,7 +88,13 @@ app_license = "mit"
 # to exist on every site. It carries NO doctype permissions — every Grove doctype grants
 # System Manager only — so it reaches the whitelisted methods in grove.api and nothing else.
 # Re-imported on migrate (frappe.utils.fixtures.sync_fixtures), so Grove owns desk_access.
-fixtures = [{"dt": "Role", "filters": [["name", "in", ["Grove Control"]]]}]
+# `frappe` is the provider our own engines serve under, and every Model defaults to it, so it has to
+# exist before the first Model is inserted. Filtered by name: a site's own third-party providers carry
+# credentials and must never be exported into the app.
+fixtures = [
+	{"dt": "Role", "filters": [["name", "in", ["Grove Control"]]]},
+	{"dt": "Model Provider", "filters": [["name", "in", ["frappe"]]]},
+]
 
 # Installation
 # ------------

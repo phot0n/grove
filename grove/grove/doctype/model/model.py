@@ -8,6 +8,10 @@ from frappe.model.document import Document
 
 from grove.utils import slugify
 
+# The provider our own engines serve under, and the one a Model made before providers existed is
+# read as. Shipped as a fixture, so it exists before the first Model is inserted.
+DEFAULT_PROVIDER = "frappe"
+
 HF_CONFIG_URL = "https://huggingface.co/{repo}/resolve/main/config.json"
 # Repo root listing, with a size per file. The limit is well past any real shard count.
 HF_TREE_URL = "https://huggingface.co/api/models/{repo}/tree/main?limit=1000"
@@ -37,12 +41,20 @@ class Model(Document):
 	# end: auto-generated types
 
 	def autoname(self):
-		"""Name = slugged Display Name. The name is the client-facing model id (what
+		"""Name = `<provider>/<slugged Display Name>`. The name is the client-facing model id (what
 		clients send as `model` and what routes are keyed by), so it's set once at insert
-		— editing Display Name later does NOT rename it and break live clients."""
-		self.name = slugify(self.display_name)
-		if not self.name:
+		— editing Display Name or Provider later does NOT rename it and break live clients.
+
+		Always prefixed, blank provider included: the prefix IS the id, and one model reachable
+		without it would be an id nobody could tell was ours."""
+		self.model_id = slugify(self.display_name)
+		if not self.model_id:
 			frappe.throw("Display Name must contain at least one letter or digit.")
+		# slugify keeps a slash, and the slash is what separates the provider from the id — a Display
+		# Name carrying one would name `frappe/a/b` and read as a provider nobody registered.
+		if "/" in self.model_id:
+			frappe.throw("Display Name cannot contain '/' — it separates the provider from the model id.")
+		self.name = f"{self.provider or DEFAULT_PROVIDER}/{self.model_id}"
 
 		# `published` means "reachable" — it tracks whether a live route exists, and is
 		# never a manual claim. It is not an access gate: access is granted per user, via
