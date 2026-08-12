@@ -1,0 +1,16 @@
+---
+# Push the fleet's wildcard certificate onto one already-provisioned Gateway Server.
+#
+# Nothing else — no packages, no binary, no restart, no reload. The gateway watches its certificate
+# file's mtime and picks up a replacement on the next handshake, so a renewal is a file copy and
+# that is the whole play. This is what the nginx it replaced needed a config test and a reload for.
+#
+# Run by grove.tls after a renewal, against every Active gateway at once, so it has to be safe on a
+# live box: nothing here interrupts a request.
+- name: Install the fleet certificate on a Gateway Server
+  hosts: all
+  become: true
+  gather_facts: false
+
+  roles:
+    - fleet_tls

@@ -138,7 +138,7 @@
    "label": "Service Discovery Token"
   },
   {
-   "description": "Guards /metrics/node and /metrics/gpu on every box \u2014 e.g. `openssl rand -hex 32`. Boxes get its hash, the agent gets the password. Unset, a box writes no htpasswd at all and nginx refuses the endpoint. Rotating it means re-running each box's play (Setup, Update Engine Config, deploy_openresty.yml) and Install on each agent.",
+   "description": "Guards /metrics/node and /metrics/gpu on every box \u2014 e.g. `openssl rand -hex 32`. Boxes get its hash, the agent gets the password. Unset, a box writes no htpasswd at all and nginx refuses the endpoint. Rotating it means re-running each box's play (Setup, Update Engine Config, Deploy Latest Agent) and Install on each agent.",
    "fieldname": "scrape_password",
    "fieldtype": "Password",
    "label": "Metrics Scrape Password"

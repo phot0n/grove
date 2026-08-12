@@ -11,17 +11,20 @@ import frappe
 MODEL_FIELDS = (
 	"hf_repo", "modality", "enable_prefix_caching",
 	"enable_auto_tool_choice", "tool_call_parser", "thinking", "reasoning_parser",
-	"attention_heads", "weights_gb", "scheduling_policy",
+	"attention_heads", "weights_gb",
 )
 
 DEFAULT_PORT = 8080
 DEFAULT_MAX_MODEL_LEN = 8192
 DEFAULT_GPU_MEMORY_UTILIZATION = 0.9
-DEFAULT_SCHEDULING_POLICY = "priority"
-# What the engine runs concurrently when nobody says otherwise. vLLM's own V1 default happens to
-# be this too, but the flag is passed anyway rather than left off: the gateway holds admissions to
-# this number (Route.Capacity), and it cannot hold an engine to a default that moves with the
-# image tag — which is per Engine Image doc and defaults to `latest`.
+# What the ROUTING side assumes an engine runs concurrently when the placement names no number.
+# Not passed to vLLM: a placement that states nothing gets vLLM's own sizing, which reads the model
+# and the KV cache it actually ended up with and is a better number than one imposed from here.
+#
+# So this is an assumption, not a contract, and the two can drift: vLLM's V1 default is 1024 today
+# but moves with the image tag, which is per Engine Image and defaults to `latest`. Drift only
+# costs accuracy in the capacity gate — the engine queues what it cannot run, and a placement that
+# needs the number held exactly should set max_num_seqs, which pins both sides to it.
 DEFAULT_MAX_NUM_SEQS = 1024
 
 
@@ -61,7 +64,9 @@ class ServeCommand:
 		# prefill and the model kind, and nothing reads it back the way the gateway reads the
 		# sequence cap.
 		self.max_num_batched_tokens = int(max_num_batched_tokens or 0)
-		self.max_num_seqs = int(max_num_seqs or DEFAULT_MAX_NUM_SEQS)
+		# 0 = leave it to vLLM, same as max_num_batched_tokens above. The routing side still needs
+		# a number to hold the engine to and assumes DEFAULT_MAX_NUM_SEQS.
+		self.max_num_seqs = int(max_num_seqs or 0)
 		self.attention_backend = attention_backend or "auto"
 		self.aliases = (aliases or "").replace(",", " ").split()
 		self.extra_serve_args = (extra_serve_args or "").split()
@@ -161,12 +166,6 @@ class ServeCommand:
 		return self.model.get("hf_repo")
 
 	@property
-	def scheduling_policy(self):
-		"""→ --scheduling-policy. Owned by the Model, so every placement of it queues the
-		same way."""
-		return self.model.get("scheduling_policy") or DEFAULT_SCHEDULING_POLICY
-
-	@property
 	def is_embedding(self):
 		"""Pooling model: serves /v1/embeddings, so the chat-only flags are meaningless."""
 		return self.model.get("modality") == "embedding"
@@ -181,10 +180,6 @@ class ServeCommand:
 			"--tensor-parallel-size", str(self.tensor_parallel_size),
 			"--gpu-memory-utilization", str(self.gpu_memory_utilization),
 			"--max-model-len", str(self.max_model_len),
-			# TODO: "priority" only bites once the gateway stamps a per-request `priority` on
-			# the body (off the caller's tier) — until then everything arrives at the default
-			# priority, which queues exactly like fcfs.
-			"--scheduling-policy", self.scheduling_policy,
 			# Surfaces usage.prompt_tokens_details.cached_tokens so cached-token accounting
 			# works (billable = total - cached). Reporting-only.
 			"--enable-prompt-tokens-details",
@@ -193,6 +188,9 @@ class ServeCommand:
 			# response body id carries it. The response HEADER is set by the gateway, so we
 			# deliberately DON'T pass --enable-request-id-headers (it would echo a duplicate).
 			"--enable-log-requests",
+			# Logs the generated text alongside the request — paired with VLLM_LOGGING_LEVEL=DEBUG
+			# on both placements, so a request can be read end to end out of the engine log.
+			"--enable-log-outputs",
 			# vLLM defaults system_fingerprint to "full", which is its exact version and build
 			# hash — `vllm-0.24.0-bf54a486` — on every response and on EVERY streaming frame.
 			# That hands a customer the engine build to look up known issues against, for a field
@@ -209,8 +207,11 @@ class ServeCommand:
 			args += ["--kv-cache-dtype", self.kv_cache_dtype]
 		if self.max_num_batched_tokens:
 			args += ["--max-num-batched-tokens", str(self.max_num_batched_tokens)]
-		# Always passed, never left to the image's default — see DEFAULT_MAX_NUM_SEQS.
-		args += ["--max-num-seqs", str(self.max_num_seqs)]
+		# Only when the placement states one. Unset means vLLM sizes it off the model and the KV
+		# cache it ends up with, which is a better number than any we would impose — see
+		# DEFAULT_MAX_NUM_SEQS for what the routing side assumes in that case.
+		if self.max_num_seqs:
+			args += ["--max-num-seqs", str(self.max_num_seqs)]
 		# A flag, not VLLM_ATTENTION_BACKEND: that env var is gone in vLLM 0.24 (nothing in
 		# the package reads it), so setting it silently left the engine auto-selecting.
 		if self.attention_backend != "auto":

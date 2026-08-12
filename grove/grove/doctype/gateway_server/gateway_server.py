@@ -4,12 +4,12 @@
 import frappe
 from frappe.model.document import Document
 
+from grove import failure
 from grove import agent_sync
 from grove.cloud_provider.route53 import Route53Error
-from grove.fleet import FleetHost
+from grove.fleet import GATEWAY_AGENT_VERSION, FleetHost
 from grove.grove.doctype.network.network import sync_fleet_ingress
 from grove.naming import GeneratedName
-from grove.utils import gateway_service_source
 
 
 class GatewayServer(GeneratedName, FleetHost, Document):
@@ -23,6 +23,7 @@ class GatewayServer(GeneratedName, FleetHost, Document):
 
 		admin_token: DF.Password | None
 		admin_url: DF.Data | None
+		agent_version: DF.Data | None
 		is_static_ip: DF.Check
 		machine: DF.Link
 		monitoring_agent: DF.Link | None
@@ -42,6 +43,60 @@ class GatewayServer(GeneratedName, FleetHost, Document):
 
 	def validate(self):
 		self.set_admin_url()
+		self.set_admin_token()
+		self.validate_region_is_free()
+
+	def validate_region_is_free(self):
+		"""One gateway per region, because Route53 allows exactly one.
+
+		A latency record set is keyed on (name, type, REGION) — SetIdentifier names the row but does
+		not make two rows in the same region distinct. A second gateway there is refused by AWS with
+		`InvalidChangeBatch ... a latency RRSet with the same name, type and region already exists`,
+		twenty minutes into a provision, after the binary has been built.
+
+		Checked only when the region CHANGES, and only on a fleet that has DNS configured. Both
+		matter: validating unconditionally would block every unrelated edit to a box that is already
+		in a conflicting state — including the edit that fixes it — and a fleet with no zone writes
+		no records at all, so it has no constraint to honour.
+
+		Terminated boxes are ignored: their records are removed on the way out, so their region is
+		free."""
+		if not self.region or not self.has_value_changed("region"):
+			return
+		settings = frappe.get_single("Grove Settings")
+		if not all(settings.get(field) for field in self.dns_settings):
+			return
+		clash = frappe.db.get_value(
+			"Gateway Server",
+			{"region": self.region, "status": ("!=", "Terminated"), "name": ("!=", self.name)},
+			"name",
+		)
+		if clash:
+			frappe.throw(
+				f"{clash} is already the gateway for {self.region}, and Route53 allows one latency "
+				f"record per region — a second one there is refused by AWS. Give this box a "
+				f"different Region, or terminate {clash} first."
+			)
+
+	def set_admin_token(self):
+		"""The credential the control plane authenticates every push with.
+
+		Generated rather than typed: the field is read-only, so there was no way to enter one in the
+		UI at all — a Gateway Server was created with a blank token and every path that needed one
+		raised "Password not found", including a twenty-minute provision that got as far as building
+		the binary before it failed. The Ingress Server has always minted its own; this is the same
+		credential and had no business behaving differently.
+
+		In validate rather than before_insert, so it also heals the docs that already exist without
+		one. Clearing the field and saving is how it is rotated — which then needs a Deploy Agent,
+		because the box holds the old value until agent.env is rewritten.
+
+		Tested through get_password, NOT `if not self.admin_token`. A saved Password field puts a
+		row of asterisks in the doc's own column and the real value in __Auth, so the field reads
+		back truthy even when the actual secret is gone — which is precisely the state a doc lands
+		in if its __Auth row is lost, and precisely the state this is here to fix."""
+		if not self.get_password("admin_token", raise_exception=False):
+			self.admin_token = frappe.generate_hash(length=48)
 
 	def on_update(self):
 		# A newly-Active proxy needs the full current state now — the background
@@ -123,39 +178,8 @@ class GatewayServer(GeneratedName, FleetHost, Document):
 			return None
 
 	@frappe.whitelist()
-	def deploy_openresty(self):
-		"""Button: push the Lua and nginx.conf this bench has, validate, graceful reload.
-
-		The data-path counterpart to deploy_agent: config only, so Redis keeps its routes and
-		usage counters and the agent is not restarted. Same extra-vars provision passes for the
-		same roles — the play refuses to render if the TLS ones are missing, since that would put
-		a live box back on plaintext :80."""
-		frappe.enqueue_doc(
-			self.doctype, self.name, "_deploy_openresty", queue="long", timeout=900
-		)
-		frappe.msgprint(f"Deploying OpenResty config to {self.name} — watch its Ansible Plays.")
-
-	def _deploy_openresty(self):
-		"""Resolved here, not at enqueue: the certificate key and the scrape password would
-		otherwise be serialised into the job payload and sit in Redis."""
-		settings = frappe.get_single("Grove Settings")
-		# nginx.conf keys its shape on the certificate, so that one has to be here — but the key
-		# only feeds fleet_tls, which deploy_tls owns. Dropping it skips that role and keeps the
-		# fleet's private key out of a config push entirely.
-		tls_variables = settings.tls_variables
-		tls_variables.pop("fleet_tls_key", None)
-		return self.run_playbook(
-			"deploy_openresty.yml",
-			extravars={
-				"proxy_hostname": self.hostname,
-				**settings.scrape_auth_variables,
-				**tls_variables,
-			},
-		)
-
-	@frappe.whitelist()
 	def deploy_agent(self):
-		"""Button: build the latest gateway binary and deploy just it (copy +
+		"""Button: install the pinned gateway release and deploy just it (copy +
 		service restart) to this already-provisioned proxy."""
 		frappe.enqueue_doc(
 			self.doctype,
@@ -164,25 +188,40 @@ class GatewayServer(GeneratedName, FleetHost, Document):
 			queue="long",
 			timeout=1200,
 		)
-		frappe.msgprint(f"Building + deploying latest agent to {self.name} — watch its Ansible Plays.")
+		frappe.msgprint(f"Deploying agent {GATEWAY_AGENT_VERSION} to {self.name} — watch its Ansible Plays.")
 
+	@failure.reports_failure(mark_broken=False)
 	def _deploy_agent(self):
-		"""Push gateway_service source to Gateway Server, build + restart, and rewrite agent.env
-		(no OpenResty/Redis reinstall).
+		"""Install the pinned agent release on the box and rewrite both halves of its configuration.
 
-		The env file rides along because the gateway's tuning lives in it. Written whole from the
-		same extra-vars provision passes, so a config-only run never blanks the admin token."""
-		return self.run_playbook(
+		One button for binary AND config, because the gateway has no other config surface: agent.env
+		names every listener, certificate and hostname, and config.json holds the tunables. Written
+		whole from the same extra-vars provision passes, so a config-only run never blanks the admin
+		token.
+
+		Resolved here rather than at enqueue, like the provision path: the certificate key would
+		otherwise be serialised into the job payload and sit in Redis. Only the key is dropped —
+		agent.env names the certificate's PATH, so the paths' role defaults still have to load, and
+		the play includes fleet_tls for exactly that."""
+		settings = frappe.get_single("Grove Settings")
+		tls_variables = settings.tls_variables
+		tls_variables.pop("fleet_tls_key", None)
+		play_name, rc = self.run_playbook(
 			"deploy_agent.yml",
 			extravars={
-				"agent_source": gateway_service_source(),
+				"agent_version": GATEWAY_AGENT_VERSION,
 				"admin_token": self.get_password("admin_token"),
 				"gateway_id": self.name,
 				# Which routes this gateway prefers: a same-region row wins its tier outright.
 				"gateway_region": self.region or "",
-				**frappe.get_single("Grove Settings").gateway_variables,
+				"proxy_hostname": self.hostname,
+				**tls_variables,
+				**settings.scrape_auth_variables,
+				**settings.gateway_variables,
 			},
 		)
+		self.record_agent_version(rc)
+		return play_name, rc
 
 	@frappe.whitelist()
 	def setup(self):
@@ -196,6 +235,7 @@ class GatewayServer(GeneratedName, FleetHost, Document):
 		)
 		frappe.msgprint(f"Provisioning {self.name} — watch its Ansible Plays.")
 
+	@failure.reports_failure(mark_broken=True)
 	def provision(self):
 		"""Run gateway.yml against the Gateway Server's Machine → OpenResty + Redis +
 		Go agent. On success, mark Active and project keys/routes."""
@@ -207,7 +247,7 @@ class GatewayServer(GeneratedName, FleetHost, Document):
 			"gateway.yml",
 			extravars={
 				"admin_token": self.get_password("admin_token"),
-				"agent_source": gateway_service_source(),
+				"agent_version": GATEWAY_AGENT_VERSION,
 				"gateway_id": self.name,
 				# Which routes this gateway prefers: a same-region row wins its tier outright.
 				"gateway_region": self.region or "",
@@ -230,6 +270,7 @@ class GatewayServer(GeneratedName, FleetHost, Document):
 			self.name,
 			{"status": "Active" if rc == 0 else "Broken", "admin_url": self.admin_url},
 		)
+		self.record_agent_version(rc)
 		frappe.db.commit()
 
 		if rc == 0:

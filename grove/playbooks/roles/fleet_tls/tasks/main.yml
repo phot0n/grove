@@ -1,0 +1,30 @@
+---
+# Notifies nothing. The only consumers of this certificate are grove-gateway processes, and they
+# reload it from disk on the next handshake — so a renewal is a file copy and nothing else. This
+# role used to notify `reload openresty`, which is why every play that used it had to declare that
+# handler; both went with the nginx that needed them.
+- name: Install the fleet certificate
+  when: fleet_tls_cert | length > 0 and fleet_tls_key | length > 0
+  block:
+    - name: Create the TLS directory
+      ansible.builtin.file:
+        path: "{{ fleet_tls_dir }}"
+        state: directory
+        mode: "0755"
+
+    - name: Write the fleet certificate
+      ansible.builtin.copy:
+        content: "{{ fleet_tls_cert }}"
+        dest: "{{ fleet_tls_cert_path }}"
+        mode: "0644"
+
+    # no_log because a task RESULT echoes the module args back, and Grove stores that JSON on an
+    # Ansible Task doc — without this the fleet's private key is readable in the Desk UI and in
+    # the database, for every proxy, forever. The extra-var itself never lands anywhere: it is set
+    # on the VariableManager and no play doc records it.
+    - name: Write the fleet private key
+      ansible.builtin.copy:
+        content: "{{ fleet_tls_key }}"
+        dest: "{{ fleet_tls_key_path }}"
+        mode: "0600"
+      no_log: true

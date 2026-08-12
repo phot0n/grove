@@ -1,0 +1,114 @@
+---
+# Ship a new binary and the tunables to an ALREADY-provisioned Gateway Server. Does not touch Redis
+# or the systemd unit — use gateway.yml for a full provision.
+#
+# The binary RELOADS rather than restarts: SIGHUP forks a child that inherits the listening sockets
+# and starts serving immediately while the old process drains behind it, so a deploy is not a
+# traffic event. agent.env still restarts — the child reads its environment from systemd, not from
+# the parent, so a reload would not pick it up. That is the one case here that drains, and it is
+# rare.
+#
+# extra-vars: agent_version, admin_token, gateway_id, gateway_region, plus whatever config.json.j2
+# reads.
+- hosts: all
+  become: true
+  gather_facts: true
+  vars:
+    grove_dir: "{{ playbook_dir }}"
+    # No self-signed certificate on a front box — see gateway.yml.
+    grove_tls_selfsigned: false
+
+  # grove_https and fleet_tls are here for their DEFAULTS — the htpasswd and certificate paths that
+  # agent.env names — and for the htpasswd itself, so a rotated scrape password reaches the box on a
+  # config push. Both idempotent: grove_https issues no certificate here, and fleet_tls writes
+  # nothing when it is handed none, which is the case on a binary-only deploy.
+  roles:
+    - grove_https
+    - fleet_tls
+    - install_gateway_agent
+
+  tasks:
+    # The play is hand-runnable and this file holds the token every /grove-admin push authenticates
+    # with. The gateway refuses to start without it, so a run that forgot it would trade a working
+    # gateway for a crash-looping one — caught here, before agent.env is overwritten.
+    - name: refuse to write agent.env without an admin token
+      ansible.builtin.assert:
+        that: admin_token | default('') | trim | length > 0
+        fail_msg: >-
+          No admin_token was passed — writing agent.env now would stop the gateway from starting at
+          all, and every sync with it. Re-run from the Gateway Server's Deploy Agent button, or
+          pass the same extra-vars it does.
+
+    # Refuse to write a half env file over a working box. Every listener, name and path lives here,
+    # so a hand-run missing them would render a gateway that starts and serves nothing.
+    - name: refuse to write agent.env without the box's own identity
+      ansible.builtin.assert:
+        that:
+          - gateway_id | default('') | trim | length > 0
+          - proxy_hostname | default('') | trim | length > 0
+        fail_msg: >-
+          gateway_id and proxy_hostname are required — without them this box would lose the name its
+          admin plane and its scrape answer on. Re-run from the Deploy Agent button.
+
+    - name: agent.env
+      ansible.builtin.copy:
+        dest: /etc/grove-gateway/agent.env
+        content: |
+          GROVE_ADMIN_TOKEN={{ admin_token }}
+          GROVE_GATEWAY_ID={{ gateway_id }}
+          GROVE_GATEWAY_REGION={{ gateway_region | default('') }}
+          GROVE_REDIS_ADDR=127.0.0.1:6379
+          GROVE_LISTEN_HTTP=:80
+          GROVE_LISTEN_HTTPS=:443
+          GROVE_PUBLIC_HOST={{ gateway_host | default('') }}
+          GROVE_SELF_HOST={{ proxy_hostname }}
+          GROVE_TLS_CERT={{ fleet_tls_cert_path if (fleet_tls_cert | default('')) else '' }}
+          GROVE_TLS_KEY={{ fleet_tls_key_path if (fleet_tls_cert | default('')) else '' }}
+          GROVE_HTPASSWD={{ grove_metrics_htpasswd }}
+          GROVE_ACCESS_LOG=/var/log/grove-gateway/access.log
+          GROVE_ERROR_LOG=/var/log/grove-gateway/error.log
+          GROVE_CONFIG=/etc/grove-gateway/config.json
+          GROVE_PID_FILE=/run/grove-gateway.pid
+        mode: "0600"
+      no_log: true
+      notify: restart grove-gateway
+
+    - name: config.json
+      ansible.builtin.template:
+        src: "{{ grove_dir }}/config.json.j2"
+        dest: /etc/grove-gateway/config.json
+        mode: "0644"
+      notify: reload grove-gateway config
+
+    # copy writes a temp file and renames, which matters: a running executable cannot be truncated
+    # in place (`text file busy`), and the SIGHUP that follows re-execs whatever the path resolves
+    # to at that moment. Rename makes that atomically the new binary.
+    - name: install grove-gateway binary
+      ansible.builtin.copy:
+        src: /tmp/grove-gateway
+        dest: /usr/local/bin/grove-gateway
+        mode: "0755"
+        remote_src: true
+      notify: upgrade grove-gateway
+
+  handlers:
+    # SIGHUP when the service is up: a child that fails to start leaves the running process serving,
+    # so a bad binary is a log line rather than an outage.
+    #
+    # reload-or-restart, not the systemd module's `state: reloaded`, which fails outright on a unit
+    # that is not active — and a box whose gateway is down is exactly the one a new binary is being
+    # shipped to. That refusal turned a fixable box into a deploy that could not run at all.
+    - name: upgrade grove-gateway
+      ansible.builtin.command: systemctl reload-or-restart grove-gateway
+      changed_when: true
+
+    - name: reload grove-gateway config
+      ansible.builtin.command: systemctl kill -s SIGUSR1 grove-gateway
+      changed_when: true
+      failed_when: false
+
+    - name: restart grove-gateway
+      ansible.builtin.systemd:
+        name: grove-gateway
+        state: restarted
+        daemon_reload: true

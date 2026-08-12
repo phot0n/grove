@@ -57,7 +57,8 @@ class TestIsIdSafe(unittest.TestCase):
 			self.assertFalse(is_id_safe(name), repr(name))
 
 	def test_a_safe_name_is_recoverable_from_the_id_it_produces(self):
-		# Mirror of cleanIDPart (gateway_service/main.go): keep [A-Za-z0-9_], '-' → '_', drop
+		# Mirror of CleanIDPart (grove-gateway, internal/domain/requestid.go): keep [A-Za-z0-9_],
+		# '-' → '_', drop
 		# the rest. For an id-safe name that is the ONLY transformation, so swapping back
 		# recovers the doc name — which is the whole point of the rule.
 		def clean_id_part(value):

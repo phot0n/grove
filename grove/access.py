@@ -5,20 +5,11 @@ nothing else is reachable — a user with no grant gets no models.
 
 The precedence itself is NOT applied here: Grove pushes the group as its own Redis record
 (group:<name>), the user as theirs (user:<name>) pointing at it, and each key as a pointer to the
-user; the gateway resolves the three at request time (gateway_service/eval.go). That is what stops
+user; the gateway resolves the three at request time (grove-gateway, internal/domain/access.go
+`Evaluate`). That is what stops
 a one-row edit on a group or a user from invalidating every key beneath it."""
 
 import frappe
-
-
-def vllm_priority(group_priority):
-	"""The `priority` the gateway stamps on a request, from a group's Priority.
-
-	The two conventions are opposites, so the sign flips here and nowhere else: Grove
-	stores "higher = more important", which is how an operator reads a tier, while vLLM
-	serves the LOWEST number first. Baseline 0 is what an ungrouped user gets, so a group
-	above 0 jumps ahead of them and one below 0 falls behind."""
-	return -(group_priority or 0)
 
 
 def model_rows(parenttype, parents=None):

@@ -5,6 +5,7 @@ import frappe
 import requests
 from frappe.model.document import Document
 
+from grove import failure
 from grove.ansible import AnsibleHost
 from grove.monitoring import engine_targets, host_targets
 
@@ -146,6 +147,7 @@ class MonitoringAgent(AnsibleHost, Document):
 		frappe.enqueue_doc(self.doctype, self.name, "write_targets", queue="short", timeout=600)
 		frappe.msgprint(f"Pushing targets to {self.name} — watch its Ansible Plays.")
 
+	@failure.reports_failure(mark_broken=False)
 	def write_targets(self):
 		"""Job: push_targets.yml with the lists as they are right now. Leaves status alone —
 		this neither installs nor breaks an agent, and a failed play is the record of it.
@@ -166,6 +168,7 @@ class MonitoringAgent(AnsibleHost, Document):
 		frappe.enqueue_doc(self.doctype, self.name, "write_config", queue="short", timeout=900)
 		frappe.msgprint(f"Updating vmagent config on {self.name} — watch its Ansible Plays.")
 
+	@failure.reports_failure(mark_broken=False)
 	def write_config(self):
 		"""Job: config.yml — every vmagent config task, none of the install ones."""
 		play_name, rc = self.run_playbook("config.yml", extravars=self.ansible_variables)
@@ -233,6 +236,7 @@ class MonitoringAgent(AnsibleHost, Document):
 			return [f"{url} answered with a {type(targets).__name__}, not the JSON array http_sd reads."]
 		return []
 
+	@failure.reports_failure(mark_broken=True)
 	def provision(self):
 		"""Job: agent.yml — install vmagent, then everything write_config would do. Mirrors
 		InferenceServer.provision."""

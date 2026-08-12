@@ -1,0 +1,160 @@
+---
+# Provision a Grove Ingress Server: local Redis + the grove-gateway binary in ingress mode.
+# Deliberately close to gateway.yml — same binary, same certificate — minus every tenant-facing
+# piece: no key push, no usage pull, no synthetic-session TTL. What an ingress is GIVEN is what
+# keeps it out of the tenant plane, so nothing here hands it tenant configuration.
+#
+# Redis is rebuildable state here, not durable: the replica table is pushed by the control plane and
+# the in-flight counters are re-derived, so this box takes the default persistence rather than the
+# gateway's appendfsync always.
+#
+# extra-vars: admin_token, data_token, agent_version, ingress_id, ingress_hostname, the fleet TLS
+# pair, the scrape hash.
+- hosts: all
+  become: true
+  gather_facts: true
+  vars:
+    grove_dir: "{{ playbook_dir }}"
+    # Defaulted here so a play run by hand does not fail on an undefined variable halfway through.
+    ingress_hostname: ""
+    # No self-signed certificate on a front box — see gateway.yml.
+    grove_tls_selfsigned: false
+
+  pre_tasks:
+    - name: refuse to provision without an admin token
+      ansible.builtin.assert:
+        that: admin_token | default('') | trim | length > 0
+        fail_msg: >-
+          No admin_token was passed — provision from the Ingress Server's Provision button, or
+          pass the same extra-vars it does.
+
+    # An ingress given no data token refuses every gateway, which reads as a routing outage rather
+    # than the config fault it is. The binary refuses to start on it; caught here instead.
+    - name: refuse to provision without a data token
+      ansible.builtin.assert:
+        that: data_token | default('') | trim | length > 0
+        fail_msg: >-
+          No data_token was passed — an ingress without one refuses every gateway. Provision from
+          the Ingress Server's button, or pass the same extra-vars it does.
+
+  roles:
+    - grove_https
+    - fleet_tls
+    - install_gateway_agent
+
+  tasks:
+    - name: stop and disable openresty
+      ansible.builtin.systemd:
+        name: openresty
+        state: stopped
+        enabled: false
+      failed_when: false
+
+    # A box provisioned before this carries a self-signed certificate nothing now reads. Removed by
+    # file, never by directory: /etc/grove/tls also holds the fleet wildcard this box actually
+    # serves, and taking the directory would take that with it.
+    - name: remove the self-signed certificate this box no longer serves
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - "{{ grove_tls_cert }}"
+        - "{{ grove_tls_key }}"
+
+    - name: install redis-server
+      ansible.builtin.apt:
+        name: redis-server
+        state: present
+        update_cache: true
+
+    - name: grove-gateway directories
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: directory
+        mode: "0755"
+      loop:
+        - /etc/grove-gateway
+        - /var/log/grove-gateway
+
+    - name: access log rotation
+      ansible.builtin.copy:
+        src: "{{ grove_dir }}/logrotate/grove-gateway"
+        dest: /etc/logrotate.d/grove-gateway
+        mode: "0644"
+
+    - name: gateway binary
+      ansible.builtin.copy:
+        src: /tmp/grove-gateway
+        dest: /usr/local/bin/grove-gateway
+        mode: "0755"
+        remote_src: true
+      notify: restart grove-gateway
+
+    # GROVE_INGRESS_ID is what selects the infra plane, and no tenant variable appears here at all:
+    # the binary registers no key-reading handler when it is given this id.
+    - name: agent.env
+      ansible.builtin.copy:
+        dest: /etc/grove-gateway/agent.env
+        content: |
+          GROVE_ADMIN_TOKEN={{ admin_token }}
+          GROVE_INGRESS_ID={{ ingress_id | default('') }}
+          GROVE_INGRESS_TOKEN={{ data_token }}
+          GROVE_REDIS_ADDR=127.0.0.1:6379
+          GROVE_LISTEN_HTTP=:80
+          GROVE_LISTEN_HTTPS=:443
+          GROVE_SELF_HOST={{ ingress_hostname }}
+          GROVE_TLS_CERT={{ fleet_tls_cert_path if (fleet_tls_cert | default('')) else '' }}
+          GROVE_TLS_KEY={{ fleet_tls_key_path if (fleet_tls_cert | default('')) else '' }}
+          GROVE_HTPASSWD={{ grove_metrics_htpasswd }}
+          GROVE_ACCESS_LOG=/var/log/grove-gateway/access.log
+          GROVE_ERROR_LOG=/var/log/grove-gateway/error.log
+          GROVE_CONFIG=/etc/grove-gateway/config.json
+          GROVE_PID_FILE=/run/grove-gateway.pid
+        mode: "0600"
+      no_log: true
+      notify: restart grove-gateway
+
+    - name: config.json
+      ansible.builtin.template:
+        src: "{{ grove_dir }}/config.json.j2"
+        dest: /etc/grove-gateway/config.json
+        mode: "0644"
+      notify: reload grove-gateway config
+
+    - name: systemd unit
+      ansible.builtin.copy:
+        src: "{{ grove_dir }}/systemd/grove-gateway.service"
+        dest: /etc/systemd/system/grove-gateway.service
+        mode: "0644"
+      notify:
+        - reload systemd
+        - restart grove-gateway
+
+    - name: redis started
+      ansible.builtin.systemd:
+        name: redis-server
+        enabled: true
+        state: started
+
+    - name: grove-gateway started
+      ansible.builtin.systemd:
+        name: grove-gateway
+        enabled: true
+        state: started
+        daemon_reload: true
+
+  handlers:
+    - name: reload systemd
+      ansible.builtin.systemd:
+        daemon_reload: true
+
+    - name: restart grove-gateway
+      ansible.builtin.systemd:
+        name: grove-gateway
+        state: restarted
+        daemon_reload: true
+
+    - name: reload grove-gateway config
+      ansible.builtin.command: systemctl kill -s SIGUSR1 grove-gateway
+      changed_when: true
+      failed_when: false

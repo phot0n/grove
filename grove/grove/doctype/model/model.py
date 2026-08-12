@@ -8,6 +8,10 @@ from frappe.model.document import Document
 
 from grove.utils import slugify
 
+# The provider our own engines serve under, and the one a Model made before providers existed is
+# read as. Shipped as a fixture, so it exists before the first Model is inserted.
+DEFAULT_PROVIDER = "frappe"
+
 HF_CONFIG_URL = "https://huggingface.co/{repo}/resolve/main/config.json"
 # Repo root listing, with a size per file. The limit is well past any real shard count.
 HF_TREE_URL = "https://huggingface.co/api/models/{repo}/tree/main?limit=1000"
@@ -28,30 +32,29 @@ class Model(Document):
 		enable_prefix_caching: DF.Check
 		hf_repo: DF.Data | None
 		hidden_layers: DF.Int
-		modality: DF.Literal["text", "multimodal", "embedding"]
+		modality: DF.Literal["text", "multimodal", "embedding", "audio"]
 		published: DF.Check
 		reasoning_parser: DF.Data | None
-		scheduling_policy: DF.Literal["priority", "fcfs"]
 		thinking: DF.Check
 		tool_call_parser: DF.Data | None
 		weights_gb: DF.Float
 	# end: auto-generated types
 
 	def autoname(self):
-		"""Name = slugged Display Name. The name is the client-facing model id (what
+		"""Name = `<provider>/<slugged Display Name>`. The name is the client-facing model id (what
 		clients send as `model` and what routes are keyed by), so it's set once at insert
-		— editing Display Name later does NOT rename it and break live clients."""
-		self.name = slugify(self.display_name)
-		if not self.name:
-			frappe.throw("Display Name must contain at least one letter or digit.")
+		— editing Display Name or Provider later does NOT rename it and break live clients.
 
-	def validate(self):
-		# The read-only-when-published rule, enforced past the client.
-		if is_scheduling_policy_frozen(self.get_doc_before_save(), self):
-			frappe.throw(
-				"Scheduling Policy is frozen while the model is published — it is baked into "
-				"the running engines. Tear its placements down to change it."
-			)
+		Always prefixed, blank provider included: the prefix IS the id, and one model reachable
+		without it would be an id nobody could tell was ours."""
+		self.model_id = slugify(self.display_name)
+		if not self.model_id:
+			frappe.throw("Display Name must contain at least one letter or digit.")
+		# slugify keeps a slash, and the slash is what separates the provider from the id — a Display
+		# Name carrying one would name `frappe/a/b` and read as a provider nobody registered.
+		if "/" in self.model_id:
+			frappe.throw("Display Name cannot contain '/' — it separates the provider from the model id.")
+		self.name = f"{self.provider or DEFAULT_PROVIDER}/{self.model_id}"
 
 		# `published` means "reachable" — it tracks whether a live route exists, and is
 		# never a manual claim. It is not an access gate: access is granted per user, via
@@ -144,14 +147,6 @@ def is_root_weights_file(path, suffix):
 	listing is requested non-recursively, so this is a second line of defence: a repo keeps
 	its other quantizations in subfolders, and counting those bills the same model twice."""
 	return path.endswith(suffix) and "/" not in path
-
-
-def is_scheduling_policy_frozen(before, after):
-	"""True when a save would move the Scheduling Policy of a model that is already
-	serving. The live engines were started with the stored policy, so a new one would name
-	a --scheduling-policy nothing is running. `before` is None on insert — nothing live yet
-	— and the stored `published` is what counts, since after.published is recomputed."""
-	return bool(before and before.published and before.scheduling_policy != after.scheduling_policy)
 
 
 def has_active_deployment(model, exclude=None):

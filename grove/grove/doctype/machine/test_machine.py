@@ -4,6 +4,7 @@
 
 import unittest
 from types import SimpleNamespace
+from unittest.mock import patch
 
 import frappe
 from frappe.tests import IntegrationTestCase
@@ -18,7 +19,7 @@ from grove.cloud_provider.aws import (
 	parse_instance_store,
 	root_volume_id,
 )
-from grove.grove.doctype.machine.machine import _scan_message, parse_nvidia_smi
+from grove.grove.doctype.machine.machine import Machine, _scan_message, parse_nvidia_smi
 from grove.utils import vram_gb_from_mib
 
 # describe_instance_types for a g6.12xlarge, trimmed to the two keys Grove reads.
@@ -593,3 +594,81 @@ class TestNetworkResolution(IntegrationTestCase):
 
 if __name__ == "__main__":
 	unittest.main()
+
+
+class TestTerminatingABoxTakesItsServersWithIt(unittest.TestCase):
+	"""What a Machine going away does to the servers built on it.
+
+	The write has to go THROUGH the document. It used to be db.set_value, which skips validate and
+	on_update — so a Terminated gateway never ran remove_dns_records, and terminating a box left a
+	Route53 latency record pointing at an instance that no longer existed. Every client that
+	resolved to that region fell into it, and nothing in the fleet would ever have corrected it.
+	"""
+
+	def cascade(self, status="Terminated", dependents=None, failing=None):
+		"""Runs the cascade against fakes. Returns (saved, reported)."""
+		dependents = dependents or {"Gateway Server": ["gw-1"]}
+		saved, reported = [], []
+
+		class FakeDoc:
+			def __init__(self, doctype, name):
+				self.doctype, self.name, self.status = doctype, name, None
+
+			def save(self, ignore_permissions=False):
+				if (self.doctype, self.name) == failing:
+					raise frappe.ValidationError("that box will not validate")
+				saved.append((self.doctype, self.name, self.status, ignore_permissions))
+
+		machine = SimpleNamespace(name="mc-1", status=status)
+		machine.mark_dependent = lambda dt, n, s: Machine.mark_dependent(machine, dt, n, s)
+
+		with (
+			patch("frappe.get_all", side_effect=lambda dt, **kw: dependents.get(dt, [])),
+			patch("frappe.get_doc", side_effect=FakeDoc),
+			patch("grove.failure.report", side_effect=lambda dt, n, t, d, **kw: reported.append((dt, n))),
+		):
+			Machine.sync_dependent_servers(machine)
+		return saved, reported
+
+	def test_it_saves_rather_than_writing_the_column(self):
+		# save() is the whole fix: it is what runs on_update, which is where remove_dns_records and
+		# the security-group reconcile live.
+		saved, _ = self.cascade()
+		self.assertEqual([("Gateway Server", "gw-1", "Terminated", True)], saved)
+
+	def test_an_ingress_is_not_forgotten(self):
+		# It was missing from this list until it bit. An ingress carries a machine, a status and DNS
+		# records of its own, so being skipped left it Active and still resolving.
+		saved, _ = self.cascade(dependents={"Ingress Server": ["ing-1"]})
+		self.assertEqual([("Ingress Server", "ing-1", "Terminated", True)], saved)
+
+	def test_every_dependent_kind_is_covered(self):
+		saved, _ = self.cascade(dependents={
+			"Gateway Server": ["gw-1"], "Ingress Server": ["ing-1"],
+			"Inference Server": ["inf-1"], "Monitoring Agent": ["ma-1"],
+		})
+		self.assertEqual(
+			{"Gateway Server", "Ingress Server", "Inference Server", "Monitoring Agent"},
+			{doctype for doctype, _, _, _ in saved},
+		)
+
+	def test_a_stopped_box_marks_its_servers_broken_not_terminated(self):
+		# Offline/Draining is recoverable — Start can bring the box back, and Terminated would say
+		# it is gone for good.
+		saved, _ = self.cascade(status="Offline")
+		self.assertEqual("Broken", saved[0][2])
+
+	def test_a_running_box_changes_nothing(self):
+		saved, _ = self.cascade(status="Active")
+		self.assertEqual([], saved)
+
+	def test_one_dependent_that_will_not_save_does_not_take_the_rest_with_it(self):
+		"""save() runs validate, so a dependent that fails validation for some unrelated reason
+		would otherwise abort the termination halfway — leaving the machine gone and its siblings
+		still claiming to be Active."""
+		saved, reported = self.cascade(
+			dependents={"Gateway Server": ["gw-bad", "gw-good"]},
+			failing=("Gateway Server", "gw-bad"),
+		)
+		self.assertEqual([("Gateway Server", "gw-good", "Terminated", True)], saved)
+		self.assertEqual([("Gateway Server", "gw-bad")], reported)

@@ -1,0 +1,98 @@
+---
+# Ship a new binary and the tunables to an ALREADY-provisioned Ingress Server. Does not touch Redis
+# or the systemd unit — use ingress.yml for a full provision.
+#
+# The binary RELOADS rather than restarts: SIGHUP forks a child that inherits the listening sockets
+# and starts serving immediately while the old process drains behind it. agent.env still restarts —
+# the child reads its environment from systemd, not from the parent.
+#
+# extra-vars: agent_version, admin_token, data_token, ingress_id, ingress_hostname.
+- hosts: all
+  become: true
+  gather_facts: true
+  vars:
+    grove_dir: "{{ playbook_dir }}"
+    # No self-signed certificate on a front box — see gateway.yml.
+    grove_tls_selfsigned: false
+
+  # grove_https and fleet_tls are here for their DEFAULTS — the htpasswd and certificate paths that
+  # agent.env names — and for the htpasswd itself, so a rotated scrape password reaches the box on a
+  # config push. Both idempotent: grove_https issues no certificate here, and fleet_tls writes
+  # nothing when it is handed none, which is the case on a binary-only deploy.
+  roles:
+    - grove_https
+    - fleet_tls
+    - install_gateway_agent
+
+  tasks:
+    - name: refuse to write agent.env without an admin token
+      ansible.builtin.assert:
+        that: admin_token | default('') | trim | length > 0
+        fail_msg: >-
+          No admin_token was passed — writing agent.env now would stop the ingress from starting at
+          all, and every replica-table push with it. Re-run from the Ingress Server's Deploy Agent
+          button, or pass the same extra-vars it does.
+
+    # A blank data token is not a degraded ingress, it is one that refuses every gateway — which
+    # reads as a routing outage rather than the config fault it is.
+    - name: refuse to write agent.env without a data token
+      ansible.builtin.assert:
+        that: data_token | default('') | trim | length > 0
+        fail_msg: >-
+          No data_token was passed — an ingress without one refuses every gateway. Re-run from the
+          Deploy Agent button.
+
+    - name: agent.env
+      ansible.builtin.copy:
+        dest: /etc/grove-gateway/agent.env
+        content: |
+          GROVE_ADMIN_TOKEN={{ admin_token }}
+          GROVE_INGRESS_ID={{ ingress_id | default('') }}
+          GROVE_INGRESS_TOKEN={{ data_token }}
+          GROVE_REDIS_ADDR=127.0.0.1:6379
+          GROVE_LISTEN_HTTP=:80
+          GROVE_LISTEN_HTTPS=:443
+          GROVE_SELF_HOST={{ ingress_hostname | default('') }}
+          GROVE_TLS_CERT={{ fleet_tls_cert_path if (fleet_tls_cert | default('')) else '' }}
+          GROVE_TLS_KEY={{ fleet_tls_key_path if (fleet_tls_cert | default('')) else '' }}
+          GROVE_HTPASSWD={{ grove_metrics_htpasswd }}
+          GROVE_ACCESS_LOG=/var/log/grove-gateway/access.log
+          GROVE_ERROR_LOG=/var/log/grove-gateway/error.log
+          GROVE_CONFIG=/etc/grove-gateway/config.json
+          GROVE_PID_FILE=/run/grove-gateway.pid
+        mode: "0600"
+      no_log: true
+      notify: restart grove-gateway
+
+    - name: config.json
+      ansible.builtin.template:
+        src: "{{ grove_dir }}/config.json.j2"
+        dest: /etc/grove-gateway/config.json
+        mode: "0644"
+      notify: reload grove-gateway config
+
+    - name: install grove-gateway binary
+      ansible.builtin.copy:
+        src: /tmp/grove-gateway
+        dest: /usr/local/bin/grove-gateway
+        mode: "0755"
+        remote_src: true
+      notify: upgrade grove-gateway
+
+  handlers:
+    # reload-or-restart, not `state: reloaded`: that fails on a unit which is not active, and a box
+    # whose gateway is down is exactly the one a new binary is being shipped to.
+    - name: upgrade grove-gateway
+      ansible.builtin.command: systemctl reload-or-restart grove-gateway
+      changed_when: true
+
+    - name: reload grove-gateway config
+      ansible.builtin.command: systemctl kill -s SIGUSR1 grove-gateway
+      changed_when: true
+      failed_when: false
+
+    - name: restart grove-gateway
+      ansible.builtin.systemd:
+        name: grove-gateway
+        state: restarted
+        daemon_reload: true

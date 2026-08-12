@@ -53,6 +53,3 @@ jspm_packages/
 
 # Aider AI Chat
 .aider*
-
-# Go build output (the proxy builds this on the target, see build_gateway_agent role)
-gateway_service/grove-gateway

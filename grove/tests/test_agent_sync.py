@@ -4,16 +4,18 @@
 resolves through — group, then user, then key. Pure — the docs are mocked, no site.
 
 Every field here is read by something that cannot be changed in the same deploy: the Go agent
-unmarshals it (`gateway_service/routing.go`, `admin.go`), Lua puts one of them on the access line,
-and both run on a box that is updated separately. So the shape is asserted rather than assumed.
+unmarshals it (grove-gateway, `internal/domain/route.go` and `internal/transport/http/admin.go`),
+and it lives in its own repo on a box that is updated separately — a released binary, not a tree
+this deploy compiles. So the shape is asserted rather than assumed.
 """
 
+import inspect
 import unittest
 import unittest.mock
 
 import frappe
 
-from grove import agent_sync
+from grove import agent_sync, hooks
 from grove.serve_command import DEFAULT_MAX_NUM_SEQS
 
 
@@ -43,7 +45,9 @@ class TestRoutesForProxy(unittest.TestCase):
 			if doctype == "Model Deployment":
 				return list(deployments)
 			if doctype == "Model":
-				return list(models)
+				# name + modality: the route rows carry the model's surface, so this read is no
+				# longer just a list of names. Modality itself is TestRouteModality's business.
+				return [frappe._dict(name=m, modality="text") for m in models]
 			if doctype == "Pod":
 				return list(pods)
 			if doctype in ("Ingress Server", "Inference Server"):
@@ -103,12 +107,64 @@ class TestRoutesForProxy(unittest.TestCase):
 		[route] = self.routes(pods=[pod("POD-1", max_num_seqs=16)])["qwen3-35b"]
 		self.assertEqual(route["capacity"], 16)
 
-	def test_an_unset_cap_resolves_to_what_the_engine_was_started_with(self):
-		# Blank is not "no cap": the serve command fills the same default in, so the number the
-		# gateway holds the engine to is the number the engine is running. Drift between the two
-		# is the one way this whole mechanism can be quietly wrong.
+	def test_an_unset_cap_falls_back_to_the_assumed_one(self):
+		# Blank is not "no cap": the route still carries a number, because the capacity gate has to
+		# hold the engine to something. It is an ASSUMPTION though — the serve command passes no
+		# --max-num-seqs when the placement names none, so vLLM sizes its own and the two can
+		# differ. A placement that needs them identical sets max_num_seqs, which pins both.
 		[route] = self.routes([deployment("MD-00007")])["qwen3-35b"]
 		self.assertEqual(route["capacity"], DEFAULT_MAX_NUM_SEQS)
+
+
+class TestRouteModality(unittest.TestCase):
+	"""Which OpenAI surface a model answers on rides on its route rows.
+
+	Stamped per row because deploy:<model> is the only thing pushed per model — a separate record
+	would mean a new namespace and a new push for one short string. The gateway refuses a request
+	for a surface the modality does not cover, so a wrong value here is a 404 on a working model."""
+
+	def routes(self, models, deployments=(), pods=()):
+		def get_all(doctype, **kwargs):
+			if doctype == "Model":
+				return [frappe._dict(name=n, modality=m) for n, m in models.items()]
+			if doctype == "Model Deployment":
+				return list(deployments)
+			if doctype == "Pod":
+				return list(pods)
+			return []
+
+		with (
+			unittest.mock.patch.object(agent_sync.frappe, "get_all", get_all),
+			unittest.mock.patch.object(
+				agent_sync.frappe, "get_doc",
+				lambda *a: frappe._dict(get_password=lambda *_a, **_k: "k"),
+			),
+			unittest.mock.patch.object(agent_sync, "_ingress_targets", lambda: {}),
+		):
+			return agent_sync._routes_for_proxy("PROXY-1")
+
+	def test_a_deployment_row_carries_its_models_modality(self):
+		routes = self.routes(
+			{"qwen3-4b": "text"},
+			deployments=[deployment("MD-1", model="qwen3-4b")],
+		)
+		self.assertEqual(routes["qwen3-4b"][0]["modality"], "text")
+
+	def test_a_pod_row_carries_it_too(self):
+		# The ASR container is a Pod, never a Model Deployment — the path that actually matters here.
+		routes = self.routes(
+			{"nemotron-asr": "audio"},
+			pods=[pod("test-nemo-asr", model="nemotron-asr")],
+		)
+		self.assertEqual(routes["nemotron-asr"][0]["modality"], "audio")
+
+	def test_a_model_with_no_modality_sends_blank_not_null(self):
+		# The gateway reads blank as unrestricted. None would serialise as null and read as a value.
+		routes = self.routes(
+			{"qwen3-4b": None},
+			deployments=[deployment("MD-1", model="qwen3-4b")],
+		)
+		self.assertEqual(routes["qwen3-4b"][0]["modality"], "")
 
 
 class TestEffectiveGroups(unittest.TestCase):
@@ -126,21 +182,18 @@ class TestEffectiveGroups(unittest.TestCase):
 		with unittest.mock.patch.object(frappe, "get_all", side_effect=get_all):
 			return agent_sync._effective_groups()
 
-	def test_a_group_carries_its_models_and_flipped_priority(self):
+	def test_a_group_carries_its_name_and_models(self):
 		[group] = self.groups(
-			[frappe._dict(name="acme", priority=10)],
+			["acme"],
 			[frappe._dict(parent="acme", model="qwen3-35b", parentfield="models")],
 		)
-		self.assertEqual(group["name"], "acme")
-		self.assertEqual(group["models"], "qwen3-35b")
-		# Grove stores "higher = more important"; vLLM serves the lowest number first.
-		self.assertEqual(group["priority"], -10)
+		self.assertEqual(group, {"name": "acme", "models": "qwen3-35b"})
 
 	def test_models_are_one_sorted_comma_list(self):
-		# The agent splits on commas (gateway_service/main.go modelSet), so the join is the
-		# wire format, not a display choice.
+		# The agent splits on commas (grove-gateway, internal/domain/access.go `ModelSet`), so the
+		# join is the wire format, not a display choice.
 		[group] = self.groups(
-			[frappe._dict(name="acme", priority=0)],
+			["acme"],
 			[
 				frappe._dict(parent="acme", model="b", parentfield="models"),
 				frappe._dict(parent="acme", model="a", parentfield="models"),
@@ -151,12 +204,12 @@ class TestEffectiveGroups(unittest.TestCase):
 	def test_a_group_that_grants_nothing_is_still_pushed_as_blank(self):
 		# Blank means "grants nothing", not "unset" — an emptied group has to overwrite the
 		# grant already in Redis, so it cannot be omitted.
-		[group] = self.groups([frappe._dict(name="acme", priority=0)])
+		[group] = self.groups(["acme"])
 		self.assertEqual(group["models"], "")
 
 	def test_one_row_query_covers_every_group(self):
 		groups = self.groups(
-			[frappe._dict(name="a", priority=0), frappe._dict(name="b", priority=1)],
+			["a", "b"],
 			[
 				frappe._dict(parent="a", model="m1", parentfield="models"),
 				frappe._dict(parent="b", model="m2", parentfield="models"),
@@ -247,8 +300,8 @@ class TestEffectiveUsers(unittest.TestCase):
 		self.assertIs(user["limited"], True)
 
 	def test_the_lists_are_sorted_comma_joins(self):
-		# The agent splits on commas (gateway_service/main.go modelSet), so the join is the wire
-		# format, not a display choice.
+		# The agent splits on commas (grove-gateway, internal/domain/access.go `ModelSet`), so the
+		# join is the wire format, not a display choice.
 		[user] = self.users(
 			[frappe._dict(name="GU-1", user="a@x.com", user_group="", rate_limited=0)],
 			[
@@ -403,6 +456,56 @@ class TestPushOrder(unittest.TestCase):
 		self.assertEqual(
 			agent_sync._DIRTY_DOCTYPES, ("Grove User Group", "Grove User", "Grove API Key")
 		)
+
+
+class TestResyncAll(unittest.TestCase):
+	"""The hourly backstop for a box that lost its store.
+
+	sync_dirty clears each dirty flag once it lands, so nothing re-derives what a box holds. Routes
+	are pushed every tick and repair themselves; credentials are pushed once and never again. A
+	wiped gateway therefore answers /v1/models and reads as healthy while 401ing every credential,
+	with no way back but a human pressing Full Sync."""
+
+	def slot(self):
+		(cron,) = [
+			key for key, jobs in hooks.scheduler_events["cron"].items()
+			if "grove.agent_sync.resync_all" in jobs
+		]
+		return cron
+
+	def test_it_forces_a_complete_push_and_labels_the_run_scheduled(self):
+		calls = []
+		with unittest.mock.patch.object(agent_sync, "full_sync", lambda **kw: calls.append(kw)):
+			agent_sync.resync_all()
+		self.assertEqual(calls, [{"trigger": "Scheduled", "wait": 90}])
+
+	def test_it_waits_for_the_lock_instead_of_skipping(self):
+		# sync_dirty holds the same Projection lock. A backstop that gave up because the 2-minute
+		# tick happened to be running would silently not happen, which is the failure it exists to
+		# prevent — so it queues, and one redundant push an hour is the price.
+		calls = []
+		with unittest.mock.patch.object(agent_sync, "full_sync", lambda **kw: calls.append(kw)):
+			agent_sync.resync_all()
+		self.assertGreater(calls[0]["wait"], 0)
+
+	def test_it_does_not_share_a_minute_with_the_dirty_tick(self):
+		# sync_dirty is */2, so it runs on every EVEN minute. An even slot here would put both jobs
+		# on the same lock at the same instant every hour and one of them would lose.
+		minute = int(self.slot().split()[0])
+		self.assertEqual(minute % 2, 1, f"minute {minute} collides with sync_dirty's */2 tick")
+		self.assertIn("*/2 * * * *", hooks.scheduler_events["cron"])
+
+	def test_a_forced_full_sync_still_queues_for_a_full_minute(self):
+		# The buttons, provisioning and activation must not inherit the backstop's wait. Those
+		# callers mean "this box missed something", so a short wait would drop the push they asked
+		# for.
+		self.assertEqual(inspect.signature(agent_sync.full_sync).parameters["wait"].default, 60)
+
+	def test_the_scheduler_runs_it_hourly(self):
+		# The hook is a dotted string, so renaming the function fails silently at runtime rather
+		# than at import.
+		self.assertTrue(self.slot().endswith(" * * * *"))
+		self.assertTrue(callable(agent_sync.resync_all))
 
 
 if __name__ == "__main__":

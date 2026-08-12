@@ -1,0 +1,18 @@
+# The two files the gateway writes itself: the per-request access line, and warnings and worse
+# mirrored out of the process log. The rest of the process log goes to journald, which rotates itself.
+#
+# copytruncate rather than a signal: the three signals grove-gateway takes all mean something else
+# (upgrade, reload, drain), and inventing a fourth so logrotate can reopen a file is not worth it.
+# The cost is that a write landing during the copy can be lost; for an access log, one line under
+# rotation is cheaper than a signal that means two things.
+/var/log/grove-gateway/access.log
+/var/log/grove-gateway/error.log {
+	daily
+	rotate 14
+	missingok
+	notifempty
+	compress
+	delaycompress
+	copytruncate
+	su root root
+}

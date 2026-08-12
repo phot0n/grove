@@ -13,6 +13,7 @@
   "region",
   "monitoring_agent",
   "admin_url",
+  "agent_version",
   "admin_token",
   "section_redis",
   "redis_appendfsync"
@@ -82,6 +83,13 @@
    "read_only": 1
   },
   {
+   "description": "The grove-gateway release this box last installed successfully. Written by the deploy, not typed \u2014 it is what makes a fleet running mixed versions visible.",
+   "fieldname": "agent_version",
+   "fieldtype": "Data",
+   "label": "Agent Version",
+   "read_only": 1
+  },
+  {
    "fieldname": "admin_token",
    "fieldtype": "Password",
    "label": "Admin Token",
@@ -102,7 +110,7 @@
   }
  ],
  "links": [],
- "modified": "2026-08-07 03:32:55.803385",
+ "modified": "2026-08-12 00:00:00.000000",
  "modified_by": "Administrator",
  "module": "Grove",
  "name": "Gateway Server",

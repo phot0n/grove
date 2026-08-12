@@ -19,32 +19,23 @@ def vram_gb_from_mib(mib):
 	return int(mib // MIB_PER_GB + (1 if mib % MIB_PER_GB * 2 >= MIB_PER_GB else 0))
 
 
-def app_grove_root():
-	"""Path to .../apps/grove — the parent of the `grove` python package, i.e. the repo
-	root where playbooks/ and gateway_service/ live."""
-	return os.path.dirname(frappe.get_app_path("grove"))
+def playbooks_root():
+	"""Path to grove/playbooks — every ansible project this app ships."""
+	return os.path.join(frappe.get_app_path("grove"), "playbooks")
 
 
 def ansible_project_dir(doctype):
 	"""The ansible project directory for the doctype whose boxes a playbook runs against, e.g.
-	'Inference Server' → .../apps/grove/playbooks/inference_server. Its playbooks sit at
+	'Inference Server' → .../grove/playbooks/inference_server. Its playbooks sit at
 	the top and its roles in roles/ beside them; a role two doctypes share is symlinked in."""
-	return os.path.join(
-		app_grove_root(), "playbooks", doctype.lower().replace(" ", "_")
-	)
+	return os.path.join(playbooks_root(), doctype.lower().replace(" ", "_"))
 
 
 def shared_roles_dir():
 	"""playbooks/roles — roles more than one doctype's playbooks use (the exporters, which go
 	on every box whoever owns it). Ansible searches it after a playbook's own roles/, so a role
 	is written once and named from anywhere without a copy or a symlink to keep pointing."""
-	return os.path.join(app_grove_root(), "playbooks", "roles")
-
-
-def gateway_service_source():
-	"""Path to the gateway agent's Go source. Shipped to the proxy, which builds it there
-	for its own architecture — nothing is compiled here."""
-	return os.path.join(app_grove_root(), "gateway_service")
+	return os.path.join(playbooks_root(), "roles")
 
 
 def is_env_key(name):
@@ -63,11 +54,12 @@ def is_env_value(value):
 def is_id_safe(name):
 	"""True when a doc name survives the gateway's request-id sanitiser without losing itself.
 
-	`cleanIDPart` (gateway_service/main.go) keeps letters, digits and '_', rewrites '-' to '_' so
-	the only '-' left in an id is its own separator, and silently DROPS everything else. That
-	rewrite is only reversible while the name carries no '_' of its own: `inf-a` and `inf_a` both
-	arrive as `inf_a`, and `inf.a` arrives as `infa`. Restricted to letters, digits and '-', an
-	id reads back to the doc that produced it by replacing '_' with '-'."""
+	`CleanIDPart` (grove-gateway, internal/domain/requestid.go) keeps letters, digits and '_',
+	rewrites '-' to '_' so the only '-' left in an id is its own separator, and silently DROPS
+	everything else. That rewrite is only reversible while the name carries no '_' of its own:
+	`inf-a` and `inf_a` both arrive as `inf_a`, and `inf.a` arrives as `infa`. Restricted to
+	letters, digits and '-', an id reads back to the doc that produced it by replacing '_'
+	with '-'."""
 	return bool(re.fullmatch(r"[A-Za-z0-9-]+", name or ""))
 
 

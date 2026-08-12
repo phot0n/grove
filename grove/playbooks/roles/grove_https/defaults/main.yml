@@ -1,0 +1,36 @@
+---
+# What a box needs before it can serve HTTPS with authenticated metrics: a certificate and the
+# htpasswd file guarding /metrics/*.
+#
+# Two jobs, and only the inference boxes still want both. A Gateway or Ingress Server takes the
+# htpasswd and sets grove_tls_selfsigned: false — grove-gateway serves the fleet's real wildcard or
+# it serves plaintext, and a self-signed certificate on a customer-facing port is worse than either.
+grove_tls_dir: /etc/grove/tls
+grove_tls_cert: "{{ grove_tls_dir }}/box.crt"
+grove_tls_key: "{{ grove_tls_dir }}/box.key"
+
+# Self-signed, and nothing that connects verifies it: the gateway leaves proxy_ssl_verify at its
+# default off and vmagent scrapes with insecure_skip_verify. So the subject names nothing — a SAN
+# would imply a check nobody makes, and would have to be reissued every time the box's public IP
+# moved. This encrypts the hop; it does not authenticate the box.
+grove_tls_subject: /CN=grove-box
+# Nothing renews this. The cert is `creates:`-guarded, so it is issued once per box and expires in
+# place — harmless only because no consumer checks expiry either, and a box that needs a fresh one
+# gets it by deleting the cert and re-running any play that includes this role. Boxes provisioned
+# before this was shortened keep whatever life they were issued with.
+grove_tls_days: 90
+
+# Whether to issue the certificate above at all. The inference box's nginx needs one on disk before
+# `listen 443 ssl` will start, which is the only reason this exists; nothing else does.
+grove_tls_selfsigned: true
+
+# The hash is computed in the control plane (Grove Settings) and arrives as an extra-var. Running
+# htpasswd here instead would put the password in argv — which /proc and the Ansible Task doc both
+# record — and would re-salt on every run, rewriting the file for nothing.
+grove_metrics_htpasswd: /etc/grove/nginx/metrics.htpasswd
+# A constant, not a setting: it has to match monitoring_scrape_username in the vmagent role, and
+# nothing is gained by letting an operator set a name that only ever has to agree with itself.
+# TestScrapeCredentialsAgree asserts the two stay equal.
+scrape_username: grove
+# Blank writes a line no password can match, so metrics stay shut rather than opening up.
+scrape_password_hash: ""

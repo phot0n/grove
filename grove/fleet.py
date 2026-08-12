@@ -3,9 +3,9 @@
 """A box the fleet names.
 
 Gateway Server and Ingress Server both stand on a Machine, answer to `<name>.<fleet zone>` under
-the fleet wildcard, run the same Go agent behind OpenResty, and are reached by the control plane
-at their own admin URL. What they share lives here. What differs — which playbook provisions them,
-which DNS records they own, what the agent is given — stays on the doctype.
+the fleet wildcard, run the same Go agent, and are reached by the control plane at their own admin
+URL. What they share lives here. What differs — which playbook provisions them, which DNS records
+they own, what the agent is given — stays on the doctype.
 
 Deliberately a mixin over two doctypes rather than one doctype with a role flag: an ingress holds
 no tenant state, and a doctype with no tenant fields cannot be talked into being pushed keys."""
@@ -17,6 +17,11 @@ from grove.cloud_provider.route53 import Route53Client
 from grove.monitoring import run_exporters_play
 from grove.tls import dns_credentials
 from grove.utils import validate_id_safe_name
+
+# The grove-gateway release every box in the fleet runs. The agent lives in its own repo now, so
+# this pin is what ties a control plane to a binary: bump it in the same change as any agent_sync
+# or playbook edit that needs a newer one.
+GATEWAY_AGENT_VERSION = "v0.0.1"
 
 
 class FleetHost(AnsibleHost):
@@ -57,6 +62,15 @@ class FleetHost(AnsibleHost):
 			self.admin_url = f"https://{self.hostname}/grove-admin"
 		elif self.public_ip:
 			self.admin_url = f"http://{self.public_ip}/grove-admin"
+
+	def record_agent_version(self, rc):
+		"""Remember which agent release this box actually took, on the runs that installed one.
+
+		One repo made skew impossible; two makes it the thing to watch, and a finished play is the
+		only moment that knows the answer. Written with db.set_value, like the statuses around it,
+		so recording a version never fires on_update and re-syncs the fleet."""
+		if rc == 0:
+			frappe.db.set_value(self.doctype, self.name, "agent_version", GATEWAY_AGENT_VERSION)
 
 	@property
 	def has_dns_records(self):

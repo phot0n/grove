@@ -5,7 +5,9 @@
  "doctype": "DocType",
  "engine": "InnoDB",
  "field_order": [
+  "provider",
   "display_name",
+  "model_id",
   "hf_repo",
   "column_break_bhjw",
   "published",
@@ -13,7 +15,6 @@
   "modality",
   "column_break_launch",
   "enable_prefix_caching",
-  "scheduling_policy",
   "section_shape",
   "attention_heads",
   "hidden_layers",
@@ -28,7 +29,17 @@
  ],
  "fields": [
   {
-   "description": "Names the doc: lowercased with spaces/underscores as dashes (e.g. 'Qwen3.5 Coder' \u2192 qwen3.5-coder). That name is the client-facing model id \u2014 set at creation, not changed if you edit this later.",
+   "default": "frappe",
+   "description": "Who serves this model. Prefixes the model id (frappe/qwen3.5-4b) — set at creation, part of the name from then on. Models made before providers existed have none and keep their bare id.",
+   "fieldname": "provider",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Provider",
+   "options": "Model Provider"
+  },
+  {
+   "description": "Names the doc: lowercased with spaces/underscores as dashes (e.g. 'Qwen3.5 Coder' → qwen3.5-coder). That name is the client-facing model id — set at creation, not changed if you edit this later.",
    "fieldname": "display_name",
    "fieldtype": "Data",
    "in_list_view": 1,
@@ -36,14 +47,21 @@
    "reqd": 1
   },
   {
-   "description": "\u2192 vllm serve ; the name is the --served-model-name. A GGUF repo ships many quantizations \u2014 name one with repo:QUANT (unsloth/Qwen3-0.6B-GGUF:Q4_K_M) so only that file is pulled, and add --tokenizer &lt;base repo&gt; to Extra Serve Args on the deployment, since converting a GGUF's own tokenizer is slow and unreliable. Single-file quantizations only; a split one has to be merged first.",
+   "description": "The id without its provider prefix, slugged from Display Name. Both spellings route during the transition, so a client may send either.",
+   "fieldname": "model_id",
+   "fieldtype": "Data",
+   "label": "Model ID",
+   "read_only": 1
+  },
+  {
+   "description": "→ vllm serve ; the name is the --served-model-name. A GGUF repo ships many quantizations — name one with repo:QUANT (unsloth/Qwen3-0.6B-GGUF:Q4_K_M) so only that file is pulled, and add --tokenizer &lt;base repo&gt; to Extra Serve Args on the deployment, since converting a GGUF's own tokenizer is slow and unreliable. Single-file quantizations only; a split one has to be merged first.",
    "fieldname": "hf_repo",
    "fieldtype": "Data",
    "label": "HF Repo"
   },
   {
    "default": "1",
-   "description": "Auto: this model has a live route (an Active Model Deployment or a Running Pod). Not an access gate \u2014 access is granted per user, via Grove User Group or Grove User.",
+   "description": "Auto: this model has a live route (an Active Model Deployment or a Running Pod). Not an access gate — access is granted per user, via Grove User Group or Grove User.",
    "fieldname": "published",
    "fieldtype": "Check",
    "in_list_view": 1,
@@ -62,27 +80,18 @@
   },
   {
    "default": "text",
-   "description": "What the model consumes and serves. text \u2192 --language-model-only. embedding is a pooling model served at /v1/embeddings, not chat \u2014 the chat-only tool/reasoning flags are skipped.",
+   "description": "What the model consumes and serves. text → --language-model-only. embedding is a pooling model served at /v1/embeddings, not chat — the chat-only tool/reasoning flags are skipped.",
    "fieldname": "modality",
    "fieldtype": "Select",
    "label": "Modality",
-   "options": "text\nmultimodal\nembedding"
+   "options": "text\nmultimodal\nembedding\naudio"
   },
   {
    "default": "1",
-   "description": "\u2192 --enable-prefix-caching",
+   "description": "→ --enable-prefix-caching",
    "fieldname": "enable_prefix_caching",
    "fieldtype": "Check",
    "label": "Enable Prefix Caching"
-  },
-  {
-   "default": "priority",
-   "description": "\u2192 --scheduling-policy, for every placement of this model. priority = serve by the request's priority field first (lower value first), ties broken by arrival; with no per-request priority set yet, that is the same order as fcfs. Frozen while Published \u2014 it is baked into the running engines.",
-   "fieldname": "scheduling_policy",
-   "fieldtype": "Select",
-   "label": "Scheduling Policy",
-   "options": "priority\nfcfs",
-   "read_only_depends_on": "eval:doc.published"
   },
   {
    "description": "From the repo's config.json. Used to reject a GPU split the model can't run before it reaches the box. Blank = that check is skipped.",
@@ -97,13 +106,13 @@
    "label": "Attention Heads"
   },
   {
-   "description": "num_hidden_layers. Informational \u2014 vLLM splits these across the pipeline-parallel group and spreads any remainder, so the count need not divide evenly.",
+   "description": "num_hidden_layers. Informational — vLLM splits these across the pipeline-parallel group and spreads any remainder, so the count need not divide evenly.",
    "fieldname": "hidden_layers",
    "fieldtype": "Int",
    "label": "Hidden Layers"
   },
   {
-   "description": "Size of the weights, summed per dtype from the repo's safetensors index. A placement whose GPUs can't hold this much is rejected \u2014 note it counts weights only, so the KV cache and activations need headroom on top.",
+   "description": "Size of the weights, summed per dtype from the repo's safetensors index. A placement whose GPUs can't hold this much is rejected — note it counts weights only, so the KV cache and activations need headroom on top.",
    "fieldname": "weights_gb",
    "fieldtype": "Float",
    "label": "Weights (GB)",
@@ -116,13 +125,13 @@
   },
   {
    "default": "1",
-   "description": "\u2192 --enable-auto-tool-choice",
+   "description": "→ --enable-auto-tool-choice",
    "fieldname": "enable_auto_tool_choice",
    "fieldtype": "Check",
    "label": "Enable Auto Tool Choice"
   },
   {
-   "description": "\u2192 --tool-call-parser. e.g. hermes (Qwen2.5), qwen3_coder (Qwen3.6/3.5).",
+   "description": "→ --tool-call-parser. e.g. hermes (Qwen2.5), qwen3_coder (Qwen3.6/3.5).",
    "fieldname": "tool_call_parser",
    "fieldtype": "Data",
    "label": "Tool Call Parser"
@@ -139,7 +148,7 @@
    "label": "Reasoning Model"
   },
   {
-   "description": "\u2192 --reasoning-parser (only when Reasoning Model is checked). e.g. qwen3.",
+   "description": "→ --reasoning-parser (only when Reasoning Model is checked). e.g. qwen3.",
    "fieldname": "reasoning_parser",
    "fieldtype": "Data",
    "label": "Reasoning Parser"

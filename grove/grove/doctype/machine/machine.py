@@ -9,6 +9,7 @@ import subprocess
 import frappe
 from frappe.model.document import Document
 
+from grove import failure
 from grove.ansible import AnsibleHost
 from grove.cloud_provider.base import CloudClientError, build_cloud_client
 from grove.grove.doctype.ssh_key.ssh_key import injected_public_keys
@@ -171,6 +172,7 @@ class Machine(AnsibleHost, Document):
 				f"{self.name}, or on its Network."
 			)
 
+	@failure.reports_failure(mark_broken=False)
 	def launch(self):
 		"""Job: run the instance, wait for it to be reachable, then record what AWS gave back
 		and seed the GPU table from the instance type. A failure before instance_id is set
@@ -189,11 +191,11 @@ class Machine(AnsibleHost, Document):
 				root_volume_gb=self.root_volume_gb,
 				ssh_public_keys=injected_public_keys(),
 			)
-		except Exception as e:
-			# On the doc, not only in the job's Error Log: InsufficientInstanceCapacity is the
-			# ordinary answer for a GPU type, and an operator watching this snap back to Pending
-			# has nothing else to read.
-			self.add_comment("Comment", f"Provision failed: {e}")
+		except Exception:
+			# Back to Pending, not Broken: a Machine has no failed state, and an instance that was
+			# never launched is exactly as un-launched as it was before. The comment, toast and
+			# notification that used to be written here come from the decorator now — this keeps
+			# only the part that is specific to launching.
 			self.db_set("status", "Pending", commit=True)
 			raise
 		# Committed before the poll: a timeout further down must not roll this back and leave
@@ -266,23 +268,52 @@ class Machine(AnsibleHost, Document):
 		self.sync_instance_type(client)
 
 	def sync_dependent_servers(self):
-		"""Reflect this Machine no longer serving onto every Proxy/Inference Server and
-		Monitoring Agent built on it — Active there would be a lie once the box itself is
+		"""Reflect this Machine no longer serving onto every Gateway, Ingress and Inference Server
+		and Monitoring Agent built on it — Active there would be a lie once the box itself is
 		Terminated, Offline or Draining. Terminated propagates as Terminated (the box is gone
 		for good, along with whatever was on it); Offline/Draining propagate as Broken
 		(stopped, but Start can still bring it back). Only touches ones that were Active —
 		Pending/Installing/Broken/Terminated already say what's true.
 
 		An agent matters most here: it is the only doc whose silence looks exactly like a
-		healthy idle fleet, so a stopped agent box has to say so on the doc."""
+		healthy idle fleet, so a stopped agent box has to say so on the doc.
+
+		The Ingress Server was missing from this list until it bit: it carries a machine, a status
+		and DNS records of its own, so a terminated box left one Active and still resolving, with
+		nothing else in the fleet that would ever correct it."""
 		if self.status not in ("Terminated", "Offline", "Draining"):
 			return
 		dependent_status = "Terminated" if self.status == "Terminated" else "Broken"
-		for doctype in ("Gateway Server", "Inference Server", "Monitoring Agent"):
+		for doctype in ("Gateway Server", "Ingress Server", "Inference Server", "Monitoring Agent"):
 			for name in frappe.get_all(
 				doctype, filters={"machine": self.name, "status": "Active"}, pluck="name"
 			):
-				frappe.db.set_value(doctype, name, "status", dependent_status)
+				self.mark_dependent(doctype, name, dependent_status)
+
+	def mark_dependent(self, doctype, name, status):
+		"""Write the status THROUGH the document, not with db.set_value.
+
+		The write has consequences, and they live in on_update: a Terminated gateway or ingress has
+		to give up its DNS records, and a gateway leaving also has to come out of the inference
+		security groups. db.set_value skips validate and on_update entirely, so none of that ran —
+		terminating a Machine left a latency record in Route53 pointing at a box that no longer
+		existed, which is a black hole for every client that resolves to it.
+
+		Guarded per document on purpose. save() runs validate, so a dependent that will not validate
+		for some unrelated reason would otherwise abort the termination halfway and leave the
+		machine gone with its siblings still claiming to be Active. Reported rather than swallowed,
+		so a dependent that could not be updated says so."""
+		try:
+			doc = frappe.get_doc(doctype, name)
+			doc.status = status
+			doc.save(ignore_permissions=True)
+		except Exception as error:
+			failure.report(
+				doctype,
+				name,
+				f"Could not mark {status.lower()} after {self.name} went {self.status.lower()}",
+				str(error),
+			)
 
 	def sync_instance_type(self, client):
 		"""Record what this instance type is and ships: its architecture, whether it is bare
@@ -328,6 +359,7 @@ class Machine(AnsibleHost, Document):
 		frappe.enqueue_doc(self.doctype, self.name, "resume", queue="long", timeout=3000)
 		frappe.msgprint(f"Starting {self.name} — reload when it reports Active.")
 
+	@failure.reports_failure(mark_broken=False)
 	def resume(self):
 		"""Job: start the instance and record the address AWS gives it this time. A start costs
 		the same firmware POST a launch does, so it waits as long."""
@@ -357,6 +389,7 @@ class Machine(AnsibleHost, Document):
 		)
 		frappe.msgprint(f"Growing {self.name}'s root volume to {size_gb} GB — watch its Ansible Plays.")
 
+	@failure.reports_failure(mark_broken=False)
 	def grow_root(self, size_gb):
 		"""Job: enlarge the volume at the provider, then grow the partition and filesystem on
 		the box. root_volume_gb is written only once the box reports the space, so the field

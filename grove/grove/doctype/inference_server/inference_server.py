@@ -5,6 +5,7 @@
 import frappe
 from frappe.model.document import Document
 
+from grove import failure
 from grove import agent_sync
 from grove.ansible import AnsibleHost
 from grove.monitoring import run_exporters_play
@@ -151,6 +152,7 @@ class InferenceServer(GeneratedName, AnsibleHost, Document):
 		)
 		frappe.msgprint(f"Installing the metrics exporters on {self.name} — watch its Ansible Plays.")
 
+	@failure.reports_failure(mark_broken=False)
 	def provision_exporters(self):
 		return run_exporters_play(self)
 
@@ -171,6 +173,7 @@ class InferenceServer(GeneratedName, AnsibleHost, Document):
 		)
 		frappe.msgprint(f"Provisioning {self.name} — watch its Ansible Plays.")
 
+	@failure.reports_failure(mark_broken=True)
 	def provision(self):
 		"""One-time host bootstrap for an Inference Server: NVIDIA driver + data
 		volume + Docker (the gpu_host role), then its metrics exporters (node_exporter,

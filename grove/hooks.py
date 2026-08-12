@@ -88,7 +88,13 @@ app_license = "mit"
 # to exist on every site. It carries NO doctype permissions — every Grove doctype grants
 # System Manager only — so it reaches the whitelisted methods in grove.api and nothing else.
 # Re-imported on migrate (frappe.utils.fixtures.sync_fixtures), so Grove owns desk_access.
-fixtures = [{"dt": "Role", "filters": [["name", "in", ["Grove Control"]]]}]
+# `frappe` is the provider our own engines serve under, and every Model defaults to it, so it has to
+# exist before the first Model is inserted. Filtered by name: a site's own third-party providers carry
+# credentials and must never be exported into the app.
+fixtures = [
+	{"dt": "Role", "filters": [["name", "in", ["Grove Control"]]]},
+	{"dt": "Model Provider", "filters": [["name", "in", ["frappe"]]]},
+]
 
 # Installation
 # ------------
@@ -167,6 +173,16 @@ scheduler_events = {
 			# The provider owns whether a pod/instance is up; lifecycle jobs only see it while
 			# they run. This closes the drift they leave behind.
 			"grove.cloud_provider.reconcile.sync_all",
+		],
+		# Hourly: re-push every record, changed or not. sync_dirty above clears each dirty flag once
+		# it lands, so a box that loses its store is never told again — routes come back on the next
+		# tick and credentials do not. This is the backstop for that.
+		#
+		# Minute 7, not 0: sync_dirty is */2, so it runs on every EVEN minute and holds the same
+		# Projection lock. Sharing a minute would make the two race every hour, and the one that
+		# loses is this.
+		"7 * * * *": [
+			"grove.agent_sync.resync_all",
 		],
 		# Daily: reactivate rate_limited keys whose current-month usage is back
 		# under budget (month rollover / raised budget). Over-budget keys stay

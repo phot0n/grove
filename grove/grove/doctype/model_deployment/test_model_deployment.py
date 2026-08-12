@@ -28,15 +28,27 @@ def deployment(env=None, attention_backend="auto", allow_long_max_model_len=0):
 
 
 class TestEngineEnv(unittest.TestCase):
-	def test_nothing_set_is_no_env(self):
-		self.assertEqual(_engine_env(deployment(), ""), {})
+	def test_a_deployment_that_sets_nothing_still_logs_at_debug(self):
+		# The one thing every engine gets: DEBUG is what makes vLLM log each request's output,
+		# which is the only per-request record on the box itself.
+		self.assertEqual(_engine_env(deployment(), ""), {"VLLM_LOGGING_LEVEL": "DEBUG"})
 
 	def test_derived_from_the_deployments_own_fields(self):
 		md = deployment(allow_long_max_model_len=1)
 		self.assertEqual(
 			_engine_env(md, "hf_xxx"),
-			{"HF_TOKEN": "hf_xxx", "VLLM_ALLOW_LONG_MAX_MODEL_LEN": "1"},
+			{
+				"VLLM_LOGGING_LEVEL": "DEBUG",
+				"HF_TOKEN": "hf_xxx",
+				"VLLM_ALLOW_LONG_MAX_MODEL_LEN": "1",
+			},
 		)
+
+	def test_an_operator_row_can_turn_the_logging_level_down(self):
+		# The baseline is a default, not a policy: DEBUG puts prompts and completions in the
+		# container log, so a deployment that must not keep them can say so.
+		md = deployment({"VLLM_LOGGING_LEVEL": "INFO"})
+		self.assertEqual(_engine_env(md, "")["VLLM_LOGGING_LEVEL"], "INFO")
 
 	def test_attention_backend_is_a_serve_flag_not_env(self):
 		# vLLM 0.24 dropped VLLM_ATTENTION_BACKEND — nothing in the package reads it, so

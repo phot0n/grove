@@ -17,7 +17,7 @@ import yaml
 
 from grove.cloud_provider.aws import AWSError, EC2Client, normalize_architecture, parse_architecture
 
-GPU_HOST_ROLE = Path(__file__).parent.parent.parent / "playbooks/inference_server/roles/gpu_host"
+GPU_HOST_ROLE = Path(__file__).parent.parent / "playbooks/inference_server/roles/gpu_host"
 
 
 class FakeEC2:

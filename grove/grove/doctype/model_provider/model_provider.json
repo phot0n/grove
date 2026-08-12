@@ -1,0 +1,22 @@
+{
+ "actions": [],
+ "allow_rename": 0,
+ "autoname": "prompt",
+ "creation": "2026-08-12 00:00:00",
+ "doctype": "DocType",
+ "engine": "InnoDB",
+ "field_order": [],
+ "fields": [],
+ "links": [],
+ "modified": "2026-08-12 00:00:00",
+ "modified_by": "Administrator",
+ "module": "Grove",
+ "name": "Model Provider",
+ "owner": "Administrator",
+ "permissions": [
+  {"create": 1, "delete": 1, "email": 1, "print": 1, "read": 1, "report": 1, "role": "System Manager", "share": 1, "write": 1}
+ ],
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": []
+}

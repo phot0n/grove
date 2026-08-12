@@ -6,7 +6,7 @@ source of truth. The gateway `/groups`, `/users`, `/keys` and `/routes` endpoint
 UPSERTs (they never prune), so we can push either everything or just a delta.
 
 Access is pushed in three pieces, deliberately, one per thing that can change on its own. A group
-carries the model grant and the priority for everyone in it (group:<name>); a user carries which
+carries the model grant for everyone in it (group:<name>); a user carries which
 group they belong to, their own allow/deny, and whether they are over budget (user:<name>); a key
 carries only whose it is and whether it has been revoked. So a group edit is ONE record however
 many members, a budget flip is ONE record however many keys, and the gateway resolves the three at
@@ -37,7 +37,7 @@ import requests
 
 import frappe
 
-from grove.access import model_rows, vllm_priority
+from grove.access import model_rows
 from grove.net import private_url
 from grove.serve_command import DEFAULT_MAX_NUM_SEQS
 
@@ -112,18 +112,15 @@ def _post(admin_url, token, path, payload, method="POST"):
 
 
 def _effective_groups():
-	"""Every Grove User Group projected for the gateway: what it grants and how far ahead of
-	the baseline its members are served. One record per group however many keys point at it —
-	the reason the group is not flattened onto each key."""
+	"""Every Grove User Group projected for the gateway: what it grants. One record per group
+	however many keys point at it — the reason the group is not flattened onto each key."""
 	granted = model_rows("Grove User Group")
 	return [
 		{
-			"name": g.name,
-			# Already in vLLM's convention — the gateway just stamps it.
-			"priority": vllm_priority(g.priority),
-			"models": ",".join(granted.get(g.name, {}).get("models", [])),
+			"name": name,
+			"models": ",".join(granted.get(name, {}).get("models", [])),
 		}
-		for g in frappe.get_all("Grove User Group", fields=["name", "priority"])
+		for name in frappe.get_all("Grove User Group", pluck="name")
 	]
 
 
@@ -258,7 +255,12 @@ def _routes_for_proxy(proxy_name):
 		"Model Deployment",
 		fields=["name", "model", "engine_url", "status", "inference_server", "max_num_seqs"],
 	)
-	routes = {m: [] for m in frappe.get_all("Model", pluck="name")}
+	models = frappe.get_all("Model", fields=["name", "modality"])
+	routes = {m.name: [] for m in models}
+	# Which endpoints the model answers on. Stamped per row because deploy:<model> is the only
+	# thing pushed per model — a separate record would be a new namespace and a new push for one
+	# short string. Blank means unrestricted, which is what a Model predating the field reads as.
+	modality = {m.name: m.modality or "" for m in models}
 	targets = _ingress_targets()
 	# One row per (model, ingress), so several deployments behind one ingress fold together
 	# instead of each getting a row that names the same URL.
@@ -292,9 +294,10 @@ def _routes_for_proxy(proxy_name):
 			"deployment": d.name,
 			"server": d.inference_server or d.name,  # which box it is on
 			"kind": "direct",
+			"modality": modality.get(d.model, ""),
 		})
 	for (model, _ingress), row in folded.items():
-		routes[model].append(row)
+		routes[model].append({**row, "modality": modality.get(model, "")})
 
 	# Standalone serving Pods (a vLLM image serving the Model directly — no Model Deployment)
 	# register the same way: deploy:<model> → engine. Only Running pods with a derived
@@ -322,6 +325,7 @@ def _routes_for_proxy(proxy_name):
 			# Always direct: a pod has no Machine and so no Network, and cannot sit behind an
 			# ingress. Provider TLS already covers the hop.
 			"kind": "direct",
+			"modality": modality.get(p.model, ""),
 		})
 	return routes
 
@@ -477,7 +481,7 @@ def sync_routes(proxy, models=_ALL):
 
 # --- Sync runs -------------------------------------------------------------
 
-def full_sync(proxies=None, trigger="Manual", ingresses=None):
+def full_sync(proxies=None, trigger="Manual", ingresses=None, wait=60):
 	"""Push the COMPLETE group + user + key set + routing table to each target proxy, and the
 	replica table to each target ingress. Used by buttons, proxy activation, provisioning.
 
@@ -491,7 +495,7 @@ def full_sync(proxies=None, trigger="Manual", ingresses=None):
 	"this one gateway missed something", and a gateway's table has nothing to do with an
 	ingress's."""
 	doc = _new_run("Projection", trigger)
-	if not doc.acquire_lock(wait=60):  # forced → queue behind an in-flight run
+	if not doc.acquire_lock(wait=wait):  # forced → queue behind an in-flight run
 		return None
 	try:
 		all_active = _active_proxies()
@@ -531,6 +535,27 @@ def full_sync(proxies=None, trigger="Manual", ingresses=None):
 		return doc.name
 	finally:
 		doc.release_lock()
+
+
+def resync_all(trigger="Scheduled"):
+	"""Hourly re-push of every record to every Active box, changed or not.
+
+	sync_dirty sends only flagged rows and clears each flag once it lands, so the control plane's
+	record of what a box holds IS that flag — nothing re-derives it. A box that loses its store gets
+	its ROUTES back on the next tick, because those are pushed unconditionally, and its groups, users
+	and keys never: nothing is dirty, so nothing is sent, and every authenticated request 401s until
+	a human presses Full Sync. The routes returning is what hides it — the box answers /v1/models and
+	reads as healthy while no credential on it works.
+
+	This bounds that to an hour.
+
+	It WAITS for the Projection lock rather than skipping. sync_dirty takes the same lock, and a
+	backstop that gives up because the 2-minute tick happened to be running would silently not
+	happen — which is the failure it exists to prevent. Queueing behind a full sync that is already
+	in flight costs one redundant push an hour; the alternative costs the guarantee. The cron minute
+	is odd for the same reason: sync_dirty runs on even minutes, so they do not normally contend at
+	all, and this wait only covers a tick that overran."""
+	return full_sync(trigger=trigger, wait=90)
 
 
 def sync_dirty(trigger="Scheduled"):

@@ -1,0 +1,5 @@
+---
+# Where the agent is released. Named once so the download and its checksum can never drift apart,
+# and so a fork only has to change this line.
+agent_repo: phot0n/grove-gateway
+agent_release_url: "https://github.com/{{ agent_repo }}/releases/download/{{ agent_version }}"
