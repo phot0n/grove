@@ -133,7 +133,7 @@ class GatewayServer(GeneratedName, FleetHost, Document):
 			proxies=[self.name],
 			trigger="Manual",
 		)
-		frappe.msgprint(f"Full sync queued for {self.name}.")
+		frappe.msgprint(f"Full sync queued for {self.name}.", alert=True)
 
 	@frappe.whitelist()
 	def sync_dns_records(self):
@@ -188,7 +188,10 @@ class GatewayServer(GeneratedName, FleetHost, Document):
 			queue="long",
 			timeout=1200,
 		)
-		frappe.msgprint(f"Deploying agent {GATEWAY_AGENT_VERSION} to {self.name} — watch its Ansible Plays.")
+		frappe.msgprint(
+			f"Deploying agent {GATEWAY_AGENT_VERSION} to {self.name} — watch its Ansible Plays.",
+			alert=True,
+		)
 
 	@failure.reports_failure(mark_broken=False)
 	def _deploy_agent(self):
@@ -233,7 +236,7 @@ class GatewayServer(GeneratedName, FleetHost, Document):
 			queue="long",
 			timeout=1800,
 		)
-		frappe.msgprint(f"Provisioning {self.name} — watch its Ansible Plays.")
+		frappe.msgprint(f"Provisioning {self.name} — watch its Ansible Plays.", alert=True)
 
 	@failure.reports_failure(mark_broken=True)
 	def provision(self):

@@ -67,7 +67,7 @@ class Machine(AnsibleHost, Document):
 			"grove.grove.doctype.machine.machine.scan_machine_gpus",
 			queue="long", timeout=600, machine_name=self.name,
 		)
-		frappe.msgprint(f"Scanning {self.name}'s GPUs — watch its Ansible Plays, then reload.")
+		frappe.msgprint(f"Scanning {self.name}'s GPUs — watch its Ansible Plays, then reload.", alert=True)
 
 	# ── Cloud provisioning ────────────────────────────────────────────────────
 
@@ -157,7 +157,7 @@ class Machine(AnsibleHost, Document):
 		self.sync_instance_type(client)
 		self.validate_image_architecture(client)
 		frappe.enqueue_doc(self.doctype, self.name, "launch", queue="long", timeout=3000)
-		frappe.msgprint(f"Provisioning {self.name} — reload when it reports Active.")
+		frappe.msgprint(f"Provisioning {self.name} — reload when it reports Active.", alert=True)
 
 	def validate_image_architecture(self, client):
 		"""Refuse an AMI built for a different architecture than the instance type runs. AWS
@@ -348,7 +348,7 @@ class Machine(AnsibleHost, Document):
 		self.cloud_client.stop_instance(self.instance_id)
 		self.db_set({"status": "Draining", "public_ip": self.public_ip if self.is_static_ip else ""})
 		self.sync_dependent_servers()
-		frappe.msgprint(f"Stopping {self.name} — Sync once it settles.")
+		frappe.msgprint(f"Stopping {self.name} — Sync once it settles.", alert=True)
 
 	@frappe.whitelist()
 	def start(self):
@@ -357,7 +357,7 @@ class Machine(AnsibleHost, Document):
 		self.require_instance()
 		self.cloud_client
 		frappe.enqueue_doc(self.doctype, self.name, "resume", queue="long", timeout=3000)
-		frappe.msgprint(f"Starting {self.name} — reload when it reports Active.")
+		frappe.msgprint(f"Starting {self.name} — reload when it reports Active.", alert=True)
 
 	@failure.reports_failure(mark_broken=False)
 	def resume(self):
@@ -387,7 +387,7 @@ class Machine(AnsibleHost, Document):
 		frappe.enqueue_doc(
 			self.doctype, self.name, "grow_root", queue="long", timeout=1800, size_gb=size_gb
 		)
-		frappe.msgprint(f"Growing {self.name}'s root volume to {size_gb} GB — watch its Ansible Plays.")
+		frappe.msgprint(f"Growing {self.name}'s root volume to {size_gb} GB — watch its Ansible Plays.", alert=True)
 
 	@failure.reports_failure(mark_broken=False)
 	def grow_root(self, size_gb):
@@ -416,7 +416,7 @@ class Machine(AnsibleHost, Document):
 		client.terminate_instance(self.instance_id)
 		self.db_set({"status": "Terminated", "instance_id": "", "public_ip": "", "private_ip": ""})
 		self.sync_dependent_servers()
-		frappe.msgprint(f"Terminated {self.name}.")
+		frappe.msgprint(f"Terminated {self.name}.", alert=True)
 
 	def require_instance(self):
 		if not self.instance_id:

@@ -114,7 +114,7 @@ class FleetHost(AnsibleHost):
 		if not self.machine:
 			frappe.throw("Set a Machine before installing exporters.")
 		frappe.enqueue_doc(self.doctype, self.name, "provision_exporters", queue="long", timeout=1800)
-		frappe.msgprint(f"Installing the metrics exporters on {self.name} — watch its Ansible Plays.")
+		frappe.msgprint(f"Installing the metrics exporters on {self.name} — watch its Ansible Plays.", alert=True)
 
 	def provision_exporters(self):
 		return run_exporters_play(self)

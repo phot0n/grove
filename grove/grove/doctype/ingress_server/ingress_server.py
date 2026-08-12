@@ -145,13 +145,13 @@ class IngressServer(GeneratedName, FleetHost, Document):
 			ingresses=[self.name],
 			trigger="Manual",
 		)
-		frappe.msgprint(f"Replica table queued for {self.name} — watch its Agent Sync.")
+		frappe.msgprint(f"Replica table queued for {self.name} — watch its Agent Sync.", alert=True)
 
 	@frappe.whitelist()
 	def setup(self):
 		"""Provision this ingress (OpenResty + Redis + the agent) via ingress.yml."""
 		frappe.enqueue_doc(self.doctype, self.name, "provision", queue="long", timeout=1800)
-		frappe.msgprint(f"Provisioning {self.name} — watch its Ansible Plays.")
+		frappe.msgprint(f"Provisioning {self.name} — watch its Ansible Plays.", alert=True)
 
 	@failure.reports_failure(mark_broken=True)
 	def provision(self):
@@ -206,7 +206,10 @@ class IngressServer(GeneratedName, FleetHost, Document):
 		"""Button: install the pinned agent release and deploy just it (copy + service restart) to
 		this already-provisioned ingress."""
 		frappe.enqueue_doc(self.doctype, self.name, "_deploy_agent", queue="long", timeout=1200)
-		frappe.msgprint(f"Deploying agent {GATEWAY_AGENT_VERSION} to {self.name} — watch its Ansible Plays.")
+		frappe.msgprint(
+			f"Deploying agent {GATEWAY_AGENT_VERSION} to {self.name} — watch its Ansible Plays.",
+			alert=True,
+		)
 
 	@failure.reports_failure(mark_broken=False)
 	def _deploy_agent(self):

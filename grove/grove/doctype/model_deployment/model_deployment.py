@@ -264,7 +264,7 @@ class ModelDeployment(Document):
 			timeout=3600,
 			model_deployment=self.name,
 		)
-		frappe.msgprint(f"Deploying {self.model} on {self.inference_server} — watch its Ansible Plays.")
+		frappe.msgprint(f"Deploying {self.model} on {self.inference_server} — watch its Ansible Plays.", alert=True)
 
 	@frappe.whitelist()
 	def apply_engine_config(self):
@@ -278,7 +278,10 @@ class ModelDeployment(Document):
 			timeout=1200,
 			model_deployment=self.name,
 		)
-		frappe.msgprint(f"Re-rendering engine config on {self.inference_server} — watch its Ansible Plays.")
+		frappe.msgprint(
+			f"Re-rendering engine config on {self.inference_server} — watch its Ansible Plays.",
+			alert=True,
+		)
 
 	@frappe.whitelist()
 	def stop(self):
@@ -324,7 +327,10 @@ class ModelDeployment(Document):
 			timeout=600,
 			model_deployment=self.name,
 		)
-		frappe.msgprint(f"Tearing down this instance on {self.inference_server} — watch its Ansible Plays.")
+		frappe.msgprint(
+			f"Tearing down this instance on {self.inference_server} — watch its Ansible Plays.",
+			alert=True,
+		)
 
 	@property
 	def container_name(self):

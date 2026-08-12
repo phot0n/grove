@@ -150,7 +150,7 @@ class InferenceServer(GeneratedName, AnsibleHost, Document):
 		frappe.enqueue_doc(
 			self.doctype, self.name, "provision_exporters", queue="long", timeout=1800
 		)
-		frappe.msgprint(f"Installing the metrics exporters on {self.name} — watch its Ansible Plays.")
+		frappe.msgprint(f"Installing the metrics exporters on {self.name} — watch its Ansible Plays.", alert=True)
 
 	@failure.reports_failure(mark_broken=False)
 	def provision_exporters(self):
@@ -171,7 +171,7 @@ class InferenceServer(GeneratedName, AnsibleHost, Document):
 			# Has to outlast the driver reboot, which is half an hour on a bare metal box.
 			timeout=5400,
 		)
-		frappe.msgprint(f"Provisioning {self.name} — watch its Ansible Plays.")
+		frappe.msgprint(f"Provisioning {self.name} — watch its Ansible Plays.", alert=True)
 
 	@failure.reports_failure(mark_broken=True)
 	def provision(self):

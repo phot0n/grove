@@ -132,7 +132,7 @@ class Pod(Document):
 			"grove.cloud_provider.provisioner.spawn_pod_doc",
 			queue="long", timeout=1800, pod_name=self.name,
 		)
-		frappe.msgprint(f"Spawning pod {self.name} on {self.cloud_provider}.")
+		frappe.msgprint(f"Spawning pod {self.name} on {self.cloud_provider}.", alert=True)
 
 	@frappe.whitelist()
 	def sync(self):
@@ -141,7 +141,7 @@ class Pod(Document):
 		from grove.cloud_provider.provisioner import sync_pod
 
 		res = sync_pod(self.name)
-		frappe.msgprint(f"Synced pod {self.name}: {res['status']}.")
+		frappe.msgprint(f"Synced pod {self.name}: {res['status']}.", alert=True)
 		return res
 
 	@frappe.whitelist()
@@ -151,7 +151,7 @@ class Pod(Document):
 			"grove.cloud_provider.provisioner.stop_pod",
 			queue="short", timeout=600, pod_name=self.name,
 		)
-		frappe.msgprint(f"Stopping pod {self.name} — volume kept, GPU released.")
+		frappe.msgprint(f"Stopping pod {self.name} — volume kept, GPU released.", alert=True)
 
 	@frappe.whitelist()
 	def start(self):
@@ -160,7 +160,7 @@ class Pod(Document):
 			"grove.cloud_provider.provisioner.start_pod",
 			queue="long", timeout=1800, pod_name=self.name,
 		)
-		frappe.msgprint(f"Starting pod {self.name} — ports will change, then sync.")
+		frappe.msgprint(f"Starting pod {self.name} — ports will change, then sync.", alert=True)
 
 	@frappe.whitelist()
 	def restart(self):
@@ -176,7 +176,7 @@ class Pod(Document):
 			"grove.cloud_provider.provisioner.restart_pod",
 			queue="long", timeout=1800, pod_name=self.name,
 		)
-		frappe.msgprint(f"Restarting pod {self.name} to apply config, then sync.")
+		frappe.msgprint(f"Restarting pod {self.name} to apply config, then sync.", alert=True)
 
 	@frappe.whitelist()
 	def stream_logs(self):
@@ -209,4 +209,4 @@ class Pod(Document):
 			"grove.cloud_provider.provisioner.terminate_pod_doc",
 			queue="long", timeout=600, pod_name=self.name,
 		)
-		frappe.msgprint(f"Terminating pod {self.name}.")
+		frappe.msgprint(f"Terminating pod {self.name}.", alert=True)

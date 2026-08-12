@@ -92,7 +92,7 @@ class EngineImage(Document):
 			frappe.throw(f"{self.full_image}'s manifest lists no layers to measure.")
 		size_gb = round(sum(layer.get("size") or 0 for layer in layers) / 1_000_000_000, 2)
 		self.db_set("size_gb", size_gb)
-		frappe.msgprint(f"{self.full_image}: {size_gb} GB over {len(layers)} layers.")
+		frappe.msgprint(f"{self.full_image}: {size_gb} GB over {len(layers)} layers.", alert=True)
 		return size_gb
 
 	def split_image_path(self):
