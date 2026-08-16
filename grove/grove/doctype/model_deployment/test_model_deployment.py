@@ -31,7 +31,14 @@ class TestEngineEnv(unittest.TestCase):
 	def test_a_deployment_that_sets_nothing_still_logs_at_debug(self):
 		# The one thing every engine gets: DEBUG is what makes vLLM log each request's output,
 		# which is the only per-request record on the box itself.
-		self.assertEqual(_engine_env(deployment(), ""), {"VLLM_LOGGING_LEVEL": "DEBUG"})
+		self.assertEqual(
+			_engine_env(deployment(), ""),
+			{
+				"VLLM_LOGGING_LEVEL": "DEBUG",
+				"HF_HUB_DISABLE_TELEMETRY": "1",
+				"VLLM_NO_USAGE_STATS": "1",
+			},
+		)
 
 	def test_derived_from_the_deployments_own_fields(self):
 		md = deployment(allow_long_max_model_len=1)
@@ -39,6 +46,8 @@ class TestEngineEnv(unittest.TestCase):
 			_engine_env(md, "hf_xxx"),
 			{
 				"VLLM_LOGGING_LEVEL": "DEBUG",
+				"HF_HUB_DISABLE_TELEMETRY": "1",
+				"VLLM_NO_USAGE_STATS": "1",
 				"HF_TOKEN": "hf_xxx",
 				"VLLM_ALLOW_LONG_MAX_MODEL_LEN": "1",
 			},

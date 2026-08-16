@@ -22,7 +22,8 @@
       environment:
         HF_TOKEN: "{{ vllm_hf_token }}"
         HF_HOME: "{{ vllm_hf_home }}"
-        HF_HUB_ENABLE_HF_TRANSFER: "1"
+        HF_XET_HIGH_PERFORMANCE: "1"
+        HF_HUB_DISABLE_TELEMETRY: "1"
       args:
         creates: "{{ mirror_cache_path }}"
       # Many GB, silent for minutes — detached + poll so a dropped SSH session can't abort it.

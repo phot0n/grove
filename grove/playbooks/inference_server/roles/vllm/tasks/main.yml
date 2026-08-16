@@ -201,7 +201,8 @@
   environment:
     HF_TOKEN: "{{ vllm_hf_token }}"
     HF_HOME: "{{ vllm_hf_home }}"
-    HF_HUB_ENABLE_HF_TRANSFER: "1"
+    HF_XET_HIGH_PERFORMANCE: "1"
+    HF_HUB_DISABLE_TELEMETRY: "1"
   args:
     # Down to the file for a GGUF ref, not just the repo dir: the quantizations share one repo,
     # so a repo-level guard would skip the download after a switch from Q4_K_M to Q8_0 and

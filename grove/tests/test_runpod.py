@@ -262,15 +262,16 @@ class TestPodEnv(unittest.TestCase):
 	def test_a_vllm_pod_caches_on_the_volume(self):
 		env = self.env()
 		self.assertEqual(env["HF_HOME"], "/data/hf")
-		self.assertEqual(env["HF_HUB_ENABLE_HF_TRANSFER"], "1")
+		self.assertEqual(env["HF_XET_HIGH_PERFORMANCE"], "1")
 		self.assertEqual(env["VLLM_CACHE_ROOT"], "/data/vllm-cache")
 		self.assertEqual(env["TRITON_CACHE_DIR"], "/data/vllm-cache/triton")
 		self.assertEqual(env["TORCHINDUCTOR_CACHE_DIR"], "/data/vllm-cache/torchinductor")
 
 	def test_a_custom_image_gets_none_of_the_vllm_vars(self):
 		# hf_transfer may not be installed there; its env var would crash huggingface_hub.
+		# Telemetry is the exception: a plain env lookup, safe on any huggingface_hub.
 		env = self.env(is_custom_engine=True)
-		self.assertEqual(set(env), {"HF_HOME"})
+		self.assertEqual(set(env), {"HF_HOME", "HF_HUB_DISABLE_TELEMETRY"})
 
 	def test_a_pod_env_row_wins(self):
 		env = self.env(rows=[("VLLM_CACHE_ROOT", "/elsewhere")])

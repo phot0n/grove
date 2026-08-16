@@ -85,13 +85,18 @@ class PodProvisioner:
 		because vLLM 0.24 dropped VLLM_ATTENTION_BACKEND."""
 		pod = self.pod
 		mount = pod.volume_mount_path or VOLUME_MOUNT
-		env = {"HF_HOME": f"{mount}/hf"}
+		# Telemetry is off for every image: huggingface_hub reads this with a plain env lookup in
+		# every version, so unlike hf_transfer it cannot crash an image that ships without extras.
+		env = {"HF_HOME": f"{mount}/hf", "HF_HUB_DISABLE_TELEMETRY": "1"}
 		if not pod.is_custom_engine:
 			# What --enable-log-requests/--enable-log-outputs actually emit at.
 			env["VLLM_LOGGING_LEVEL"] = "DEBUG"
+			# vLLM phones home on startup unless told not to. In this block, not beside
+			# HF_HUB_DISABLE_TELEMETRY, because a custom image may not be vLLM at all.
+			env["VLLM_NO_USAGE_STATS"] = "1"
 			# Faster weight downloads; compile caches on the volume so restarts skip
 			# torch.compile (~1 min). Guarded: a custom image may lack hf_transfer.
-			env["HF_HUB_ENABLE_HF_TRANSFER"] = "1"
+			env["HF_XET_HIGH_PERFORMANCE"] = "1"
 			env["VLLM_CACHE_ROOT"] = f"{mount}/vllm-cache"
 			env["TRITON_CACHE_DIR"] = f"{mount}/vllm-cache/triton"
 			env["TORCHINDUCTOR_CACHE_DIR"] = f"{mount}/vllm-cache/torchinductor"
