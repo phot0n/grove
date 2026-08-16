@@ -3,7 +3,7 @@
 # htpasswd file guarding /metrics/*.
 #
 # Two jobs, and only the inference boxes still want both. A Gateway or Ingress Server takes the
-# htpasswd and sets grove_tls_selfsigned: false — grove-gateway serves the fleet's real wildcard or
+# htpasswd and sets grove_tls_selfsigned: false — pathway serves the fleet's real wildcard or
 # it serves plaintext, and a self-signed certificate on a customer-facing port is worse than either.
 grove_tls_dir: /etc/grove/tls
 grove_tls_cert: "{{ grove_tls_dir }}/box.crt"

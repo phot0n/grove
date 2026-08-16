@@ -173,16 +173,16 @@ class TestDeployingIsNotATrafficEvent(unittest.TestCase):
 		"""
 		for name in ("gateway_server/deploy_agent.yml", "ingress_server/deploy_agent.yml"):
 			with self.subTest(name):
-				binary = next(t for t in tasks(name) if t.get("name") == "install grove-gateway binary")
-				self.assertEqual("upgrade grove-gateway", binary["notify"])
-				handler = next(h for h in play(name)["handlers"] if h["name"] == "upgrade grove-gateway")
+				binary = next(t for t in tasks(name) if t.get("name") == "install pathway binary")
+				self.assertEqual("upgrade pathway", binary["notify"])
+				handler = next(h for h in play(name)["handlers"] if h["name"] == "upgrade pathway")
 				self.assertIn("reload-or-restart", handler["ansible.builtin.command"])
 
 	def test_a_changed_tunable_signals_rather_than_restarts(self):
 		for name in PLAYS:
 			with self.subTest(name):
 				config = next(t for t in tasks(name) if t.get("name") == "config.json")
-				self.assertEqual("reload grove-gateway config", config["notify"])
+				self.assertEqual("reload pathway config", config["notify"])
 
 	def test_agent_env_restarts_because_a_reload_would_not_see_it(self):
 		# The child reads its environment from systemd, not from the parent, so a reload leaves the
@@ -190,7 +190,7 @@ class TestDeployingIsNotATrafficEvent(unittest.TestCase):
 		for name in PLAYS:
 			with self.subTest(name):
 				task = next(t for t in tasks(name) if t.get("name") == "agent.env")
-				self.assertEqual("restart grove-gateway", task["notify"])
+				self.assertEqual("restart pathway", task["notify"])
 
 	def test_a_renewed_certificate_needs_nothing(self):
 		# The gateway watches the file's mtime. deploy_tls runs unattended at midnight against every
@@ -300,7 +300,7 @@ def directives(unit_text):
 
 class TestTheUnitCanSurviveAnUpgrade(unittest.TestCase):
 	def setUp(self):
-		self.unit = (PLAYBOOKS / "gateway_server/systemd/grove-gateway.service").read_text()
+		self.unit = (PLAYBOOKS / "gateway_server/systemd/pathway.service").read_text()
 		self.settings = directives(self.unit)
 
 	def test_systemd_follows_the_child_pid(self):
@@ -311,7 +311,7 @@ class TestTheUnitCanSurviveAnUpgrade(unittest.TestCase):
 		directly — three consecutive upgrades, MainPID tracking the file each time — which is why
 		there is no sd_notify handshake here to go wrong.
 		"""
-		self.assertEqual("/run/grove-gateway.pid", self.settings["PIDFile"])
+		self.assertEqual("/run/pathway.pid", self.settings["PIDFile"])
 		self.assertNotIn("Type", self.settings)
 		self.assertNotIn("NotifyAccess", self.settings)
 
@@ -334,6 +334,6 @@ class TestTheUnitCanSurviveAnUpgrade(unittest.TestCase):
 		self.assertEqual("CAP_NET_BIND_SERVICE", self.settings["AmbientCapabilities"])
 
 	def test_both_planes_run_the_same_unit_but_for_the_description(self):
-		ingress = (PLAYBOOKS / "ingress_server/systemd/grove-gateway.service").read_text()
+		ingress = (PLAYBOOKS / "ingress_server/systemd/pathway.service").read_text()
 		strip = lambda text: [l for l in text.splitlines() if not l.startswith("Description=")]
 		self.assertEqual(strip(self.unit), strip(ingress))

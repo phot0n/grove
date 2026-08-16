@@ -4,7 +4,7 @@ After=network-online.target redis-server.service
 Wants=network-online.target redis-server.service
 
 [Service]
-ExecStart=/usr/local/bin/grove-gateway
+ExecStart=/usr/local/bin/pathway
 # SIGHUP is the upgrade: a child inherits the listening sockets and starts serving while this
 # process drains behind it, so `systemctl reload` after a binary copy drops no connections. A binary
 # that fails to start leaves this one serving.
@@ -17,7 +17,7 @@ ExecReload=/bin/kill -HUP $MAINPID
 #
 # It MUST match GROVE_PID_FILE in agent.env. They drift and the handover breaks silently: systemd
 # keeps pointing at the process that exited, so the next `systemctl reload` signals nothing.
-PIDFile=/run/grove-gateway.pid
+PIDFile=/run/pathway.pid
 
 KillSignal=SIGTERM
 # Longer than the drain (630s default) plus its lame-duck window, so systemd never SIGKILLs a
@@ -32,7 +32,7 @@ AmbientCapabilities=CAP_NET_BIND_SERVICE
 NoNewPrivileges=yes
 LimitNOFILE=65536
 
-EnvironmentFile=-/etc/grove-gateway/agent.env
+EnvironmentFile=-/etc/pathway/agent.env
 
 [Install]
 WantedBy=multi-user.target

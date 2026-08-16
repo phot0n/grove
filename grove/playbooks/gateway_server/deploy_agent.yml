@@ -52,7 +52,7 @@
 
     - name: agent.env
       ansible.builtin.copy:
-        dest: /etc/grove-gateway/agent.env
+        dest: /etc/pathway/agent.env
         content: |
           GROVE_ADMIN_TOKEN={{ admin_token }}
           GROVE_GATEWAY_ID={{ gateway_id }}
@@ -65,31 +65,31 @@
           GROVE_TLS_CERT={{ fleet_tls_cert_path if (fleet_tls_cert | default('')) else '' }}
           GROVE_TLS_KEY={{ fleet_tls_key_path if (fleet_tls_cert | default('')) else '' }}
           GROVE_HTPASSWD={{ grove_metrics_htpasswd }}
-          GROVE_ACCESS_LOG=/var/log/grove-gateway/access.log
-          GROVE_ERROR_LOG=/var/log/grove-gateway/error.log
-          GROVE_CONFIG=/etc/grove-gateway/config.json
-          GROVE_PID_FILE=/run/grove-gateway.pid
+          GROVE_ACCESS_LOG=/var/log/pathway/access.log
+          GROVE_ERROR_LOG=/var/log/pathway/error.log
+          GROVE_CONFIG=/etc/pathway/config.json
+          GROVE_PID_FILE=/run/pathway.pid
         mode: "0600"
       no_log: true
-      notify: restart grove-gateway
+      notify: restart pathway
 
     - name: config.json
       ansible.builtin.template:
         src: "{{ grove_dir }}/config.json.j2"
-        dest: /etc/grove-gateway/config.json
+        dest: /etc/pathway/config.json
         mode: "0644"
-      notify: reload grove-gateway config
+      notify: reload pathway config
 
     # copy writes a temp file and renames, which matters: a running executable cannot be truncated
     # in place (`text file busy`), and the SIGHUP that follows re-execs whatever the path resolves
     # to at that moment. Rename makes that atomically the new binary.
-    - name: install grove-gateway binary
+    - name: install pathway binary
       ansible.builtin.copy:
-        src: /tmp/grove-gateway
-        dest: /usr/local/bin/grove-gateway
+        src: /tmp/pathway
+        dest: /usr/local/bin/pathway
         mode: "0755"
         remote_src: true
-      notify: upgrade grove-gateway
+      notify: upgrade pathway
 
   handlers:
     # SIGHUP when the service is up: a child that fails to start leaves the running process serving,
@@ -98,17 +98,17 @@
     # reload-or-restart, not the systemd module's `state: reloaded`, which fails outright on a unit
     # that is not active — and a box whose gateway is down is exactly the one a new binary is being
     # shipped to. That refusal turned a fixable box into a deploy that could not run at all.
-    - name: upgrade grove-gateway
-      ansible.builtin.command: systemctl reload-or-restart grove-gateway
+    - name: upgrade pathway
+      ansible.builtin.command: systemctl reload-or-restart pathway
       changed_when: true
 
-    - name: reload grove-gateway config
-      ansible.builtin.command: systemctl kill -s SIGUSR1 grove-gateway
+    - name: reload pathway config
+      ansible.builtin.command: systemctl kill -s SIGUSR1 pathway
       changed_when: true
       failed_when: false
 
-    - name: restart grove-gateway
+    - name: restart pathway
       ansible.builtin.systemd:
-        name: grove-gateway
+        name: pathway
         state: restarted
         daemon_reload: true

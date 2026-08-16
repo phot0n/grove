@@ -54,7 +54,7 @@ def is_env_value(value):
 def is_id_safe(name):
 	"""True when a doc name survives the gateway's request-id sanitiser without losing itself.
 
-	`CleanIDPart` (grove-gateway, internal/domain/requestid.go) keeps letters, digits and '_',
+	`CleanIDPart` (pathway, internal/domain/requestid.go) keeps letters, digits and '_',
 	rewrites '-' to '_' so the only '-' left in an id is its own separator, and silently DROPS
 	everything else. That rewrite is only reversible while the name carries no '_' of its own:
 	`inf-a` and `inf_a` both arrive as `inf_a`, and `inf.a` arrives as `infa`. Restricted to
