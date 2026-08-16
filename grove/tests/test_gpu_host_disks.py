@@ -13,11 +13,12 @@ arrive as siblings of their disk, not nested under it, and only `pkname` ties th
 
 import ast
 import json
+import subprocess
 import unittest
 from pathlib import Path
 
 import yaml
-from jinja2 import Environment
+from jinja2 import Environment, FileSystemLoader
 
 ROLE = Path(__file__).parent.parent / "playbooks/inference_server/roles/gpu_host"
 TASKS = yaml.safe_load((ROLE / "tasks/main.yml").read_text())
@@ -167,6 +168,37 @@ class TestPinnedDevice(unittest.TestCase):
 	def test_refuses_a_partition_or_a_missing_device(self):
 		self.assertFalse(is_pinnable("/dev/nvme0n1p1", ROOT_PART, ROOT_DISK, SPARE))
 		self.assertFalse(is_pinnable("/dev/sdz", ROOT_PART, ROOT_DISK, SPARE))
+
+
+class TestInstanceStoreScript(unittest.TestCase):
+	"""The opt-in boot oneshot that hands the HF cache the ephemeral NVMe. It runs mkfs, so
+	its guards get the same scrutiny as the auto-pick above."""
+
+	@classmethod
+	def setUpClass(cls):
+		env = Environment(
+			loader=FileSystemLoader(ROLE / "templates"), trim_blocks=True, keep_trailing_newline=True
+		)
+		cls.script = env.get_template("grove-instance-store.sh.j2").render(**DEFAULTS)
+
+	def test_is_valid_shell(self):
+		check = subprocess.run(["sh", "-n"], input=self.script, text=True, capture_output=True)
+		self.assertEqual(check.returncode, 0, check.stderr)
+
+	def test_only_an_instance_store_disk_is_ever_formatted(self):
+		self.assertIn('grep -F "Amazon EC2 NVMe Instance Storage"', self.script)
+
+	def test_an_already_mounted_target_short_circuits_before_mkfs(self):
+		self.assertLess(self.script.index("findmnt"), self.script.index("mkfs"))
+
+	def test_a_filesystem_that_survived_a_reboot_is_not_reformatted(self):
+		# The store keeps its data across a reboot (only a stop wipes it) — blkid is the guard.
+		self.assertIn('blkid -s TYPE -o value "$DEVICE" >/dev/null 2>&1 || mkfs.ext4', self.script)
+
+	def test_the_unit_mounts_before_docker(self):
+		# A late mount hands the container an empty directory that shadows the cache.
+		unit = (ROLE / "templates/grove-instance-store.service.j2").read_text()
+		self.assertIn("Before=docker.service", unit)
 
 
 if __name__ == "__main__":

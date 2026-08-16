@@ -168,6 +168,50 @@ class TestServeCommand(unittest.TestCase):
 		self.assertEqual(serve(dict(CHAT_MODEL, hf_repo=None)).command, "")
 
 
+class TestStreamingFromS3(unittest.TestCase):
+	"""A Model with an S3 mirror serves it as the positional and loads via the runai
+	streamer — weights go S3 → GPU, no HF download."""
+
+	S3 = dict(CHAT_MODEL, weights_s3_uri="s3://grove-weights/models/Qwen--Qwen3-35B", weights_gb=67.0)
+
+	def test_the_mirror_replaces_the_repo(self):
+		self.assertEqual(serve(dict(self.S3)).repo, "s3://grove-weights/models/Qwen--Qwen3-35B")
+		self.assertEqual(serve().repo, "Qwen/Qwen3-35B")
+
+	def test_streamer_flags_only_for_a_mirrored_model(self):
+		args = serve(dict(self.S3)).args
+		self.assertEqual(args[args.index("--load-format") + 1], "runai_streamer")
+		self.assertNotIn("--load-format", serve().args)
+
+	def test_concurrency_is_sized_from_the_weights(self):
+		# ceil(67 / 4 GB chunks) = 17 — the AWS-benchmarked sizing. TP=1 → no distributed.
+		args = serve(dict(self.S3)).args
+		self.assertEqual(args[args.index("--model-loader-extra-config") + 1], '{"concurrency":17}')
+
+	def test_tp_over_one_streams_each_rank_its_own_shard(self):
+		args = serve(dict(self.S3), gpu_count=2).args
+		self.assertEqual(
+			args[args.index("--model-loader-extra-config") + 1],
+			'{"concurrency":17,"distributed":true}',
+		)
+
+	def test_unfetched_weights_still_stream_on_defaults(self):
+		args = serve(dict(self.S3, weights_gb=None)).args
+		self.assertIn("--load-format", args)
+		self.assertNotIn("--model-loader-extra-config", args)
+
+	def test_the_streamer_json_survives_a_shell(self):
+		# The Pod path hands `command` to a shell-ish parser, and bash brace-expands a bare
+		# {a,b} into two words — shlex.join is what quotes it.
+		command = serve(dict(self.S3), gpu_count=2).command
+		self.assertIn("'{\"concurrency\":17,\"distributed\":true}'", command)
+
+	def test_extra_serve_args_still_come_last(self):
+		# The operator's escape hatch outranks the derived flags, streamer included.
+		args = serve(dict(self.S3), extra_serve_args="--load-format auto").args
+		self.assertEqual(args[-2:], ["--load-format", "auto"])
+
+
 class TestAttentionBackend(unittest.TestCase):
 	def build(self, **kwargs):
 		return ServeCommand("qwen3-32b", CHAT_MODEL, port=8080, **kwargs).args

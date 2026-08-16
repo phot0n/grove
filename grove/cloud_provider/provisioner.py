@@ -89,13 +89,22 @@ class PodProvisioner:
 		if not pod.is_custom_engine:
 			# What --enable-log-requests/--enable-log-outputs actually emit at.
 			env["VLLM_LOGGING_LEVEL"] = "DEBUG"
+			# Faster weight downloads; compile caches on the volume so restarts skip
+			# torch.compile (~1 min). Guarded: a custom image may lack hf_transfer.
+			env["HF_HUB_ENABLE_HF_TRANSFER"] = "1"
+			env["VLLM_CACHE_ROOT"] = f"{mount}/vllm-cache"
+			env["TRITON_CACHE_DIR"] = f"{mount}/vllm-cache/triton"
+			env["TORCHINDUCTOR_CACHE_DIR"] = f"{mount}/vllm-cache/torchinductor"
 			key = pod.get_password("api_key", raise_exception=False)
 			if key:
 				env["VLLM_API_KEY"] = key
 			if pod.allow_long_max_model_len:
 				env["VLLM_ALLOW_LONG_MAX_MODEL_LEN"] = "1"
-			if frappe.conf.get("hf_token") and frappe.db.get_value("Model", pod.model, "gated"):
+			if frappe.conf.get("hf_token"):
 				env["HUGGING_FACE_HUB_TOKEN"] = frappe.conf.get("hf_token")
+			# Streaming pod (serve command carries the S3 mirror): bucket creds + tuning.
+			if "runai_streamer" in (pod.serve_command or ""):
+				env.update(frappe.get_single("Grove Settings").weights_s3_engine_environment)
 		for row in pod.env or []:
 			if row.key:
 				env[row.key] = row.value or ""

@@ -31,6 +31,7 @@ class InferenceServer(GeneratedName, AnsibleHost, Document):
 		monitoring_agent: DF.Link | None
 		region: DF.Link | None
 		status: DF.Literal["Pending", "Installing", "Active", "Broken", "Terminated"]
+		use_instance_store_for_hf_cache: DF.Check
 	# end: auto-generated types
 
 	# Its name is no DNS record of its own, but it rides on every route as `server` and into request ids.
@@ -38,6 +39,19 @@ class InferenceServer(GeneratedName, AnsibleHost, Document):
 
 	def validate(self):
 		self.validate_ingress_network()
+		self.validate_instance_store()
+
+	def validate_instance_store(self):
+		"""The checkbox is only honest on a box that has the hardware — Machine syncs
+		instance_store_disks from the instance type."""
+		if not self.use_instance_store_for_hf_cache or not self.machine:
+			return
+		disks = frappe.db.get_value("Machine", self.machine, "instance_store_disks")
+		if not disks:
+			frappe.throw(
+				f"Machine {self.machine} has no instance-store NVMe (run Sync Instance Type "
+				"on it if that looks wrong) — untick Use Instance Store For HF Cache."
+			)
 
 	def on_update(self):
 		"""Moving a box between ingresses is the cutover, and it changes three tables at once:
@@ -85,6 +99,14 @@ class InferenceServer(GeneratedName, AnsibleHost, Document):
 	# ── The box ───────────────────────────────────────────────────────────────
 	# Everything that reaches the hardware goes through here: a Model Deployment talks to
 	# its Inference Server, and the Server is the only side that knows about a Machine.
+
+	@property
+	def hf_home(self):
+		"""Where this box keeps the HF cache — the instance-store mount when opted in
+		(gpu_instance_store_mount in the gpu_host role), the data volume otherwise."""
+		if self.use_instance_store_for_hf_cache:
+			return "/mnt/instance/hf"
+		return f"{self.data_path}/hf"
 
 	@property
 	def machine_doc(self):
@@ -189,6 +211,7 @@ class InferenceServer(GeneratedName, AnsibleHost, Document):
 			"provision.yml",
 			extravars={
 				"gpu_data_mount": self.data_path,
+				"gpu_instance_store_hf_cache": bool(self.use_instance_store_for_hf_cache),
 				"monitoring_has_gpu": bool(self.gpus),
 				# The driver reboot outlasts Ansible's default on a bare metal box.
 				"gpu_reboot_timeout": 1800 if is_bare_metal else 600,

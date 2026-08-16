@@ -5,11 +5,15 @@ serves a Model in a container (args → dockerStartCmd) and a Model Deployment s
 systemd on an Inference Server (args → the unit's ExecStart). Model-intrinsic flags come
 from the Model, per-box tuning from whichever doc owns the placement."""
 
+import json
+import math
+import shlex
+
 import frappe
 
 # Model fields the args are derived from — read live, never mirrored onto the placement.
 MODEL_FIELDS = (
-	"hf_repo", "modality", "enable_prefix_caching",
+	"hf_repo", "weights_s3_uri", "modality", "enable_prefix_caching",
 	"enable_auto_tool_choice", "tool_call_parser", "thinking", "reasoning_parser",
 	"attention_heads", "weights_gb",
 )
@@ -162,8 +166,14 @@ class ServeCommand:
 
 	@property
 	def repo(self):
-		"""HF repo — the positional argument to `vllm serve`."""
-		return self.model.get("hf_repo")
+		"""The positional argument to `vllm serve` — the S3 mirror when one is set (weights
+		stream straight to the GPU), the HF repo otherwise."""
+		return self.model.get("weights_s3_uri") or self.model.get("hf_repo")
+
+	@property
+	def is_streaming(self):
+		"""Weights come off the S3 mirror via the runai streamer, not the HF cache."""
+		return bool(self.model.get("weights_s3_uri"))
 
 	@property
 	def is_embedding(self):
@@ -227,12 +237,29 @@ class ServeCommand:
 				args += ["--tool-call-parser", self.model["tool_call_parser"]]
 			if self.model.get("thinking") and self.model.get("reasoning_parser"):
 				args += ["--reasoning-parser", self.model["reasoning_parser"]]
+		if self.is_streaming:
+			args += ["--load-format", "runai_streamer", *self.streamer_config_args]
 		return args + self.extra_serve_args
 
 	@property
+	def streamer_config_args(self):
+		"""Streamer tuning: concurrency = ceil(weights / 4 GB chunks) — the AWS-benchmarked
+		figure; distributed lets each TP rank stream its own shard instead of a rank-0
+		broadcast. Empty when nothing needs saying."""
+		config = {}
+		if self.weights_gb:
+			config["concurrency"] = math.ceil(self.weights_gb / 4)
+		if self.tensor_parallel_size > 1:
+			config["distributed"] = True
+		if not config:
+			return []
+		return ["--model-loader-extra-config", json.dumps(config, separators=(",", ":"))]
+
+	@property
 	def command(self):
-		"""Repo + flags — the container's start command. Empty when the Model has no repo."""
-		return " ".join([self.repo, *self.args]) if self.repo else ""
+		"""Repo + flags — the container's start command. Empty when the Model has no repo.
+		shlex-joined: the streamer's JSON arg carries braces a shell would brace-expand."""
+		return shlex.join([self.repo, *self.args]) if self.repo else ""
 
 
 def _model_row(model_name):

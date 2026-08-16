@@ -1,0 +1,16 @@
+{#
+  Before=docker.service: engine containers bind-mount the HF cache under this mount, and a
+  late mount would hand them an empty directory that shadows it.
+#}
+[Unit]
+Description=Grove: format and mount the instance-store NVMe for the HF cache
+After=local-fs.target
+Before=docker.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/bin/grove-instance-store.sh
+
+[Install]
+WantedBy=multi-user.target

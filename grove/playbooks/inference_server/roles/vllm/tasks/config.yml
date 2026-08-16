@@ -21,6 +21,15 @@
     mode: "0600"
   notify: recreate vllm container
 
+# No notify: the sync script is not container config — it changes nothing about the argv.
+- name: Write the compile-cache sync script
+  ansible.builtin.template:
+    src: vllm-cache-sync.sh.j2
+    dest: "{{ vllm_cache_sync_script }}"
+    # Carries the bucket credentials, like the env file above.
+    mode: "0700"
+  when: vllm_cache_bucket | length > 0
+
 - name: Write the container run script
   ansible.builtin.template:
     src: vllm-container-run.sh.j2

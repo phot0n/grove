@@ -398,11 +398,11 @@ def _instance_slug(md_name):
 	return re.sub(r"[^a-z0-9._-]", "-", md_name.lower())
 
 
-def _engine_env(md, hf_token):
+def _engine_env(md, hf_token, streaming_env=None):
 	"""Env vars for the engine container: what Grove derives from the deployment first, the
 	operator's own rows layered on top (same precedence the Pod path uses). VLLM_API_KEY is
 	NOT here — the role resolves it on the box, so the env-file template there adds it."""
-	env = {"VLLM_LOGGING_LEVEL": "DEBUG"}
+	env = {"VLLM_LOGGING_LEVEL": "DEBUG", **(streaming_env or {})}
 	if hf_token:
 		env["HF_TOKEN"] = hf_token
 	if md.allow_long_max_model_len:
@@ -426,9 +426,13 @@ def _vllm_extravars(md, m, inf, key):
 
 	hf_token = frappe.conf.get("hf_token", "")
 	vllm_home = inf.data_path
+	settings = frappe.get_single("Grove Settings")
+	# Streaming (Model has an S3 mirror): the engine needs the bucket creds in its env, and
+	# nothing needs pre-downloading — the streamer reads S3 straight into the GPU.
+	streaming_env = settings.weights_s3_engine_environment if serve.is_streaming else {}
 
 	extravars = {
-		"vllm_model": m.hf_repo,
+		"vllm_model": serve.repo,
 		"vllm_served_name": " ".join([md.model, *serve.aliases]),
 		"vllm_serve_args": serve.args,
 		# One container + port + key file per deployment (multi-tenant box). Slug from the
@@ -437,20 +441,26 @@ def _vllm_extravars(md, m, inf, key):
 		"vllm_port": serve.port,
 		"vllm_api_key": key,
 		"vllm_cuda_visible_devices": ",".join(str(i) for i in gpu_indexes),
-		"vllm_env": _engine_env(md, hf_token),
+		"vllm_env": _engine_env(md, hf_token, streaming_env),
 		"vllm_hf_token": hf_token,
-		# Keep the weights/caches on the mounted data volume (root is tiny / ephemeral).
+		# Weights/caches on the mounted data volume, or the instance-store NVMe if opted in.
 		"vllm_home": vllm_home,
-		"vllm_hf_home": f"{vllm_home}/hf",
+		"vllm_hf_home": inf.hf_home,
 		"vllm_cache_dir": f"{vllm_home}/cache",
-		"vllm_predownload_model": True,
+		"vllm_predownload_model": not serve.is_streaming,
 		# What the role checks the box's free space against, before either download starts.
 		# 0 means the figure was never fetched, which the role reads as "cannot check".
 		"vllm_weights_gb": serve.weights_gb,
+		# S3 compile-cache pre-warm: blank bucket turns the hooks off. The key's other axes
+		# (image digest, GPU) are computed on the box — only TP and the model come from here.
+		"vllm_cache_bucket": settings.weights_bucket or "",
+		"vllm_cache_sync_env": settings.weights_s3_engine_environment,
+		"vllm_tensor_parallel_size": serve.tensor_parallel_size,
+		"vllm_model_slug": (m.hf_repo or md.model).split(":")[0].replace("/", "--"),
 		# serve.yml runs grove_https and engine_proxy ahead of the vllm role, so that play
 		# writes the box's htpasswd too — from the same source provision.yml reads. Unused by
 		# reconfigure.yml, which runs neither role.
-		**frappe.get_single("Grove Settings").scrape_auth_variables,
+		**settings.scrape_auth_variables,
 	}
 	# The image is what the box serves from: the role pulls it and Docker owns the container.
 	# Credentials only exist for a private registry; a public pull skips the login task.

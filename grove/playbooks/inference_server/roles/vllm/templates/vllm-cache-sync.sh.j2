@@ -1,0 +1,33 @@
+#!/bin/sh
+{#
+  Pre-warm/persist the torch.compile cache via S3. The key encodes every invalidation axis —
+  image digest (pins torch+vLLM; a :latest tag moves, a digest doesn't), the GPU the box
+  actually carries, TP degree, model — so a mismatch is a miss and a miss just recompiles.
+  `pull` runs before the container starts; `push` waits for /health (compile done) and
+  uploads once. Both best-effort.
+#}
+set -eu
+
+{% for key, value in vllm_cache_sync_env.items() %}
+export {{ key }}='{{ value }}'
+{% endfor %}
+
+AWS="{{ vllm_home }}/hf-venv/bin/aws"
+DIGEST=$(docker image inspect --format '{% raw %}{{index .RepoDigests 0}}{% endraw %}' "{{ vllm_image }}" | sed 's/.*@sha256://' | cut -c1-16)
+GPU=$(nvidia-smi --query-gpu=name --format=csv,noheader | head -n 1 | tr ' /' '__')
+KEY="{{ vllm_cache_bucket }}/compile-cache/${DIGEST}/${GPU}/tp{{ vllm_tensor_parallel_size }}/{{ vllm_model_slug }}"
+
+case "${1:-}" in
+  pull)
+    "$AWS" s3 sync "$KEY" "{{ vllm_cache_dir }}" --no-progress || true
+    ;;
+  push)
+    for _ in $(seq 1 240); do
+      curl -sf -o /dev/null "http://127.0.0.1:{{ vllm_port }}/health" && break
+      sleep 15
+    done
+    # ponytail: the cache dir is box-shared, so a push may carry a neighbour model's
+    # artifacts too — hash-keyed subdirs, ~15 MB each, harmless on a pull.
+    "$AWS" s3 sync "{{ vllm_cache_dir }}" "$KEY" --no-progress || true
+    ;;
+esac

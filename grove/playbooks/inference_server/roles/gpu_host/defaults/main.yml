@@ -31,3 +31,8 @@ gpu_data_fstype: ext4
 # gpu_data_device is still allowed, for a box that genuinely wants scratch there.
 gpu_ephemeral_disk_models:
   - Amazon EC2 NVMe Instance Storage
+
+# Opt-in: mount the instance-store NVMe (~30 GB/s vs ~1 GB/s EBS) for the HF cache ONLY.
+# Weights re-download after a stop/start; images and Docker stay on the durable volume.
+gpu_instance_store_hf_cache: false
+gpu_instance_store_mount: /mnt/instance

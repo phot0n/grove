@@ -244,6 +244,50 @@ def serving_pod(
 	)
 
 
+class TestPodEnv(unittest.TestCase):
+	"""Container env: weights and compile caches live on the persistent volume, so a restart
+	skips both the re-download and torch.compile."""
+
+	def env(self, is_custom_engine=False, rows=(), serve_command=""):
+		pod = serving_pod(is_custom_engine=is_custom_engine)
+		pod.volume_mount_path = "/data"
+		pod.allow_long_max_model_len = 0
+		pod.serve_command = serve_command
+		pod.get_password = lambda *args, **kwargs: None
+		pod.env = [SimpleNamespace(key=k, value=v) for k, v in rows]
+		from grove.cloud_provider import provisioner
+		with patch.object(provisioner.frappe, "conf", {}):
+			return PodProvisioner(pod).env
+
+	def test_a_vllm_pod_caches_on_the_volume(self):
+		env = self.env()
+		self.assertEqual(env["HF_HOME"], "/data/hf")
+		self.assertEqual(env["HF_HUB_ENABLE_HF_TRANSFER"], "1")
+		self.assertEqual(env["VLLM_CACHE_ROOT"], "/data/vllm-cache")
+		self.assertEqual(env["TRITON_CACHE_DIR"], "/data/vllm-cache/triton")
+		self.assertEqual(env["TORCHINDUCTOR_CACHE_DIR"], "/data/vllm-cache/torchinductor")
+
+	def test_a_custom_image_gets_none_of_the_vllm_vars(self):
+		# hf_transfer may not be installed there; its env var would crash huggingface_hub.
+		env = self.env(is_custom_engine=True)
+		self.assertEqual(set(env), {"HF_HOME"})
+
+	def test_a_pod_env_row_wins(self):
+		env = self.env(rows=[("VLLM_CACHE_ROOT", "/elsewhere")])
+		self.assertEqual(env["VLLM_CACHE_ROOT"], "/elsewhere")
+
+	def test_a_streaming_pod_gets_the_bucket_env(self):
+		from grove.cloud_provider import provisioner
+		settings = SimpleNamespace(weights_s3_engine_environment={"AWS_ACCESS_KEY_ID": "AKIA"})
+		with patch.object(provisioner.frappe, "get_single", return_value=settings):
+			env = self.env(serve_command="s3://b/m --load-format runai_streamer")
+		self.assertEqual(env["AWS_ACCESS_KEY_ID"], "AKIA")
+
+	def test_a_plain_pod_gets_no_bucket_env(self):
+		env = self.env(serve_command="Qwen/Qwen3-35B --port 8080")
+		self.assertNotIn("AWS_ACCESS_KEY_ID", env)
+
+
 class TestEngineEndpoint(unittest.TestCase):
 	"""Which address the gateway is handed for a serving pod."""
 

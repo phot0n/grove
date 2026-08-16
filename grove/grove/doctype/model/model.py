@@ -6,6 +6,7 @@ import requests
 import frappe
 from frappe.model.document import Document
 
+from grove import failure
 from grove.utils import slugify
 
 # The provider our own engines serve under, and the one a Model made before providers existed is
@@ -38,7 +39,21 @@ class Model(Document):
 		thinking: DF.Check
 		tool_call_parser: DF.Data | None
 		weights_gb: DF.Float
+		weights_s3_uri: DF.Data | None
 	# end: auto-generated types
+
+	def validate(self):
+		"""The streamer reads safetensors out of a bucket — a GGUF ref names a single file it
+		cannot stream."""
+		if not self.weights_s3_uri:
+			return
+		if not self.weights_s3_uri.startswith("s3://"):
+			frappe.throw("Weights S3 URI must start with s3://")
+		if self.gguf_quant:
+			frappe.throw(
+				"A GGUF ref cannot stream — the runai streamer needs safetensors. Clear "
+				"Weights S3 URI, or point HF Repo at the safetensors repo."
+			)
 
 	def autoname(self):
 		"""Name = `<provider>/<slugged Display Name>`. The name is the client-facing model id (what
@@ -98,6 +113,31 @@ class Model(Document):
 		)
 		return values
 
+	@frappe.whitelist()
+	def mirror_weights(self):
+		"""Button: copy the safetensors off a box that serves this model into the weights
+		bucket, then set Weights S3 URI so the next deploy streams them from S3."""
+		settings = frappe.get_single("Grove Settings")
+		if not settings.weights_s3_write_environment:
+			frappe.throw("Set Weights Bucket and the Mirror keys in Grove Settings first.")
+		if self.gguf_quant:
+			frappe.throw("A GGUF ref cannot be mirrored — the streamer needs safetensors.")
+		if not mirror_server(self.name):
+			frappe.throw(
+				f"No Active Model Deployment serves {self.name}. The mirror runs from a box "
+				"that has the weights cached — deploy the model once first."
+			)
+		frappe.enqueue(
+			"grove.grove.doctype.model.model.mirror_weights_to_s3",
+			model=self.name,
+			queue="long",
+			timeout=28800,
+		)
+		frappe.msgprint(
+			f"Mirroring {self.hf_repo} to {settings.weights_bucket} — watch the box's Ansible Plays.",
+			alert=True,
+		)
+
 	def get_hf_config(self):
 		"""The repo's config.json — its architecture."""
 		return self._hf_json(HF_CONFIG_URL)
@@ -147,6 +187,44 @@ def is_root_weights_file(path, suffix):
 	listing is requested non-recursively, so this is a second line of defence: a repo keeps
 	its other quantizations in subfolders, and counting those bills the same model twice."""
 	return path.endswith(suffix) and "/" not in path
+
+
+def mirror_server(model):
+	"""The Inference Server of an Active deployment of this model — a box that already has
+	the weights cached (or can pull them onto the disk that was sized for them)."""
+	rows = frappe.get_all(
+		"Model Deployment",
+		filters={"model": model, "status": "Active"},
+		fields=["inference_server"],
+		limit=1,
+	)
+	return rows[0].inference_server if rows else None
+
+
+@failure.reports_failure(doctype="Model")
+def mirror_weights_to_s3(model):
+	"""Worker: run mirror_weights.yml on the box (hf cache → aws s3 sync), then stamp
+	weights_s3_uri on success so new deploys pick the mirror up."""
+	doc = frappe.get_doc("Model", model)
+	settings = frappe.get_single("Grove Settings")
+	inf = frappe.get_doc("Inference Server", mirror_server(model))
+	uri = f"{settings.weights_bucket}/models/{doc.repo_id.replace('/', '--')}"
+	play_name, rc = inf.run_playbook(
+		"mirror_weights.yml",
+		extravars={
+			"vllm_home": inf.data_path,
+			"vllm_hf_home": inf.hf_home,
+			"vllm_hf_token": frappe.conf.get("hf_token", ""),
+			"mirror_repo": doc.repo_id,
+			"mirror_uri": uri,
+			"mirror_env": settings.weights_s3_write_environment,
+		},
+		reference_doctype="Model",
+		reference_docname=model,
+	)
+	if rc == 0:
+		doc.db_set("weights_s3_uri", uri)
+	return play_name, rc
 
 
 def has_active_deployment(model, exclude=None):

@@ -246,3 +246,8 @@
       RequiresMountsFor={{ gpu_data_mount }}
     mode: "0644"
   notify: restart docker
+
+# ── Instance-store HF cache (opt-in) ────────────────────────────────────────
+- name: Mount the instance-store NVMe for the HF cache
+  ansible.builtin.import_tasks: instance_store.yml
+  when: gpu_instance_store_hf_cache | bool

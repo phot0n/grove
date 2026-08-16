@@ -44,6 +44,12 @@
     vllm_download_repo: "{{ vllm_model.split(':')[0] }}"
     vllm_download_glob: "{{ '*' + vllm_model.split(':')[1] + '.gguf' if ':' in vllm_model else '' }}"
 
+# Where the weights land: on the data volume by default, on their own mount (the
+# instance-store NVMe) when the control plane pointed vllm_hf_home outside vllm_home.
+- name: Note whether the weights share the data volume
+  ansible.builtin.set_fact:
+    vllm_weights_on_data: "{{ (vllm_hf_home ~ '/').startswith(vllm_home ~ '/') }}"
+
 # ── Room to work ────────────────────────────────────────────────────────────
 # The image and the weights land on one disk, and Docker only reports ENOSPC after minutes of
 # pulling — from a path inside the image's own filesystem, which names no disk the operator
@@ -70,7 +76,7 @@
   vars:
     free_gb: "{{ vllm_df.stdout_lines[-1] | trim | regex_replace('G$', '') | int }}"
     image_gb: "{{ 0 if vllm_image_present.rc == 0 else vllm_image_gb }}"
-    weights_gb: "{{ 0 if vllm_weights_cached.stat.exists else vllm_weights_gb }}"
+    weights_gb: "{{ 0 if (not (vllm_predownload_model | bool) or vllm_weights_cached.stat.exists or not (vllm_weights_on_data | bool)) else vllm_weights_gb }}"
     needed_gb: "{{ (image_gb | float + weights_gb | float) | round(1) }}"
   ansible.builtin.assert:
     that: needed_gb | float == 0 or free_gb | int >= needed_gb | float
@@ -82,6 +88,42 @@
       and are unpacked onto the same disk.
     success_msg: >-
       {{ vllm_home }} has {{ free_gb }} GB free for {{ needed_gb }} GB of downloads.
+
+# Weights off the data volume get their own mount checked — and a missing mount is refused
+# up front, or the download would silently fill the disk the mount point sits on. A
+# streaming deploy (no pre-download) never touches the HF cache, so it skips this too.
+- name: Check the separate weights mount
+  when: (vllm_predownload_model | bool) and not (vllm_weights_on_data | bool)
+  block:
+    - name: Is the weights path a real mount?
+      ansible.builtin.command: "findmnt -no SOURCE {{ vllm_hf_home | dirname }}"
+      register: vllm_hf_mount
+      changed_when: false
+      failed_when: false
+
+    - name: Refuse to download onto an unmounted mount point
+      ansible.builtin.assert:
+        that: vllm_hf_mount.rc == 0
+        fail_msg: >-
+          {{ vllm_hf_home | dirname }} is not mounted. This server opted into the
+          instance-store HF cache — run Setup on the Inference Server so
+          grove-instance-store.service exists, then deploy again.
+
+    - name: Read the free space on the weights mount
+      ansible.builtin.command: "df --output=avail --block-size=1G {{ vllm_hf_home | dirname }}"
+      register: vllm_hf_df
+      changed_when: false
+
+    - name: Check the weights mount can hold what is still to be downloaded
+      vars:
+        free_gb: "{{ vllm_hf_df.stdout_lines[-1] | trim | regex_replace('G$', '') | int }}"
+        weights_gb: "{{ 0 if vllm_weights_cached.stat.exists else vllm_weights_gb }}"
+      ansible.builtin.assert:
+        that: weights_gb | float == 0 or free_gb | int >= weights_gb | float
+        fail_msg: >-
+          {{ vllm_hf_home | dirname }} has {{ free_gb }} GB free, but {{ weights_gb }} GB of
+          weights are still to download. The instance store is too small for this model —
+          untick Use Instance Store For HF Cache on the Inference Server.
 
 - name: Log in to the image registry
   ansible.builtin.command: "docker login {{ vllm_registry_host }} --username {{ vllm_registry_username }} --password-stdin"
@@ -99,15 +141,11 @@
 # field, owns which image is here.
 - name: Pull the engine image (multi-GB on a first pull)
   ansible.builtin.command: "docker pull {{ vllm_image }}"
-  register: vllm_pull
-  # docker prints "Status: Image is up to date for X" when nothing moved. Matching the
-  # negative errs toward a restart, which is what the button already promises anyway.
-  changed_when: "'Image is up to date' not in (vllm_pull.stdout | default(''))"
-  # Run detached + poll: a multi-GB pull runs for minutes with no channel output, and some
-  # hosts (e.g. RunPod's TCP proxy) cap connection duration and drop a long-held SSH session.
+  register: vllm_pull_job
+  # poll: 0 fires the pull and moves on, so the weight download below overlaps it. The
+  # register is only a job handle — the wait task after the download owns changed/notify.
   async: 5400
-  poll: 15
-  notify: recreate vllm container
+  poll: 0
 
 - name: Create cache directories
   ansible.builtin.file:
@@ -118,8 +156,18 @@
   loop:
     - "{{ vllm_cache_dir }}/torchinductor"
     - "{{ vllm_cache_dir }}/triton"
-    - "{{ vllm_cache_dir }}/torch"
     - "{{ vllm_hf_home }}"
+
+# Host-side hf so the weight download can overlap the image pull above — the image's own hf
+# can't run before the pull lands. hf_transfer saturates the NIC on multi-GB weights; awscli
+# serves the compile-cache pre-warm and the weight mirror.
+- name: Install hf + awscli into a host venv
+  ansible.builtin.pip:
+    name:
+      - huggingface_hub[hf_transfer]
+      - awscli
+    virtualenv: "{{ vllm_home }}/hf-venv"
+    virtualenv_command: python3 -m venv
 
 - name: Write Hugging Face token (optional)
   ansible.builtin.copy:
@@ -143,18 +191,17 @@
   register: vllm_api_key_slurp
   when: vllm_api_key | length == 0
 
-# The image's own hf does the download, into the box-shared cache every instance mounts.
-# `-e HF_TOKEN` forwards the value from the task environment below rather than spelling it
-# out in the argv, which Ansible records verbatim on the Ansible Task doc.
+# The host venv's hf does the download while the image pull streams in the background.
+# The token rides the task environment, not the argv, which Ansible records verbatim on
+# the Ansible Task doc.
 - name: Pre-download model weights into the shared cache
   ansible.builtin.command: >-
-    docker run --rm --entrypoint hf
-    -e HF_TOKEN
-    -v {{ vllm_hf_home }}:/root/.cache/huggingface
-    {{ vllm_image }} download {{ vllm_download_repo }}
+    {{ vllm_home }}/hf-venv/bin/hf download {{ vllm_download_repo }}
     {{ '--include ' + vllm_download_glob if vllm_download_glob else '' }}
   environment:
     HF_TOKEN: "{{ vllm_hf_token }}"
+    HF_HOME: "{{ vllm_hf_home }}"
+    HF_HUB_ENABLE_HF_TRANSFER: "1"
   args:
     # Down to the file for a GGUF ref, not just the repo dir: the quantizations share one repo,
     # so a repo-level guard would skip the download after a switch from Q4_K_M to Q8_0 and
@@ -168,6 +215,19 @@
   async: 7200
   poll: 15
   tags: heavy
+
+# Collect the pull fired at the top. docker prints "Status: Image is up to date for X" when
+# nothing moved; matching the negative errs toward a restart, which the button promises anyway.
+- name: Wait for the image pull to finish
+  ansible.builtin.async_status:
+    jid: "{{ vllm_pull_job.ansible_job_id }}"
+  register: vllm_pull
+  until: vllm_pull.finished
+  retries: 360
+  delay: 15
+  changed_when: "'Image is up to date' not in (vllm_pull.stdout | default(''))"
+  notify: recreate vllm container
+  when: vllm_pull_job.ansible_job_id is defined
 
 # Ahead of the container config below, so the route into this instance exists before any replace
 # that follows. The engine proxy owns the only public port; vllm_port is reachable from the box

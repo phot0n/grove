@@ -7,5 +7,9 @@ frappe.ui.form.on('Model', {
 		frm.add_custom_button(__('Fetch Architecture'), () => {
 			frm.call('fetch_architecture').then(() => frm.reload_doc());
 		});
+
+		frm.add_custom_button(__('Mirror Weights To S3'), () => {
+			frm.call('mirror_weights');
+		});
 	},
 });

@@ -46,6 +46,16 @@ vllm_predownload_model: true
 vllm_image_gb: 0
 vllm_weights_gb: 0
 
+# ── S3 compile-cache pre-warm (blank bucket = off) ──────────────────────────
+# The cache-sync script pulls compiled kernels from the bucket before the container starts
+# and pushes them once the engine is healthy. Key axes computed on the box; env carries the
+# engine's read/write-compile-cache credentials.
+vllm_cache_bucket: ""
+vllm_cache_sync_env: {}
+vllm_tensor_parallel_size: 1
+vllm_model_slug: ""
+vllm_cache_sync_script: "{{ vllm_container_dir }}/{{ vllm_unit }}-cache-sync.sh"
+
 # ── Auth / secrets ──────────────────────────────────────────────────────────
 vllm_api_key: ""                       # "" = auto-generate + persist to {{ vllm_api_key_file }}
 vllm_hf_token: ""                      # optional; gated models / faster HF downloads

@@ -10,6 +10,7 @@
   "is_static_ip",
   "status",
   "data_path",
+  "use_instance_store_for_hf_cache",
   "column_break_axpk",
   "region",
   "monitoring_agent",
@@ -90,6 +91,13 @@
    "fieldtype": "Data",
    "label": "Data Path",
    "reqd": 1
+  },
+  {
+   "default": "0",
+   "description": "HF weight cache on the box's ephemeral NVMe (fast, wiped on stop/start — weights re-download). Images and Docker stay on the durable volume. Re-run Setup after changing.",
+   "fieldname": "use_instance_store_for_hf_cache",
+   "fieldtype": "Check",
+   "label": "Use Instance Store For HF Cache"
   },
   {
    "depends_on": "eval:doc.status == 'Active'",

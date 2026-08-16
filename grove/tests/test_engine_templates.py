@@ -112,14 +112,33 @@ class TestContainerRunScript(unittest.TestCase):
 		self.assertNotIn("deadbeef", script)
 		self.assertIn("--env-file /opt/vllm/containers/vllm-md-00007.env", script)
 
+	def test_the_compile_cache_survives_a_container_replace(self):
+		# Without this mount every replace re-runs torch.compile (~1 min of Loading).
+		script = render("vllm-container-run.sh.j2", BASE)
+		self.assertIn("-v /opt/vllm/cache:/root/.cache/vllm", script)
+
+
+CACHE_LINES = [
+	"TRITON_CACHE_DIR=/root/.cache/vllm/triton",
+	"TORCHINDUCTOR_CACHE_DIR=/root/.cache/vllm/torchinductor",
+]
+
 
 class TestContainerEnvFile(unittest.TestCase):
 	def test_one_key_value_per_line(self):
 		lines = render("vllm-container.env.j2", BASE).splitlines()
-		self.assertEqual(lines, ["HF_TOKEN=hf_secret", "ODD=a b;c", "VLLM_API_KEY=deadbeef"])
+		self.assertEqual(
+			lines, CACHE_LINES + ["HF_TOKEN=hf_secret", "ODD=a b;c", "VLLM_API_KEY=deadbeef"]
+		)
+
+	def test_a_deployment_env_row_overrides_the_cache_defaults(self):
+		# docker --env-file: the last occurrence of a key wins, so ours must come first.
+		override = {**BASE, "vllm_env": {"TRITON_CACHE_DIR": "/elsewhere"}}
+		lines = render("vllm-container.env.j2", override).splitlines()
+		self.assertLess(lines.index(CACHE_LINES[0]), lines.index("TRITON_CACHE_DIR=/elsewhere"))
 
 	def test_no_api_key_line_when_none_resolved(self):
-		self.assertEqual(render("vllm-container.env.j2", BARE), "")
+		self.assertEqual(render("vllm-container.env.j2", BARE).splitlines(), CACHE_LINES)
 
 
 class TestEngineProxyLocation(unittest.TestCase):
@@ -219,6 +238,122 @@ class TestReconfigureRunsTheConfigTasksOnly(unittest.TestCase):
 		)
 
 
+class TestCompileCachePrewarmHooks(unittest.TestCase):
+	"""With a weights bucket configured, the run script pulls the compile cache before the
+	container and pushes it (backgrounded, after /health) once compiled. No bucket → the
+	script renders exactly as before."""
+
+	WITH_BUCKET = {
+		**BASE,
+		"vllm_cache_bucket": "s3://grove-weights",
+		"vllm_cache_sync_script": "/opt/vllm/containers/vllm-md-00007-cache-sync.sh",
+		"vllm_cache_sync_env": {"AWS_ACCESS_KEY_ID": "AKIA", "AWS_SECRET_ACCESS_KEY": "s3secret"},
+		"vllm_tensor_parallel_size": 2,
+		"vllm_model_slug": "Qwen--Qwen3-35B",
+	}
+
+	def test_no_bucket_renders_no_hooks(self):
+		script = render("vllm-container-run.sh.j2", BASE)
+		self.assertNotIn("cache-sync", script)
+
+	def test_hooks_wrap_the_container(self):
+		script = render("vllm-container-run.sh.j2", self.WITH_BUCKET)
+		self.assertLess(script.index("cache-sync.sh pull"), script.index("docker run"))
+		self.assertIn("nohup /opt/vllm/containers/vllm-md-00007-cache-sync.sh push", script)
+		check = subprocess.run(["sh", "-n"], input=script, text=True, capture_output=True)
+		self.assertEqual(check.returncode, 0, check.stderr)
+
+	def test_sync_script_is_valid_shell_and_keys_on_every_invalidation_axis(self):
+		sync = render("vllm-cache-sync.sh.j2", self.WITH_BUCKET)
+		check = subprocess.run(["sh", "-n"], input=sync, text=True, capture_output=True)
+		self.assertEqual(check.returncode, 0, check.stderr)
+		# digest (torch/vLLM), GPU from nvidia-smi, TP, model — a :latest tag pins nothing.
+		self.assertIn("RepoDigests", sync)
+		self.assertIn("nvidia-smi", sync)
+		self.assertIn("tp2/Qwen--Qwen3-35B", sync)
+
+	def test_bucket_credentials_stay_in_the_sync_script(self):
+		self.assertIn(
+			"export AWS_SECRET_ACCESS_KEY='s3secret'",
+			render("vllm-cache-sync.sh.j2", self.WITH_BUCKET),
+		)
+		self.assertNotIn("s3secret", render("vllm-container-run.sh.j2", self.WITH_BUCKET))
+
+
+class TestPullAndDownloadOverlap(unittest.TestCase):
+	"""A fresh box pays max(pull, weights), not the sum: the pull fires with poll: 0, the weight
+	download runs while it streams, and an async_status collects it — carrying the recreate
+	notify, since a poll: 0 register is only a job handle."""
+
+	@classmethod
+	def setUpClass(cls):
+		cls.tasks = yaml.safe_load((INFERENCE_ROLES / "vllm/tasks/main.yml").read_text())
+
+	def index_of(self, marker):
+		return next(i for i, task in enumerate(self.tasks) if marker in str(task))
+
+	def test_the_pull_is_fired_and_forgotten(self):
+		pull = self.tasks[self.index_of("docker pull")]
+		self.assertEqual(pull["poll"], 0)
+		self.assertNotIn("notify", pull)
+
+	def test_the_download_runs_between_fire_and_collect(self):
+		pull, download = self.index_of("docker pull"), self.index_of("hf download")
+		collect = self.index_of("ansible.builtin.async_status")
+		self.assertLess(pull, download)
+		self.assertLess(download, collect)
+
+	def test_the_collect_owns_the_recreate(self):
+		collect = self.tasks[self.index_of("ansible.builtin.async_status")]
+		self.assertEqual(collect["notify"], "recreate vllm container")
+		self.assertIn("Image is up to date", collect["changed_when"])
+
+
+class TestWeightsOffTheDataVolume(unittest.TestCase):
+	"""vllm_hf_home outside vllm_home — the instance-store opt-in. The weights then stop
+	counting against the data volume, and their own mount is checked instead."""
+
+	@classmethod
+	def setUpClass(cls):
+		cls.tasks = yaml.safe_load((INFERENCE_ROLES / "vllm/tasks/main.yml").read_text())
+
+	def task(self, name):
+		return next(t for t in self.tasks if t.get("name") == name)
+
+	def on_data(self, vllm_home, vllm_hf_home):
+		expression = self.task("Note whether the weights share the data volume")[
+			"ansible.builtin.set_fact"
+		]["vllm_weights_on_data"]
+		rendered = Environment().from_string(expression).render(
+			vllm_home=vllm_home, vllm_hf_home=vllm_hf_home
+		)
+		return rendered == "True"
+
+	def test_the_default_layout_shares_the_volume(self):
+		self.assertTrue(self.on_data("/opt/vllm", "/opt/vllm/hf"))
+
+	def test_the_instance_store_layout_does_not(self):
+		self.assertFalse(self.on_data("/opt/vllm", "/mnt/instance/hf"))
+		# /opt/vllm-other must not read as "under /opt/vllm".
+		self.assertFalse(self.on_data("/opt/vllm", "/opt/vllm-other/hf"))
+
+	def test_off_volume_weights_leave_the_data_path_check(self):
+		check = self.task("Check the data path can hold what is still to be downloaded")
+		self.assertIn("vllm_weights_on_data", check["vars"]["weights_gb"])
+
+	def test_the_separate_mount_check_only_runs_off_volume(self):
+		# And never for a streaming deploy, which downloads nothing into the HF cache.
+		block = self.task("Check the separate weights mount")
+		self.assertEqual(
+			block["when"], "(vllm_predownload_model | bool) and not (vllm_weights_on_data | bool)"
+		)
+		self.assertTrue(any("findmnt" in str(t) for t in block["block"]))
+
+	def test_a_streaming_deploy_counts_no_weights_against_the_disk(self):
+		check = self.task("Check the data path can hold what is still to be downloaded")
+		self.assertIn("vllm_predownload_model", check["vars"]["weights_gb"])
+
+
 class TestCertificateLifetime(unittest.TestCase):
 	def test_a_box_certificate_is_short_lived(self):
 		# Nothing renews it and nothing verifies it, so this number is only ever read by a human
@@ -261,7 +396,7 @@ class TestOneWebServerForTheFleet(unittest.TestCase):
 		self.assertIn("provision.yml", plays)
 
 	def test_no_front_box_installs_it_any_more(self):
-		# grove-gateway owns :80 and :443 on a Gateway or Ingress Server. A play that reinstalled
+		# pathway owns :80 and :443 on a Gateway or Ingress Server. A play that reinstalled
 		# OpenResty there would take the ports back from it on the next provision.
 		plays = self.plays_using("openresty")
 		self.assertNotIn("gateway.yml", plays)
