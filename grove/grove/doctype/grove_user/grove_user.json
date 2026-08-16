@@ -10,7 +10,6 @@
   "user_group",
   "column_break_head",
   "rate_limited",
-  "dirty",
   "section_allow",
   "allow",
   "section_deny",
@@ -27,7 +26,7 @@
    "unique": 1
   },
   {
-   "description": "Group this user belongs to. Everything the group grants, this user reaches — on top of their own Allow below.",
+   "description": "Group this user belongs to. Everything the group grants, this user reaches \u2014 on top of their own Allow below.",
    "fieldname": "user_group",
    "fieldtype": "Link",
    "in_list_view": 1,
@@ -50,14 +49,6 @@
    "fieldname": "rate_limited",
    "fieldtype": "Check",
    "label": "Rate Limited",
-   "read_only": 1
-  },
-  {
-   "default": "0",
-   "description": "Set on change; cleared once a sync run has pushed this user's access and budget flag to every Active proxy.",
-   "fieldname": "dirty",
-   "fieldtype": "Check",
-   "label": "Pending Sync",
    "read_only": 1
   },
   {

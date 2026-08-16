@@ -58,9 +58,8 @@ class ModelDeployment(Document):
 		tensor_parallel_size: DF.Int
 	# end: auto-generated types
 
-	# Routes are not dirty-gated: grove.agent_sync.sync_dirty pushes the full
-	# route table for every deployment each run (idempotent), so no on_update
-	# hook is needed for routing.
+	# No on_update sync hook: any change here moves the routes snapshot hash and
+	# grove.agent_sync.sync_projection pushes it on the next tick.
 
 	def validate(self):
 		self._assign_engine_port()
@@ -562,7 +561,7 @@ def reconfigure_deployment(model_deployment):
 
 	# Status is deliberately NOT moved to Provisioning here, unlike deploy_model.
 	#
-	# It is read as "is this engine serving?" — _routes_for_proxy only routes Active — and the
+	# It is read as "is this engine serving?" — _gateway_routes only routes Active — and the
 	# scheduler pushes the full route table every 2 minutes. Flipping it for the duration of the
 	# play therefore takes the model out of the gateway for MINUTES, and this play usually does
 	# not stop the engine at all: the container is replaced only when the run script or env file

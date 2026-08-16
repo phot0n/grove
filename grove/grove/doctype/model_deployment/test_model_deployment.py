@@ -190,7 +190,7 @@ class TestGpuInventory(unittest.TestCase):
 class TestReconfigureKeepsTheModelRoutable(unittest.TestCase):
 	"""Update Engine Config must not take the model out of the gateway while it runs.
 
-	`status` is read as "is this engine serving?" — `_routes_for_proxy` routes only Active — and
+	`status` is read as "is this engine serving?" — `_gateway_routes` routes only Active — and
 	the scheduler pushes the WHOLE route table every two minutes. So a status written before the
 	play is a guaranteed multi-minute outage, for a run that replaces the container only when the
 	rendered config actually moved. This cost a live 503 on qwen3.5-4b once; the test is here so

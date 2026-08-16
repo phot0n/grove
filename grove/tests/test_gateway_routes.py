@@ -81,7 +81,7 @@ def routes(zone=ZONE):
 			side_effect=lambda *a, **k: frappe._dict(get_password=lambda *a, **k: "secret"),
 		),
 	):
-		return agent_sync._routes_for_proxy("gw-1")
+		return agent_sync._gateway_routes()
 
 
 def rows_for(model, zone=ZONE):

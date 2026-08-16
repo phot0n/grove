@@ -2,9 +2,9 @@
 # See license.txt
 """Clearing old sync runs. Hits the DB — the whole point is that the child rows go too.
 
-Agent Sync grows on a timer, not on use: the scheduled run writes a doc every two minutes
-whether or not anything moved. Left alone that is ~22,000 docs a quarter, each with a row per box
-and a payload on each row.
+Agent Sync grows on a timer, not on use: two scheduled runs each write a doc every two minutes
+whether or not anything moved. Left alone that is tens of thousands of docs inside the retention
+window, each with a row per box and a payload on each row.
 """
 
 import frappe

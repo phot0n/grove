@@ -1,21 +1,21 @@
 # Copyright (c) 2026, Grove and contributors
 # See license.txt
 """What Grove pushes to a proxy: the routing table, and the three access records a request
-resolves through — group, then user, then key. Pure — the docs are mocked, no site.
+resolves through — group, then user, then key — plus the hash gate that decides whether a
+box is pushed at all. Pure — the docs are mocked, no site.
 
 Every field here is read by something that cannot be changed in the same deploy: the Go agent
-unmarshals it (grove-gateway, `internal/domain/route.go` and `internal/transport/http/admin.go`),
-and it lives in its own repo on a box that is updated separately — a released binary, not a tree
-this deploy compiles. So the shape is asserted rather than assumed.
+unmarshals it, and it lives in its own repo on a box that is updated separately — a released
+binary, not a tree this deploy compiles. So the shape is asserted rather than assumed. The
+contract is plan_agent_state_sync.md at the repo root.
 """
 
-import inspect
 import unittest
 import unittest.mock
 
 import frappe
 
-from grove import agent_sync, hooks
+from grove import agent_sync
 from grove.serve_command import DEFAULT_MAX_NUM_SEQS
 
 
@@ -32,21 +32,20 @@ def pod(name, model="qwen3-35b", max_num_seqs=0):
 	)
 
 
-class TestRoutesForProxy(unittest.TestCase):
+class TestGatewayRoutes(unittest.TestCase):
 	def routes(self, deployments=(), pods=(), models=("qwen3-35b",)):
-		"""_routes_for_proxy against mocked docs. get_all is dispatched on doctype because the
+		"""_gateway_routes against mocked docs. get_all is dispatched on doctype because the
 		function reads several of them, and get_doc only ever supplies the internal key.
 
 		No box here names an ingress, so every route is direct — the shape this whole suite was
 		written against, and the shape a fleet that has cut nothing over still has. The ingress
 		rows have their own file: test_gateway_routes."""
 
-		def get_all(doctype, **kwargs):
+		def get_all(doctype, filters=None, **kwargs):
 			if doctype == "Model Deployment":
-				return list(deployments)
+				# The Active filter moved into the query, so the mock honours it.
+				return [d for d in deployments if d.status == (filters or {}).get("status")]
 			if doctype == "Model":
-				# name + modality: the route rows carry the model's surface, so this read is no
-				# longer just a list of names. Modality itself is TestRouteModality's business.
 				return [frappe._dict(name=m, modality="text") for m in models]
 			if doctype == "Pod":
 				return list(pods)
@@ -63,7 +62,7 @@ class TestRoutesForProxy(unittest.TestCase):
 			),
 			unittest.mock.patch.object(frappe, "get_doc", return_value=doc),
 		):
-			return agent_sync._routes_for_proxy("PROXY-1")
+			return agent_sync._gateway_routes()
 
 	def test_an_active_deployment_names_itself_and_its_box(self):
 		[route] = self.routes([deployment("MD-00007")])["qwen3-35b"]
@@ -90,12 +89,18 @@ class TestRoutesForProxy(unittest.TestCase):
 	def test_only_active_deployments_are_routed(self):
 		# A Broken engine still holds its port and its doc; routing to it would 502 every request
 		# instead of the 503 that a model with nowhere to go actually means.
-		self.assertEqual(self.routes([deployment("MD-00007", status="Broken")])["qwen3-35b"], [])
+		self.assertEqual(self.routes([deployment("MD-00007", status="Broken")]), {})
 
-	def test_a_model_with_no_engine_is_sent_as_empty_not_omitted(self):
-		# The agent deletes the key on an empty list. Omitted, a stale route would survive and the
-		# model would keep showing in /v1/models.
-		self.assertEqual(self.routes(models=["qwen3-35b"])["qwen3-35b"], [])
+	def test_a_model_with_no_engine_is_absent_not_sent_empty(self):
+		# The push is the whole table and absence prunes, so an unpublished model's deploy key
+		# is deleted because it is no longer named — no empty list needed to say so.
+		self.assertNotIn("qwen3-35b", self.routes(models=["qwen3-35b"]))
+
+	def test_the_rows_are_ordered_by_deployment(self):
+		# The snapshot hash is over the serialized table, so a query returning the same rows in
+		# a different order must not read as drift and re-push the fleet.
+		routes = self.routes([deployment("MD-00008"), deployment("MD-00007")])["qwen3-35b"]
+		self.assertEqual([r["deployment"] for r in routes], ["MD-00007", "MD-00008"])
 
 	def test_a_route_carries_the_engines_concurrency_cap(self):
 		# --max-num-seqs is what the engine runs at once; past it vLLM queues where the gateway
@@ -120,8 +125,8 @@ class TestRouteModality(unittest.TestCase):
 	"""Which OpenAI surface a model answers on rides on its route rows.
 
 	Stamped per row because deploy:<model> is the only thing pushed per model — a separate record
-	would mean a new namespace and a new push for one short string. The gateway refuses a request
-	for a surface the modality does not cover, so a wrong value here is a 404 on a working model."""
+	would mean a new namespace for one short string. The gateway refuses a request for a surface
+	the modality does not cover, so a wrong value here is a 404 on a working model."""
 
 	def routes(self, models, deployments=(), pods=()):
 		def get_all(doctype, **kwargs):
@@ -141,7 +146,7 @@ class TestRouteModality(unittest.TestCase):
 			),
 			unittest.mock.patch.object(agent_sync, "_ingress_targets", lambda: {}),
 		):
-			return agent_sync._routes_for_proxy("PROXY-1")
+			return agent_sync._gateway_routes()
 
 	def test_a_deployment_row_carries_its_models_modality(self):
 		routes = self.routes(
@@ -190,7 +195,7 @@ class TestEffectiveGroups(unittest.TestCase):
 		self.assertEqual(group, {"name": "acme", "models": "qwen3-35b"})
 
 	def test_models_are_one_sorted_comma_list(self):
-		# The agent splits on commas (grove-gateway, internal/domain/access.go `ModelSet`), so the
+		# The agent splits on commas (pathway, internal/domain/access.go `ModelSet`), so the
 		# join is the wire format, not a display choice.
 		[group] = self.groups(
 			["acme"],
@@ -207,15 +212,10 @@ class TestEffectiveGroups(unittest.TestCase):
 		[group] = self.groups(["acme"])
 		self.assertEqual(group["models"], "")
 
-	def test_one_row_query_covers_every_group(self):
-		groups = self.groups(
-			["a", "b"],
-			[
-				frappe._dict(parent="a", model="m1", parentfield="models"),
-				frappe._dict(parent="b", model="m2", parentfield="models"),
-			],
-		)
-		self.assertEqual([g["models"] for g in groups], ["m1", "m2"])
+	def test_the_records_are_ordered_by_name(self):
+		# Same reason as the route rows: the section hash must not move on query order.
+		groups = self.groups(["b", "a"])
+		self.assertEqual([g["name"] for g in groups], ["a", "b"])
 
 
 class TestPublicCatalog(unittest.TestCase):
@@ -273,7 +273,7 @@ class TestEffectiveUsers(unittest.TestCase):
 	"""user:<name> — the record that holds everything belonging to the person rather than to a
 	credential, so a budget flip or an access edit is one push however many keys they hold."""
 
-	def users(self, users=(), rows=(), only=None):
+	def users(self, users=(), rows=()):
 		def get_all(doctype, **kwargs):
 			if doctype == "Grove User":
 				return list(users)
@@ -282,7 +282,7 @@ class TestEffectiveUsers(unittest.TestCase):
 			raise AssertionError(f"unexpected get_all({doctype})")
 
 		with unittest.mock.patch.object(frappe, "get_all", side_effect=get_all):
-			return agent_sync._effective_users(only)
+			return agent_sync._effective_users()
 
 	def test_a_user_carries_their_group_their_deltas_and_their_budget_flag(self):
 		[user] = self.users(
@@ -300,7 +300,7 @@ class TestEffectiveUsers(unittest.TestCase):
 		self.assertIs(user["limited"], True)
 
 	def test_the_lists_are_sorted_comma_joins(self):
-		# The agent splits on commas (grove-gateway, internal/domain/access.go `ModelSet`), so the
+		# The agent splits on commas (pathway, internal/domain/access.go `ModelSet`), so the
 		# join is the wire format, not a display choice.
 		[user] = self.users(
 			[frappe._dict(name="GU-1", user="a@x.com", user_group="", rate_limited=0)],
@@ -368,144 +368,307 @@ class TestEffectiveKeys(unittest.TestCase):
 		self.assertEqual(self.keys([frappe._dict(name="KEY-1", key_hash=None, user="GU-1", status="active")]), [])
 
 	def test_only_live_keys_are_asked_for(self):
-		# A revoked key is not restated as revoked — it is not projected at all, and the Gateway
-		# Deletion its revoke wrote is what takes it off the boxes. Asserted on the filter because
-		# leaving it out would silently re-push every dead credential.
+		# A revoked key is not restated as revoked — it is not projected at all, so its bucket's
+		# hash moves and the push prunes it off every box. Asserted on the filter because leaving
+		# it out would silently keep every dead credential alive.
 		self.keys([frappe._dict(name="KEY-1", key_hash="abc", user="GU-1", status="active")])
 		self.assertEqual(self.filters, {"status": "active"})
 
 
-class TestPushDeletions(unittest.TestCase):
-	"""The one pruning path. Every other endpoint upserts, so a revoked key keeps serving until
-	this lands."""
+class TestSnapshotHashes(unittest.TestCase):
+	"""The gate the whole sync stands on: same state → same hashes (or every tick re-pushes the
+	fleet), and one record's change → exactly its own bucket moves (or one key minted re-ships
+	the population)."""
 
-	def pushed(self, deletions):
-		sent = []
+	def key(self, key_hash, user="GU-1"):
+		return {"key_hash": key_hash, "prefix": "K-" + key_hash, "user": user, "status": "active"}
 
-		def post(_admin_url, _token, path, payload, method="POST"):
-			sent.append((method, path, payload))
-			return {"count": len(payload.get("ids", []))}
+	def test_bucket_of_is_a_two_hex_label(self):
+		label = agent_sync.bucket_of("anything")
+		self.assertRegex(label, r"^[0-9a-f]{2}$")
+		self.assertEqual(label, agent_sync.bucket_of("anything"))
+
+	def test_the_same_content_hashes_the_same(self):
+		records = [self.key("aa"), self.key("bb")]
+		one = agent_sync._bucketed_section(records, "key_hash")
+		two = agent_sync._bucketed_section(list(records), "key_hash")
+		self.assertEqual(one, two)
+
+	def test_a_changed_record_moves_only_its_own_bucket(self):
+		keys = [self.key(f"k{i}") for i in range(32)]
+		before = agent_sync._bucketed_section(keys, "key_hash")["buckets"]
+		keys[0] = {**keys[0], "user": "GU-2"}
+		after = agent_sync._bucketed_section(keys, "key_hash")["buckets"]
+		moved = [b for b in before if before[b]["hash"] != after[b]["hash"]]
+		self.assertEqual(moved, [agent_sync.bucket_of("k0")])
+
+	def test_a_flat_section_carries_its_hash(self):
+		section = agent_sync._flat_section({"table": {"m": []}})
+		self.assertIn("hash", section)
+		self.assertEqual(section["table"], {"m": []})
+
+
+class TestDelta(unittest.TestCase):
+	"""What a non-forced run sends: the sections the box does not already hold, and nothing
+	when it holds everything — the no-op tick that keeps the log quiet."""
+
+	def snapshot(self, keys=()):
+		return {
+			"groups": agent_sync._flat_section({"records": [], "catalog": ""}),
+			"keys": agent_sync._bucketed_section(list(keys), "key_hash"),
+		}
+
+	def hashes(self, snapshot):
+		out = {}
+		for section, content in snapshot.items():
+			if "buckets" in content:
+				for label, bucket in content["buckets"].items():
+					out[f"{section}:{label}"] = bucket["hash"]
+			else:
+				out[section] = content["hash"]
+		return out
+
+	def key(self, key_hash, user="GU-1"):
+		return {"key_hash": key_hash, "prefix": "K", "user": user, "status": "active"}
+
+	def test_a_box_holding_everything_gets_nothing(self):
+		snapshot = self.snapshot([self.key("aa")])
+		self.assertEqual(agent_sync._delta(snapshot, self.hashes(snapshot)), {})
+
+	def test_a_wiped_box_gets_everything(self):
+		# An empty hash map is what a fresh or wiped Redis reports — the resync backstop this
+		# design replaced, as one ordinary tick.
+		snapshot = self.snapshot([self.key("aa")])
+		self.assertEqual(agent_sync._delta(snapshot, {}), snapshot)
+
+	def test_only_the_changed_bucket_is_sent(self):
+		old = self.snapshot([self.key("aa"), self.key("bb")])
+		new = self.snapshot([self.key("aa", user="GU-2"), self.key("bb")])
+		delta = agent_sync._delta(new, self.hashes(old))
+		self.assertEqual(list(delta), ["keys"])
+		self.assertEqual(list(delta["keys"]["buckets"]), [agent_sync.bucket_of("aa")])
+
+	def test_a_bucket_the_box_still_holds_but_no_longer_exists_is_sent_empty(self):
+		# The last key in a bucket was deleted. The box's hash map still names the bucket, so it
+		# is pushed explicitly empty — the agent prunes its members — rather than left forever.
+		old = self.snapshot([self.key("aa")])
+		delta = agent_sync._delta(self.snapshot(), self.hashes(old))
+		self.assertEqual(
+			delta["keys"]["buckets"][agent_sync.bucket_of("aa")], {"records": []}
+		)
+
+	def test_a_changed_flat_section_is_sent_whole(self):
+		snapshot = self.snapshot()
+		remote = {**self.hashes(snapshot), "groups": "stale"}
+		self.assertEqual(agent_sync._delta(snapshot, remote), {"groups": snapshot["groups"]})
+
+
+class TestSyncTarget(unittest.TestCase):
+	"""One box brought to the snapshot: skipped silently when it already holds it, pushed and
+	logged when it does not, and classified — down vs rejected — when the push fails."""
+
+	SNAPSHOT = {"groups": {"records": [], "catalog": "", "hash": "h1"}}
+
+	def sync(self, remote=None, force=False, post=None, get=None):
+		calls = {"posted": None}
+
+		def _post(_url, _token, path, payload, method="POST"):
+			calls["posted"] = (path, payload)
+			if post:
+				raise post
+			return {"counts": {"groups": 0}}
+
+		def _remote(_url, _token):
+			if get:
+				raise get
+			return remote or {}
 
 		with (
-			unittest.mock.patch.object(agent_sync, "_conn", return_value=(None, "u", "t")),
-			unittest.mock.patch.object(agent_sync, "_post", side_effect=post),
+			unittest.mock.patch.object(agent_sync, "_conn", return_value=(None, "http://x", "t")),
+			unittest.mock.patch.object(agent_sync, "_post", side_effect=_post),
+			unittest.mock.patch.object(agent_sync, "remote_hashes", side_effect=_remote),
+			unittest.mock.patch.object(frappe, "local", frappe._dict()),
 		):
-			result = agent_sync.push_deletions("PROXY-1", deletions)
-		return sent, result
+			row = agent_sync._sync_target("Gateway Server", "gw1", self.SNAPSHOT, force)
+		return row, calls
 
-	def deletion(self, record_type, record_id):
-		return frappe._dict(name=f"GD-{record_id}", record_type=record_type, record_id=record_id)
+	def test_a_box_already_in_sync_is_not_pushed_and_leaves_no_row(self):
+		row, calls = self.sync(remote={"groups": "h1"})
+		self.assertIsNone(row)
+		self.assertIsNone(calls["posted"])
 
-	def test_a_revoked_key_is_removed_by_its_hash(self):
-		sent, result = self.pushed([self.deletion("Key", "abc")])
-		self.assertEqual(sent, [("DELETE", "keys", {"ids": ["abc"]})])
-		self.assertEqual(result["count"], 1)
+	def test_drift_is_pushed_to_the_state_endpoint(self):
+		row, calls = self.sync(remote={"groups": "stale"})
+		self.assertEqual(row["success"], 1)
+		self.assertEqual(calls["posted"], ("state", self.SNAPSHOT))
+		self.assertIn("groups", row["detail"])
 
-	def test_keys_and_users_go_to_their_own_endpoints(self):
-		# One tombstone table, two Redis prefixes — the record type is what tells them apart.
-		sent, _result = self.pushed([self.deletion("Key", "abc"), self.deletion("User", "GU-1")])
-		self.assertEqual(
-			sent, [("DELETE", "keys", {"ids": ["abc"]}), ("DELETE", "users", {"ids": ["GU-1"]})]
-		)
+	def test_force_skips_the_hash_read_and_pushes_everything(self):
+		import requests
 
-	def test_a_type_with_nothing_pending_is_not_called(self):
-		sent, _result = self.pushed([self.deletion("Key", "abc")])
-		self.assertEqual([path for _method, path, _payload in sent], ["keys"])
+		row, calls = self.sync(force=True, get=requests.ConnectionError("no GET should happen"))
+		self.assertEqual(row["success"], 1)
+		self.assertEqual(calls["posted"], ("state", self.SNAPSHOT))
+
+	def test_a_box_that_is_down_reads_as_unreachable_not_rejected(self):
+		import requests
+
+		row, _calls = self.sync(get=requests.ConnectionError("refused"))
+		self.assertEqual((row["reachable"], row["success"]), (0, 0))
+
+	def test_an_old_agent_404_is_a_loud_failure(self):
+		# No fallback to the per-section endpoints: a box still on the old binary logs a failed
+		# row every tick until someone updates it, which is the point.
+		import requests
+
+		response = unittest.mock.Mock(status_code=404)
+		row, _calls = self.sync(remote={}, post=requests.HTTPError(response=response))
+		self.assertEqual((row["reachable"], row["success"], row["http_status"]), (1, 0, 404))
 
 
-class TestPushOrder(unittest.TestCase):
-	def pushes(self, *args):
-		calls = []
+class TestCheckState(unittest.TestCase):
+	"""The Check State button: what a tick would push, said out loud, nothing sent."""
+
+	SNAPSHOT = {
+		"groups": {"records": [], "catalog": "", "hash": "g1"},
+		"keys": {"buckets": {"3f": {"records": [{"key_hash": "aa"}], "hash": "k1"}}},
+	}
+
+	def check(self, remote):
 		with (
-			unittest.mock.patch.object(agent_sync, "push_groups", lambda *a: calls.append("groups") or {}),
-			unittest.mock.patch.object(agent_sync, "push_users", lambda *a: calls.append("users") or {}),
-			unittest.mock.patch.object(agent_sync, "push_keys", lambda *a: calls.append("keys") or {}),
-			unittest.mock.patch.object(agent_sync, "push_deletions", lambda *a: calls.append("deletions") or {}),
-			unittest.mock.patch.object(agent_sync, "sync_routes", lambda *a: calls.append("routes") or {}),
+			unittest.mock.patch.object(agent_sync, "gateway_snapshot", return_value=self.SNAPSHOT),
+			unittest.mock.patch.object(agent_sync, "_conn", return_value=(None, "http://x", "t")),
+			unittest.mock.patch.object(agent_sync, "remote_hashes", return_value=remote),
+			unittest.mock.patch.object(
+				agent_sync, "_post",
+				side_effect=AssertionError("check_state must never push"),
+			),
 		):
-			res = agent_sync._push_and_classify("PROXY-1", *args)
-		return calls, res
+			return agent_sync.check_state("Gateway Server", "gw1")
 
-	def test_each_record_lands_before_the_one_that_names_it(self):
-		# A key resolves user:<name>, which resolves group:<name>. Pushed out of order, a record
-		# naming a brand-new one would 403 its holder until the next tick.
-		calls, res = self.pushes(["acme"], ["GU-1"], ["KEY-1"], [], agent_sync._ALL)
-		self.assertEqual(calls, ["groups", "users", "keys", "routes"])
-		self.assertEqual(res["success"], 1)
+	def test_a_matching_box_reads_in_sync(self):
+		result = self.check({"groups": "g1", "keys:3f": "k1"})
+		self.assertEqual(result, {"in_sync": True, "drift": []})
 
-	def test_a_skipped_push_is_not_made(self):
-		calls, _res = self.pushes(None, None, None, [], agent_sync._ALL)
-		self.assertEqual(calls, ["routes"])
+	def test_drift_names_the_sections_a_tick_would_push(self):
+		result = self.check({"groups": "stale", "keys:3f": "k1"})
+		self.assertEqual(result, {"in_sync": False, "drift": ["groups"]})
 
-	def test_records_are_removed_only_after_the_upserts(self):
-		# A deletion pushed first would briefly take out a record this same run is about to
-		# write, and the window is a 401 for whoever holds it.
-		deletion = frappe._dict(name="GD-1", record_type="Key", record_id="abc")
-		calls, _res = self.pushes(
-			agent_sync._ALL, agent_sync._ALL, agent_sync._ALL, [deletion], agent_sync._ALL
-		)
-		self.assertEqual(calls, ["groups", "users", "keys", "deletions", "routes"])
-
-	def test_nothing_to_delete_makes_no_call(self):
-		calls, _res = self.pushes(None, None, None, [], None)
-		self.assertEqual(calls, [])
-
-	def test_the_dirty_doctypes_are_listed_in_push_order(self):
-		# sync_dirty splats its per-doctype argument list into _push_and_classify positionally,
-		# so the tuple order IS the push order.
-		self.assertEqual(
-			agent_sync._DIRTY_DOCTYPES, ("Grove User Group", "Grove User", "Grove API Key")
-		)
+	def test_a_differing_bucket_reports_its_count(self):
+		result = self.check({"groups": "g1"})
+		self.assertEqual(result["drift"], ["keys[1]"])
 
 
-class TestResyncAll(unittest.TestCase):
-	"""The hourly backstop for a box that lost its store.
+class FakeRun:
+	name = "AGS-TEST"
 
-	sync_dirty clears each dirty flag once it lands, so nothing re-derives what a box holds. Routes
-	are pushed every tick and repair themselves; credentials are pushed once and never again. A
-	wiped gateway therefore answers /v1/models and reads as healthy while 401ing every credential,
-	with no way back but a human pressing Full Sync."""
+	def __init__(self):
+		self.results = []
+		self.inserted = False
 
-	def slot(self):
-		(cron,) = [
-			key for key, jobs in hooks.scheduler_events["cron"].items()
-			if "grove.agent_sync.resync_all" in jobs
-		]
-		return cron
+	def acquire_lock(self, wait=0):
+		return True
 
-	def test_it_forces_a_complete_push_and_labels_the_run_scheduled(self):
-		calls = []
-		with unittest.mock.patch.object(agent_sync, "full_sync", lambda **kw: calls.append(kw)):
-			agent_sync.resync_all()
-		self.assertEqual(calls, [{"trigger": "Scheduled", "wait": 90}])
+	def release_lock(self):
+		pass
 
-	def test_it_waits_for_the_lock_instead_of_skipping(self):
-		# sync_dirty holds the same Projection lock. A backstop that gave up because the 2-minute
-		# tick happened to be running would silently not happen, which is the failure it exists to
-		# prevent — so it queues, and one redundant push an hour is the price.
-		calls = []
-		with unittest.mock.patch.object(agent_sync, "full_sync", lambda **kw: calls.append(kw)):
-			agent_sync.resync_all()
-		self.assertGreater(calls[0]["wait"], 0)
+	def append(self, _field, row):
+		self.results.append(row)
 
-	def test_it_does_not_share_a_minute_with_the_dirty_tick(self):
-		# sync_dirty is */2, so it runs on every EVEN minute. An even slot here would put both jobs
-		# on the same lock at the same instant every hour and one of them would lose.
-		minute = int(self.slot().split()[0])
-		self.assertEqual(minute % 2, 1, f"minute {minute} collides with sync_dirty's */2 tick")
-		self.assertIn("*/2 * * * *", hooks.scheduler_events["cron"])
+	def insert(self, ignore_permissions=False):
+		self.inserted = True
 
-	def test_a_forced_full_sync_still_queues_for_a_full_minute(self):
-		# The buttons, provisioning and activation must not inherit the backstop's wait. Those
-		# callers mean "this box missed something", so a short wait would drop the push they asked
-		# for.
-		self.assertEqual(inspect.signature(agent_sync.full_sync).parameters["wait"].default, 60)
 
-	def test_the_scheduler_runs_it_hourly(self):
-		# The hook is a dotted string, so renaming the function fails silently at runtime rather
-		# than at import.
-		self.assertTrue(self.slot().endswith(" * * * *"))
-		self.assertTrue(callable(agent_sync.resync_all))
+class TestSyncProjection(unittest.TestCase):
+	"""The run: one snapshot built for all gateways, one per ingress, and a log doc only when
+	something was actually pushed — a fleet in sync leaves nothing behind."""
+
+	def run_projection(self, results, proxies=("gw1", "gw2"), entry=None, **kwargs):
+		doc = FakeRun()
+		targets = []
+		self.stamps = []
+
+		def sync_target(server_type, name, _snapshot, force):
+			targets.append((server_type, name, force))
+			return results.get(name)
+
+		def set_value(doctype, name, field, value, update_modified=True):
+			self.stamps.append((name, field))
+
+		with (
+			unittest.mock.patch.object(agent_sync, "_new_run", return_value=doc),
+			unittest.mock.patch.object(agent_sync, "_active_proxies", return_value=list(proxies)),
+			unittest.mock.patch.object(agent_sync, "_active_ingresses", return_value=[]),
+			unittest.mock.patch.object(agent_sync, "gateway_snapshot", return_value={"s": 1}),
+			unittest.mock.patch.object(agent_sync, "_sync_target", side_effect=sync_target),
+			unittest.mock.patch.object(
+				frappe, "db", frappe._dict(commit=lambda: None, set_value=set_value)
+			),
+			unittest.mock.patch.object(
+				frappe.utils, "now_datetime", lambda: "2026-08-16 00:00:00"
+			),
+		):
+			name = (entry or agent_sync.sync_projection)(**kwargs)
+		return name, doc, targets
+
+	def row(self, success=1):
+		return {"reachable": 1, "success": success, "http_status": 0, "error": None,
+		        "duration_ms": 1, "detail": "", "payload": ""}
+
+	def test_a_fleet_in_sync_logs_no_doc(self):
+		name, doc, targets = self.run_projection({})
+		self.assertIsNone(name)
+		self.assertFalse(doc.inserted)
+		self.assertEqual(len(targets), 2)  # every box was still checked
+
+	def test_an_in_sync_box_still_gets_its_timestamp(self):
+		# The skip writes no row, so last_synced_at is the only trace the check happened —
+		# it going stale is how a box that stopped answering shows up.
+		self.run_projection({})
+		self.assertEqual(self.stamps, [("gw1", "last_synced_at"), ("gw2", "last_synced_at")])
+
+	def test_a_pushed_box_is_stamped_and_a_failed_one_is_not(self):
+		self.run_projection({"gw1": self.row(), "gw2": self.row(success=0)})
+		self.assertEqual(self.stamps, [("gw1", "last_synced_at")])
+
+	def test_a_pushed_box_lands_on_the_run_doc(self):
+		name, doc, _targets = self.run_projection({"gw1": self.row()})
+		self.assertEqual(name, "AGS-TEST")
+		self.assertEqual(doc.status, "Success")
+		self.assertEqual((doc.targets_total, doc.targets_ok), (1, 1))
+		self.assertEqual(doc.results[0]["server"], "gw1")
+
+	def test_a_failed_push_marks_the_run(self):
+		_name, doc, _targets = self.run_projection({"gw1": self.row(success=0), "gw2": self.row()})
+		self.assertEqual(doc.status, "Partial")
+
+	def test_full_sync_forces_every_box(self):
+		# The wrapper the buttons and provisioning call — it must arrive with force on.
+		_name, _doc, targets = self.run_projection({"gw1": self.row()}, proxies=("gw1",), entry=agent_sync.full_sync)
+		self.assertEqual(targets, [("Gateway Server", "gw1", True)])
+
+	def test_an_empty_proxies_list_means_no_gateway_work(self):
+		# `is None` and not truthiness: an ingress-only run names proxies=[] on purpose, and
+		# reading that as "unspecified" would push the whole fleet.
+		doc = FakeRun()
+		seen = []
+		with (
+			unittest.mock.patch.object(agent_sync, "_new_run", return_value=doc),
+			unittest.mock.patch.object(agent_sync, "ingress_snapshot", return_value={}),
+			unittest.mock.patch.object(
+				agent_sync, "_sync_target",
+				side_effect=lambda *a: seen.append(a) or None,
+			),
+			unittest.mock.patch.object(
+				frappe, "db",
+				frappe._dict(commit=lambda: None, set_value=lambda *a, **k: None),
+			),
+			unittest.mock.patch.object(
+				frappe.utils, "now_datetime", lambda: "2026-08-16 00:00:00"
+			),
+		):
+			agent_sync.sync_projection(proxies=[], ingresses=["ing1"])
+		self.assertEqual([(a[0], a[1]) for a in seen], [("Ingress Server", "ing1")])
 
 
 if __name__ == "__main__":

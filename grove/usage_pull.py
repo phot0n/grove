@@ -47,7 +47,7 @@ def pull_all():
 			res = _pull_and_classify(proxy)
 			doc.append("results", {"server_type": "Gateway Server", "server": proxy, **res})
 			ok += res["success"]
-		_finalize(doc, active, ok)
+		_finalize(doc, len(active), ok)
 		frappe.db.commit()
 		return doc.name
 	finally:

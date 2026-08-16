@@ -1,36 +1,37 @@
 # Copyright (c) 2026, Grove and contributors
 # For license information, please see license.txt
 """Project Grove state (groups + users + keys + routing table) into each Gateway Server's
-local Redis via the gateway agent's token-gated admin API (§6). Grove is the
-source of truth. The gateway `/groups`, `/users`, `/keys` and `/routes` endpoints are
-UPSERTs (they never prune), so we can push either everything or just a delta.
+local Redis, and the replica table into each Ingress Server, via the agent's token-gated
+admin API. Grove is the source of truth.
 
-Access is pushed in three pieces, deliberately, one per thing that can change on its own. A group
-carries the model grant for everyone in it (group:<name>); a user carries which
-group they belong to, their own allow/deny, and whether they are over budget (user:<name>); a key
-carries only whose it is and whether it has been revoked. So a group edit is ONE record however
-many members, a budget flip is ONE record however many keys, and the gateway resolves the three at
-request time.
+The push is desired state, whole, gated by hashes the AGENT stores (`grove:state_hash`):
+each tick builds the snapshot, reads the box's stored hashes, and sends only the
+sections whose hash the box does not already hold. Absence prunes — a deleted group,
+revoked key or retired model simply stops being named and the agent removes it. A box
+that loses its Redis loses its hashes with it, so the next tick re-pushes everything;
+there is no other repair path and none is needed.
 
-Two planes, and what each is given is what keeps them apart. A GATEWAY takes groups, users, keys
-and a global route table. An INGRESS takes one thing — the replica table for the boxes it owns —
-and there is no endpoint on it to send anything else to.
+Sections: `groups` (records + the pooled public catalog) and `routes` travel whole.
+`users` and `keys` scale with customer count, so they are split into 256 buckets
+(`bucket_of`) hashed independently — one key minted re-pushes one bucket, not the
+population.
 
-Two paths:
-  * full_sync(proxies, ingresses)  — push the COMPLETE state to the named boxes, or to every
-    Active one when a list is not given. Manual (buttons), activation, and provisioning use this.
-    An empty list means "none of that kind", which is how an ingress-only run asks for no gateway
-    work.
-  * sync_dirty()                   — background job (cron): push ONLY the groups/users/keys
-    flagged `dirty` since the last sync, then clear their flag. Failures stay dirty and are
-    retried on the next tick. Routes and replica tables are not dirty-gated; they go every tick,
-    which is what makes this the repair pass for both planes.
+Two planes, and what each is given is what keeps them apart. A GATEWAY takes the full
+snapshot. An INGRESS takes one thing — the replica table for the boxes it owns.
 
-Both log one Agent Sync doc per run with a child row per TARGET — naming the doctype as well as
-the box, because the two planes take different pushes — and both serialize against each other via
-a MariaDB advisory lock so a slow run can't land a stale write after a newer one. Every path that
-reaches a box goes through here, so a push that left no row did not happen."""
+Two entry points:
+  * sync_projection() — the cron tick: hash-gate each Active box, push drift only.
+    Logs an Agent Sync doc only when something was actually pushed (or failed).
+  * full_sync(proxies, ingresses) — force-push the complete snapshot to the named
+    boxes, or to every Active one. Buttons, activation and provisioning use this; an
+    empty proxies list means "no gateway work", which is how an ingress-only run asks.
 
+Both serialize on the Agent Sync doc's advisory lock so a slow run can't land a stale
+write after a newer one. Every path that reaches a box goes through here, so a push
+that left no row did not happen."""
+
+import hashlib
+import json
 import time
 
 import requests
@@ -42,16 +43,11 @@ from grove.net import private_url
 from grove.serve_command import DEFAULT_MAX_NUM_SEQS
 
 TIMEOUT = 10
-_ALL = object()  # sentinel: push the complete set (vs. a subset list, vs. None = skip)
-
-# Pointer order — a key names its user, a user names their group — and _push_and_classify takes
-# its arguments in the same order, so a record never lands ahead of the one it resolves against.
-_DIRTY_DOCTYPES = ("Grove User Group", "Grove User", "Grove API Key")
 
 
 def _conn(name, doctype="Gateway Server"):
 	"""The admin API of one box, whichever plane it is on. Both kinds derive admin_url the same
-	way and both gate /admin on the same token — what differs is which pushes they are sent."""
+	way and both gate /admin on the same token — what differs is which sections they are sent."""
 	p = frappe.get_doc(doctype, name)
 	if not p.admin_url:
 		frappe.throw(f"{doctype} {name} has no admin_url")
@@ -111,6 +107,18 @@ def _post(admin_url, token, path, payload, method="POST"):
 	return r.json()
 
 
+def remote_hashes(admin_url, token):
+	"""The hash map the box stored on its last accepted push. Empty on a fresh or wiped
+	Redis, which is what makes every section read as drift and heal."""
+	r = requests.get(
+		f"{admin_url}/state-hash", headers={"X-Grove-Admin-Token": token}, timeout=TIMEOUT
+	)
+	r.raise_for_status()
+	return r.json().get("hashes") or {}
+
+
+# --- Desired state -----------------------------------------------------------
+
 def _effective_groups():
 	"""Every Grove User Group projected for the gateway: what it grants. One record per group
 	however many keys point at it — the reason the group is not flattened onto each key."""
@@ -120,7 +128,7 @@ def _effective_groups():
 			"name": name,
 			"models": ",".join(granted.get(name, {}).get("models", [])),
 		}
-		for name in frappe.get_all("Grove User Group", pluck="name")
+		for name in sorted(frappe.get_all("Grove User Group", pluck="name"))
 	]
 
 
@@ -144,7 +152,7 @@ def _public_catalog():
 	return ",".join(sorted(set(rows)))
 
 
-def _effective_users(users=None):
+def _effective_users():
 	"""Every Grove User projected for the gateway: their group, their own allow/deny, and whether
 	they are over their monthly budget. One record per person however many keys they hold — the
 	reason none of this is flattened onto the keys.
@@ -152,8 +160,10 @@ def _effective_users(users=None):
 	The gateway keeps no rate counters. The only limit is the monthly token budget, which the
 	control plane flags here and the gateway honours as a 429. Holding it on the person is what
 	stops a blocked user minting a fresh, unblocked key."""
-	filters = {"name": ("in", list(users))} if users is not None else {}
-	deltas = model_rows("Grove User", users)
+	deltas = model_rows("Grove User")
+	users = frappe.get_all(
+		"Grove User", fields=["name", "user", "user_group", "rate_limited"]
+	)
 	return [
 		{
 			"name": u.name,
@@ -164,9 +174,7 @@ def _effective_users(users=None):
 			"deny": ",".join(deltas.get(u.name, {}).get("deny", [])),
 			"limited": bool(u.rate_limited),
 		}
-		for u in frappe.get_all(
-			"Grove User", filters=filters, fields=["name", "user", "user_group", "rate_limited"]
-		)
+		for u in sorted(users, key=lambda u: u.name)
 	]
 
 
@@ -175,9 +183,11 @@ def _effective_keys():
 	nothing else — what they may call and whether they are over budget belongs to the person and
 	is pushed as their user record.
 
-	Revoked keys are not projected at all. The row stays in Grove as the record of a credential
-	that existed, but the gateways are told to forget it (Gateway Deletion) rather than to hold a
-	tombstone of their own: an unknown key already 401s, so there is nothing a dead record adds."""
+	Revoked keys are not projected at all: absent from their bucket, the push prunes them off
+	every box. The row stays in Grove as the record of a credential that existed."""
+	keys = frappe.get_all(
+		"Grove API Key", filters={"status": "active"}, fields=["name", "key_hash", "user", "status"]
+	)
 	return [
 		{
 			"key_hash": k.key_hash,
@@ -185,9 +195,7 @@ def _effective_keys():
 			"user": k.user,  # Grove User doc name — the pointer to user:<name>
 			"status": k.status or "active",
 		}
-		for k in frappe.get_all(
-			"Grove API Key", filters={"status": "active"}, fields=["name", "key_hash", "user", "status"]
-		)
+		for k in sorted(keys, key=lambda k: k.key_hash or "")
 		if k.key_hash
 	]
 
@@ -244,31 +252,27 @@ def _ingress_targets():
 	return targets
 
 
-def _routes_for_proxy(proxy_name):
-	"""deploy:<model> table (global — same for every proxy since deployments are no
-	longer proxy-scoped): every model maps to its Active engines (empty list → the
-	agent deletes the key → 503). Seeded with EVERY Model so an unpublished one
-	(last MD deleted, Pod no longer Running) is explicitly sent as empty and pruned
-	from Redis — otherwise its stale key survives and keeps showing in /v1/models.
-	proxy_name is unused, kept for the sync_routes call signature."""
+def _gateway_routes():
+	"""deploy:<model> table (global — the same for every gateway): every model with an Active
+	engine maps to its engines. A model with none is simply absent; the push prunes its key,
+	so it drops out of Redis and /v1/models on the next tick."""
 	deps = frappe.get_all(
 		"Model Deployment",
-		fields=["name", "model", "engine_url", "status", "inference_server", "max_num_seqs"],
+		filters={"status": "Active"},
+		fields=["name", "model", "engine_url", "inference_server", "max_num_seqs"],
 	)
-	models = frappe.get_all("Model", fields=["name", "modality"])
-	routes = {m.name: [] for m in models}
 	# Which endpoints the model answers on. Stamped per row because deploy:<model> is the only
 	# thing pushed per model — a separate record would be a new namespace and a new push for one
 	# short string. Blank means unrestricted, which is what a Model predating the field reads as.
-	modality = {m.name: m.modality or "" for m in models}
+	modality = {
+		m.name: m.modality or "" for m in frappe.get_all("Model", fields=["name", "modality"])
+	}
+	routes = {}
 	targets = _ingress_targets()
 	# One row per (model, ingress), so several deployments behind one ingress fold together
 	# instead of each getting a row that names the same URL.
 	folded = {}
 	for d in deps:
-		routes.setdefault(d.model, [])
-		if d.status != "Active":
-			continue
 		# --max-num-seqs is what this engine runs at once; past it vLLM queues. Blank resolves to
 		# the same default the serve command uses — the two have to agree or the cap is not the
 		# engine's.
@@ -284,7 +288,7 @@ def _routes_for_proxy(proxy_name):
 			row["capacity"] += capacity
 			continue
 		internal_key = frappe.get_doc("Model Deployment", d.name).get_password("internal_api_key") or ""
-		routes[d.model].append({
+		routes.setdefault(d.model, []).append({
 			"engine_url": d.engine_url,
 			"internal_key": internal_key,
 			"healthy": True,
@@ -297,7 +301,7 @@ def _routes_for_proxy(proxy_name):
 			"modality": modality.get(d.model, ""),
 		})
 	for (model, _ingress), row in folded.items():
-		routes[model].append({**row, "modality": modality.get(model, "")})
+		routes.setdefault(model, []).append({**row, "modality": modality.get(model, "")})
 
 	# Standalone serving Pods (a vLLM image serving the Model directly — no Model Deployment)
 	# register the same way: deploy:<model> → engine. Only Running pods with a derived
@@ -311,9 +315,8 @@ def _routes_for_proxy(proxy_name):
 		# container, say) — it is reached directly, not through deploy:<model>.
 		if not (p.model and p.engine_url):
 			continue
-		routes.setdefault(p.model, [])
 		internal_key = frappe.get_doc("Pod", p.name).get_password("api_key") or ""
-		routes[p.model].append({
+		routes.setdefault(p.model, []).append({
 			"engine_url": p.engine_url,
 			"internal_key": internal_key,
 			"healthy": True,
@@ -327,6 +330,8 @@ def _routes_for_proxy(proxy_name):
 			"kind": "direct",
 			"modality": modality.get(p.model, ""),
 		})
+	for rows in routes.values():
+		rows.sort(key=lambda r: r["deployment"])  # stable hash whatever the query order
 	return routes
 
 
@@ -360,16 +365,13 @@ def _owned_boxes(ingress_name):
 def _replicas_for_ingress(ingress_name):
 	"""deploy:<model> for ONE ingress: every Active replica it owns, dialled privately.
 
-	The same shape the gateway's table has, so the agent's /admin/routes handler is reused whole —
-	what narrows is the scope. An ingress is told about its own boxes and no others, so a pod
-	restarting in another region is not an event it ever sees. That is the point of the split:
-	replica topology never leaves its own Network.
+	The same shape the gateway's table has, so the agent's handler is reused whole — what narrows
+	is the scope. An ingress is told about its own boxes and no others, so a pod restarting in
+	another region is not an event it ever sees. That is the point of the split: replica topology
+	never leaves its own Network.
 
-	Only the models this ingress can actually serve. Retiring the rest is the `prune` flag's job:
-	the payload is the complete table, so the agent deletes any deploy:<model> key it does not name
-	and /pick answers 503 no-replica. Naming every Model instead — one empty list each, to delete
-	keys that mostly never existed — was nearly the whole payload, since an ingress fronts a handful
-	of models and the catalogue runs to hundreds.
+	Only the models this ingress can actually serve — the payload is the whole table, so anything
+	it does not name is pruned and /pick answers 503 no-replica.
 
 	Pods are absent by construction — they have no Machine and so no ingress, and stay on the
 	gateway's direct route kind."""
@@ -387,9 +389,8 @@ def _replicas_for_ingress(ingress_name):
 		engine_url = private_url(deployment.engine_url, owned[deployment.inference_server])
 		if not engine_url:
 			continue
-		routes.setdefault(deployment.model, [])
 		internal_key = frappe.get_doc("Model Deployment", deployment.name).get_password("internal_api_key") or ""
-		routes[deployment.model].append({
+		routes.setdefault(deployment.model, []).append({
 			"engine_url": engine_url,
 			"internal_key": internal_key,
 			"healthy": True,
@@ -398,294 +399,113 @@ def _replicas_for_ingress(ingress_name):
 			# ingress has no use for it — it already holds the box's address in engine_url.
 			"deployment": deployment.name,
 		})
+	for rows in routes.values():
+		rows.sort(key=lambda r: r["deployment"])
 	return routes
 
 
-def sync_replicas(ingress):
-	"""Replace one ingress's replica table. The only push an ingress ever takes — there is no
-	keys, users, groups or usage endpoint on that plane to send anything else to.
+# --- Snapshot + hash gate ----------------------------------------------------
 
-	Reports both counts because they answer different questions. The agent's `models` is how many
-	KEYS were written, which is every Model in the catalogue — a model with nothing here is sent
-	empty on purpose, so the agent deletes its key. `replicas` is how many engines this ingress can
-	actually reach, and it is the one that tells you whether a cutover worked: 13 models and 0
-	replicas is a table that answers 503 for everything."""
-	table = _replicas_for_ingress(ingress)
-	_doc, admin_url, token = _conn(ingress, "Ingress Server")
-	# prune: this IS the whole table for this ingress, so anything else it still holds is retired.
-	response = _post(admin_url, token, "routes", {"routes": table, "prune": True})
-	return {**response, "replicas": sum(len(routes) for routes in table.values())}
+def bucket_of(record_id):
+	"""Which of the 256 state buckets a user or key belongs to. The agent prunes bucket members
+	by the same rule, so the two sides must never disagree on it."""
+	return hashlib.sha256(str(record_id).encode()).hexdigest()[:2]
 
 
-def push_groups(proxy, groups=_ALL):
-	"""Upsert user groups to one proxy. groups=_ALL → every group; a list of Grove User Group
-	names → just those (the agent HSETs each; other groups are left untouched).
-
-	The public catalogue rides every groups push, complete, even a one-group one: it is a pooled
-	list, so a subset push that carried only its own share would erase everybody else's."""
-	_p, admin_url, token = _conn(proxy)
-	eff = _effective_groups()
-	if groups is not _ALL:
-		wanted = set(groups)
-		eff = [g for g in eff if g["name"] in wanted]
-	return _post(admin_url, token, "groups", {"groups": eff, "catalog": _public_catalog()})
+def _hash(content):
+	"""sha256 of the canonical JSON. The agent stores this verbatim and never recomputes it, so
+	only THIS function has to be deterministic — hence the sorts in the builders above."""
+	return hashlib.sha256(
+		json.dumps(content, sort_keys=True, separators=(",", ":"), default=str).encode()
+	).hexdigest()
 
 
-def push_users(proxy, users=_ALL):
-	"""Upsert users to one proxy. users=_ALL → every user; a list of Grove User names → just
-	those (the agent HSETs each; other users are left untouched)."""
-	_p, admin_url, token = _conn(proxy)
-	eff = _effective_users(None if users is _ALL else users)
-	return _post(admin_url, token, "users", {"users": eff})
+def _flat_section(content):
+	return {**content, "hash": _hash(content)}
 
 
-def push_keys(proxy, keys=_ALL):
-	"""Upsert keys to one proxy. keys=_ALL → the whole set; a list of API Key
-	names → just those (the agent HSETs each; other keys are left untouched)."""
-	_p, admin_url, token = _conn(proxy)
-	eff = _effective_keys()
-	if keys is not _ALL:
-		wanted = set(keys)
-		eff = [k for k in eff if k["prefix"] in wanted]
-	return _post(admin_url, token, "keys", {"keys": eff})
+def _bucketed_section(records, id_field):
+	buckets = {}
+	for record in records:
+		buckets.setdefault(bucket_of(record[id_field]), []).append(record)
+	return {"buckets": {
+		label: {"records": rows, "hash": _hash({"records": rows})}
+		for label, rows in buckets.items()
+	}}
 
 
-_DELETION_PATHS = {"Key": "keys", "User": "users"}
-
-
-def push_deletions(proxy, deletions):
-	"""Drop records the control plane no longer has. The only pruning path there is — every other
-	endpoint upserts — so a revoked key keeps working on a box until this lands."""
-	_p, admin_url, token = _conn(proxy)
-	removed = 0
-	for record_type, path in _DELETION_PATHS.items():
-		ids = [d.record_id for d in deletions if d.record_type == record_type]
-		if ids:
-			removed += _post(admin_url, token, path, {"ids": ids}, method="DELETE").get("count", 0)
-	return {"count": removed}
-
-
-def sync_routes(proxy, models=_ALL):
-	"""Replace the routing table for models on one proxy. models=_ALL → every
-	model deployed here; a set/list → just those (empty engine set → the agent
-	DELs deploy:<model> → 503)."""
-	_p, admin_url, token = _conn(proxy)
-	routes = _routes_for_proxy(proxy)
-	if models is not _ALL:
-		routes = {m: routes.get(m, []) for m in models}
-	response = _post(admin_url, token, "routes", {"routes": routes})
-	# Two counts, as for an ingress: `models` is keys written, `routes` is how many places the
-	# gateway can actually send a request.
-	return {**response, "routes": sum(len(rows) for rows in routes.values())}
-
-
-# --- Sync runs -------------------------------------------------------------
-
-def full_sync(proxies=None, trigger="Manual", ingresses=None, wait=60):
-	"""Push the COMPLETE group + user + key set + routing table to each target proxy, and the
-	replica table to each target ingress. Used by buttons, proxy activation, provisioning.
-
-	Both targets default to every Active box, and both can be named instead. The asymmetry is
-	deliberate: a gateway's table is GLOBAL — every gateway holds a row for every model — so a
-	route change reaches all of them. An ingress's table holds only the replicas it OWNS, so a
-	deployment change reaches exactly one ingress and pushing it to the rest is a table they
-	already have.
-
-	Naming a subset of proxies with no ingresses leaves the ingresses alone: that call means
-	"this one gateway missed something", and a gateway's table has nothing to do with an
-	ingress's."""
-	doc = _new_run("Projection", trigger)
-	if not doc.acquire_lock(wait=wait):  # forced → queue behind an in-flight run
-		return None
-	try:
-		all_active = _active_proxies()
-		# `is None` and not truthiness: an empty list is a caller saying "no boxes of this kind",
-		# which is how an ingress-only run asks for no gateway work. `or` would read that as
-		# "unspecified" and push to the whole fleet.
-		active = all_active if proxies is None else proxies
-		if ingresses is None:
-			ingresses = [] if proxies else _active_ingresses()
-		if not (active or ingresses):
-			return None
-
-		snaps = {d: _snapshot_dirty(d) for d in _DIRTY_DOCTYPES}
-		# A complete push still cannot prune, so the pending deletions ride along with it.
-		deletions = _pending_deletions()
-
-		ok = 0
-		for proxy in active:
-			res = _push_and_classify(proxy, _ALL, _ALL, _ALL, deletions, _ALL)
-			doc.append("results", {"server_type": "Gateway Server", "server": proxy, **res})
-			ok += res["success"]
-		for ingress in ingresses:
-			res = _push_replicas_and_classify(ingress)
-			doc.append("results", {"server_type": "Ingress Server", "server": ingress, **res})
-			ok += res["success"]
-		_finalize(doc, list(active) + ingresses, ok)
-
-		# A full run that reached every Active proxy has projected all current
-		# groups, users and keys, so the dirty ones it covered can clear. (Subset runs
-		# clear nothing global; routes are not dirty-gated.)
-		if doc.status == "Success" and set(active) >= set(all_active):
-			for doctype, snap in snaps.items():
-				_clear_unchanged(doctype, snap)
-			_clear_deletions(deletions)
-
-		frappe.db.commit()
-		return doc.name
-	finally:
-		doc.release_lock()
-
-
-def resync_all(trigger="Scheduled"):
-	"""Hourly re-push of every record to every Active box, changed or not.
-
-	sync_dirty sends only flagged rows and clears each flag once it lands, so the control plane's
-	record of what a box holds IS that flag — nothing re-derives it. A box that loses its store gets
-	its ROUTES back on the next tick, because those are pushed unconditionally, and its groups, users
-	and keys never: nothing is dirty, so nothing is sent, and every authenticated request 401s until
-	a human presses Full Sync. The routes returning is what hides it — the box answers /v1/models and
-	reads as healthy while no credential on it works.
-
-	This bounds that to an hour.
-
-	It WAITS for the Projection lock rather than skipping. sync_dirty takes the same lock, and a
-	backstop that gives up because the 2-minute tick happened to be running would silently not
-	happen — which is the failure it exists to prevent. Queueing behind a full sync that is already
-	in flight costs one redundant push an hour; the alternative costs the guarantee. The cron minute
-	is odd for the same reason: sync_dirty runs on even minutes, so they do not normally contend at
-	all, and this wait only covers a tick that overran."""
-	return full_sync(trigger=trigger, wait=90)
-
-
-def sync_dirty(trigger="Scheduled"):
-	"""Background job (cron): push dirty groups + dirty users + dirty keys + the full route table
-	for every deployment to the relevant Active proxies, then clear each item that landed
-	(failures stay dirty → retried next tick). Routes are NOT dirty-gated — they're pushed
-	every run (idempotent). Skips (no doc) when there's nothing to push (nothing dirty and
-	no deployments).
-
-	A group edit dirties ONE row here whatever it grants, and so does a user's access change or
-	budget flip — the fan-out both used to cause is exactly what the split into their own records
-	removed. Only minting a credential dirties a key; revoking one deletes it, which is a Gateway
-	Deletion instead."""
-	doc = _new_run("Projection", trigger)
-	if not doc.acquire_lock(wait=0):  # scheduled → skip if a run is in flight
-		return None
-	try:
-		dirty = {d: _snapshot_dirty(d) for d in _DIRTY_DOCTYPES}
-		deletions = _pending_deletions()
-		# Routes come from Model Deployments AND standalone serving Pods (Running).
-		has_deps = bool(frappe.db.count("Model Deployment")) or bool(
-			frappe.db.count("Pod", {"status": "Running"})
-		)
-		if not any(dirty.values()) and not deletions and not has_deps:
-			return None
-
-		all_active = set(_active_proxies())
-		# Ingresses take the same tick. Their table is derived from the same deployments, so
-		# whatever moved a route on a gateway moved one here too.
-		ingresses = _active_ingresses() if has_deps else []
-		if not (all_active or ingresses):
-			return None  # work exists but no Active box can receive it yet
-
-		# Everything here is global — no record is scoped to one proxy — so a doctype with
-		# anything dirty goes to every Active proxy, and routes go every tick regardless.
-		targets_by_doctype = {d: all_active if rows else set() for d, rows in dirty.items()}
-		route_targets = all_active if has_deps else set()
-		deletion_targets = all_active if deletions else set()
-		targets = route_targets.union(deletion_targets, *targets_by_doctype.values())
-
-		ok_by_proxy = {}
-		total_ok = 0
-		for proxy in sorted(targets):
-			args = [
-				[row.name for row in dirty[d]] if proxy in targets_by_doctype[d] else None
-				for d in _DIRTY_DOCTYPES
-			]
-			models_arg = _ALL if proxy in route_targets else None
-			res = _push_and_classify(proxy, *args, deletions, models_arg)
-			doc.append("results", {"server_type": "Gateway Server", "server": proxy, **res})
-			ok_by_proxy[proxy] = bool(res["success"])
-			total_ok += res["success"]
-		for ingress in ingresses:
-			res = _push_replicas_and_classify(ingress)
-			doc.append("results", {"server_type": "Ingress Server", "server": ingress, **res})
-			total_ok += res["success"]
-		_finalize(doc, list(targets) + ingresses, total_ok)
-
-		# Each doctype clears only once every proxy it targeted accepted the push.
-		for doctype, rows in dirty.items():
-			if rows and all(ok_by_proxy.get(p) for p in targets_by_doctype[doctype]):
-				_clear_unchanged(doctype, rows)
-		if deletions and all(ok_by_proxy.get(p) for p in deletion_targets):
-			_clear_deletions(deletions)
-
-		frappe.db.commit()
-		return doc.name
-	finally:
-		doc.release_lock()
-
-
-def _push_replicas_and_classify(ingress):
-	"""One ingress's replica table, reported in the same shape a gateway push is, so a run's log
-	reads as one list of targets rather than two."""
-	start = time.monotonic()
-	reachable, success, http_status, error = 1, 0, 0, None
-	detail = []
-	frappe.local.grove_sync_payloads = []
-	try:
-		result = sync_replicas(ingress)
-		detail.append(f"models:{result.get('models', '?')} replicas:{result.get('replicas', '?')}")
-		success = 1
-	except (requests.ConnectionError, requests.Timeout) as e:
-		reachable, error = 0, f"{type(e).__name__}: {e}"[:2000]
-	except requests.HTTPError as e:
-		http_status = e.response.status_code if e.response is not None else 0
-		error = f"HTTP {http_status}: {e}"[:2000]
-	except Exception as e:
-		error = f"{type(e).__name__}: {e}"[:2000]
+def gateway_snapshot():
+	"""The complete desired state of one gateway — the same for every gateway, so a run builds
+	it once. groups and routes travel whole; users and keys are bucketed so one record's change
+	re-pushes one bucket, not the population."""
 	return {
-		"reachable": reachable,
-		"success": success,
-		"http_status": http_status,
-		"error": error,
-		"duration_ms": int((time.monotonic() - start) * 1000),
-		"detail": " ".join(detail),
-		# Recorded even on failure — what a rejected push tried to send is the whole question.
-		"payload": _collected_payload(),
+		"groups": _flat_section({"records": _effective_groups(), "catalog": _public_catalog()}),
+		"users": _bucketed_section(_effective_users(), "name"),
+		"keys": _bucketed_section(_effective_keys(), "key_hash"),
+		"routes": _flat_section({"table": _gateway_routes()}),
 	}
 
 
-def _push_and_classify(proxy, groups, users, keys, deletions, models):
-	"""Push the requested groups and/or users and/or keys and/or deletions and/or routes to one
-	proxy (None = skip that push); report reachability and success separately so the log
-	distinguishes 'proxy down' from 'up but rejected'.
+def ingress_snapshot(ingress):
+	"""The complete desired state of one ingress: its replica table and nothing else — there is
+	no keys, users or groups section on that plane to send anything else in."""
+	return {"routes": _flat_section({"table": _replicas_for_ingress(ingress)})}
 
-	Pushed in pointer order — group, then user, then key — because each names the one before it.
-	A record that landed ahead of the one it points at would resolve against nothing and 403
-	until the next tick. Deletions go after the upserts, so a run is never briefly missing a
-	record it is about to write."""
+
+def _delta(snapshot, remote):
+	"""The sections/buckets whose hash the box does not already hold — what a non-forced run
+	pushes. A bucket the box hashes but the snapshot no longer has (its last record deleted) is
+	sent explicitly empty, so the agent prunes its members instead of holding them forever."""
+	delta = {}
+	for section, content in snapshot.items():
+		if "buckets" in content:
+			changed = {
+				label: bucket
+				for label, bucket in content["buckets"].items()
+				if remote.get(f"{section}:{label}") != bucket["hash"]
+			}
+			held = {k.split(":", 1)[1] for k in remote if k.startswith(f"{section}:")}
+			for label in held - set(content["buckets"]):
+				changed[label] = {"records": []}
+			if changed:
+				delta[section] = {"buckets": changed}
+		elif remote.get(section) != content["hash"]:
+			delta[section] = content
+	return delta
+
+
+def _describe(delta, response):
+	"""One short string per push for the row's `detail`: which sections went (bucket counts in
+	brackets) and how many records the agent says it wrote."""
+	counts = (response or {}).get("counts") or {}
+	parts = []
+	for section in ("groups", "users", "keys", "routes"):
+		if section not in delta:
+			continue
+		buckets = delta[section].get("buckets")
+		label = f"{section}[{len(buckets)}]" if buckets is not None else section
+		if section in counts:
+			label = f"{label}:{counts[section]}"
+		parts.append(label)
+	return " ".join(parts)
+
+
+def _sync_target(server_type, name, snapshot, force):
+	"""Bring one box to the snapshot. Returns a result row, or None when the box already holds
+	it (nothing pushed, nothing to log). Reachability and success are reported separately so the
+	log distinguishes 'box down' from 'up but rejected'."""
 	start = time.monotonic()
-	reachable, success, http_status, error = 1, 0, 0, None
-	detail = []
+	reachable, success, http_status, error, detail = 1, 0, 0, None, ""
 	frappe.local.grove_sync_payloads = []
 	try:
-		if groups is not None:
-			r = push_groups(proxy, groups)
-			detail.append(f"groups:{r.get('count', '?')}")
-		if users is not None:
-			r = push_users(proxy, users)
-			detail.append(f"users:{r.get('count', '?')}")
-		if keys is not None:
-			r = push_keys(proxy, keys)
-			detail.append(f"keys:{r.get('count', '?')}")
-		if deletions:
-			r = push_deletions(proxy, deletions)
-			detail.append(f"deleted:{r.get('count', '?')}")
-		if models is not None:
-			r = sync_routes(proxy, models)
-			detail.append(f"models:{r.get('models', '?')} routes:{r.get('routes', '?')}")
+		_doc, admin_url, token = _conn(name, server_type)
+		delta = snapshot
+		if not force:
+			delta = _delta(snapshot, remote_hashes(admin_url, token))
+			if not delta:
+				return None
+		response = _post(admin_url, token, "state", delta)
+		detail = _describe(delta, response)
 		success = 1
 	except (requests.ConnectionError, requests.Timeout) as e:
 		reachable, error = 0, f"{type(e).__name__}: {e}"[:2000]
@@ -700,10 +520,82 @@ def _push_and_classify(proxy, groups, users, keys, deletions, models):
 		"http_status": http_status,
 		"error": error,
 		"duration_ms": int((time.monotonic() - start) * 1000),
-		"detail": " ".join(detail),
+		"detail": detail,
 		# Recorded even on failure — what a rejected push tried to send is the whole question.
 		"payload": _collected_payload(),
 	}
+
+
+# --- Sync runs ---------------------------------------------------------------
+
+def sync_projection(trigger="Scheduled", proxies=None, ingresses=None, force=False, wait=0):
+	"""Bring every target box to the current desired state. The cron tick (defaults): hash-gate
+	each box and push only drift, logging a run doc only when at least one box was pushed or
+	failed — a fleet already in sync leaves no doc.
+
+	Both target kinds default to every Active box, and both can be named instead. `is None` and
+	not truthiness: an empty list is a caller saying "no boxes of this kind", which is how an
+	ingress-only run asks for no gateway work."""
+	doc = _new_run("Projection", trigger)
+	if not doc.acquire_lock(wait=wait):  # scheduled → skip if a run is in flight; forced → queue
+		return None
+	try:
+		active = _active_proxies() if proxies is None else proxies
+		if ingresses is None:
+			ingresses = [] if proxies else _active_ingresses()
+		if not (active or ingresses):
+			return None
+
+		snapshot = gateway_snapshot() if active else None
+		ok = 0
+		stamped = False
+		for proxy in active:
+			res = _sync_target("Gateway Server", proxy, snapshot, force)
+			stamped |= _stamp_synced("Gateway Server", proxy, res)
+			if res is None:
+				continue
+			doc.append("results", {"server_type": "Gateway Server", "server": proxy, **res})
+			ok += res["success"]
+		for ingress in ingresses:
+			res = _sync_target("Ingress Server", ingress, ingress_snapshot(ingress), force)
+			stamped |= _stamp_synced("Ingress Server", ingress, res)
+			if res is None:
+				continue
+			doc.append("results", {"server_type": "Ingress Server", "server": ingress, **res})
+			ok += res["success"]
+
+		if doc.results:
+			_finalize(doc, len(doc.results), ok)
+			frappe.db.commit()
+			return doc.name
+		if stamped:
+			frappe.db.commit()
+		return None
+	finally:
+		doc.release_lock()
+
+
+def check_state(server_type, name):
+	"""What a tick would push to this box right now, without pushing it — the Check State
+	button's answer. Returns {"in_sync": bool, "drift": ["groups", "keys[2]", ...]}, where a
+	bracketed count is how many buckets of that section differ."""
+	snapshot = gateway_snapshot() if server_type == "Gateway Server" else ingress_snapshot(name)
+	_doc, admin_url, token = _conn(name, server_type)
+	delta = _delta(snapshot, remote_hashes(admin_url, token))
+	drift = [
+		f"{section}[{len(content['buckets'])}]" if "buckets" in content else section
+		for section, content in delta.items()
+	]
+	return {"in_sync": not delta, "drift": sorted(drift)}
+
+
+def full_sync(proxies=None, trigger="Manual", ingresses=None, wait=60):
+	"""Force-push the complete snapshot, skipping the hash gate. Buttons, activation and
+	provisioning use this — those callers mean "this box missed something", so it waits for an
+	in-flight run rather than skipping."""
+	return sync_projection(
+		trigger=trigger, proxies=proxies, ingresses=ingresses, force=True, wait=wait
+	)
 
 
 # --- helpers ---------------------------------------------------------------
@@ -751,6 +643,18 @@ def _active_ingresses():
 	)
 
 
+def _stamp_synced(doctype, name, res):
+	"""Record that this box was checked and holds the desired state — on an in-sync skip (no row
+	is written, so this is the only trace) and on a successful push alike. Never on failure: the
+	timestamp going stale is what says a box has been failing, and the Failed rows say why."""
+	if res is not None and not res["success"]:
+		return False
+	frappe.db.set_value(
+		doctype, name, "last_synced_at", frappe.utils.now_datetime(), update_modified=False
+	)
+	return True
+
+
 def _new_run(sync_type, trigger):
 	doc = frappe.new_doc("Agent Sync")
 	doc.run_at = frappe.utils.now_datetime()
@@ -759,38 +663,9 @@ def _new_run(sync_type, trigger):
 	return doc
 
 
-def _finalize(doc, targets, ok):
-	"""Both planes counted together — a run's targets are its gateways plus its ingresses."""
-	doc.targets_total = len(targets)
+def _finalize(doc, total, ok):
+	"""Both planes counted together — a run's targets are the boxes it actually pushed."""
+	doc.targets_total = total
 	doc.targets_ok = ok
-	doc.status = "Success" if ok == len(targets) else ("Failed" if ok == 0 else "Partial")
+	doc.status = "Success" if ok == total else ("Failed" if ok == 0 else "Partial")
 	doc.insert(ignore_permissions=True)
-
-
-def _snapshot_dirty(doctype):
-	return frappe.get_all(doctype, filters={"dirty": 1}, fields=["name", "modified"])
-
-
-def _pending_deletions():
-	"""Records every proxy should drop, oldest first. There is no dirty flag to clear here — the
-	row IS the flag, so it survives until a run has removed the record everywhere."""
-	return frappe.get_all(
-		"Gateway Deletion", fields=["name", "record_type", "record_id"], order_by="creation asc"
-	)
-
-
-def _clear_deletions(deletions):
-	"""Drop the tombstones a run has pushed to every Active proxy. Deleted rather than flagged:
-	a record removed everywhere has nothing left to say."""
-	frappe.db.delete("Gateway Deletion", {"name": ("in", [d.name for d in deletions])})
-
-
-def _clear_unchanged(doctype, rows, only=None):
-	"""Clear `dirty` for snapshot rows not modified since the snapshot — an edit
-	during the run bumps `modified`, so that item stays dirty for the next run
-	instead of being wrongly marked synced."""
-	for r in rows:
-		if only is not None and r.name not in only:
-			continue
-		if frappe.db.get_value(doctype, r.name, "modified") == r.modified:
-			frappe.db.set_value(doctype, r.name, "dirty", 0, update_modified=False)

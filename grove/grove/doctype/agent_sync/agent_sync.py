@@ -12,7 +12,7 @@ RETENTION_DAYS = 60
 
 class AgentSync(Document):
 	"""One row per sync run (a log). The work lives in grove.agent_sync
-	(full_sync / sync_dirty) and grove.usage_pull, which build these docs, take
+	(sync_projection / full_sync) and grove.usage_pull, which build these docs, take
 	the doc's lock, run, then insert + finalize.
 
 	The advisory lock lives here and is named by `sync_type`, so runs of the same
@@ -37,10 +37,11 @@ class AgentSync(Document):
 		"""Drop runs older than `days`. Frappe's Log Settings calls this nightly; the signature is
 		its LogType protocol, which is also what puts Agent Sync in that form's list.
 
-		This table grows on a timer rather than on use — the scheduled run writes one doc every two
-		minutes whether or not anything moved, which is around 22,000 docs a quarter, each with a
-		row per box and now a payload on each row. Two months is long enough to answer "what did
-		the fleet do last week" and short enough that the answer stays fast.
+		This table grows on a timer rather than on use — two scheduled runs each write a doc every
+		two minutes whether or not anything moved (the projection push, and the usage drain since
+		it moved off */5), which fills this window with on the order of 86,000 docs, each with a
+		row per box and a payload on each row. Two months is long enough to answer "what did the
+		fleet do last week" and short enough that the answer stays fast.
 
 		The child rows go first and by join, not by collecting parent names into an IN list: at
 		this size that list is tens of thousands of ids, and a delete that has to be handed every

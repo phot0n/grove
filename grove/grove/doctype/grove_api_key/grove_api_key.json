@@ -9,8 +9,7 @@
   "status",
   "key_hash",
   "api_secret",
-  "column_break_pcmc",
-  "dirty"
+  "column_break_pcmc"
  ],
  "fields": [
   {
@@ -30,14 +29,6 @@
    "in_list_view": 1,
    "label": "Status",
    "options": "active\nrevoked",
-   "read_only": 1
-  },
-  {
-   "default": "0",
-   "description": "Set on change; cleared once a full reconcile run has pushed this key to every Active proxy.",
-   "fieldname": "dirty",
-   "fieldtype": "Check",
-   "label": "Pending Sync",
    "read_only": 1
   },
   {
