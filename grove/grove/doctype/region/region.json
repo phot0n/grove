@@ -8,7 +8,9 @@
  "field_order": [
   "label",
   "cloud_provider",
-  "remote_write_url"
+  "remote_write_url",
+  "latency_reference",
+  "health_check_id"
  ],
  "fields": [
   {
@@ -31,12 +33,31 @@
    "fieldname": "remote_write_url",
    "fieldtype": "Data",
    "label": "Remote Write URL"
+  },
+  {
+   "description": "AWS region name the latency record set measures resolvers against, e.g. ap-south-1. Only a reference point, so a box in a region AWS has none of names the nearest one. Defaults to this record's own name when that is already an AWS region.",
+   "fieldname": "latency_reference",
+   "fieldtype": "Data",
+   "label": "Latency Reference"
+  },
+  {
+   "description": "Route53 calculated health check over every gateway in this region, at threshold 1 — the region is up while any one of them is. What the region's latency row is health-checked by.",
+   "fieldname": "health_check_id",
+   "fieldtype": "Data",
+   "label": "Health Check ID",
+   "no_copy": 1,
+   "read_only": 1
   }
  ],
  "links": [
   {
    "group": "Infrastructure",
    "link_doctype": "Machine",
+   "link_fieldname": "region"
+  },
+  {
+   "group": "Infrastructure",
+   "link_doctype": "Gateway Server",
    "link_fieldname": "region"
   }
  ],

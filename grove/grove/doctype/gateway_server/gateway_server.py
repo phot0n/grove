@@ -6,9 +6,16 @@ from frappe.model.document import Document
 
 from grove import failure
 from grove import agent_sync
-from grove.cloud_provider.route53 import Route53Error
-from grove.fleet import GATEWAY_AGENT_VERSION, FleetHost
+from grove.cloud_provider.route53 import Route53Error, group_name
+from grove.fleet import (
+	GATEWAY_DNS_SETTINGS,
+	FleetHost,
+	gateway_agent_version,
+	gateway_health_checks_enabled,
+	gateway_latency_routing_enabled,
+)
 from grove.grove.doctype.network.network import sync_fleet_ingress
+from grove.grove.doctype.region.region import dns_label, sync_region_dns
 from grove.naming import GeneratedName
 
 
@@ -24,6 +31,7 @@ class GatewayServer(GeneratedName, FleetHost, Document):
 		admin_token: DF.Password | None
 		admin_url: DF.Data | None
 		agent_version: DF.Data | None
+		health_check_id: DF.Data | None
 		is_static_ip: DF.Check
 		machine: DF.Link
 		monitoring_agent: DF.Link | None
@@ -38,45 +46,12 @@ class GatewayServer(GeneratedName, FleetHost, Document):
 
 	# The gateway's own name is GROVE_GATEWAY_ID and the first part of every request id it
 	# stamps; its records also need Gateway Host to belong to and a Region to be sorted by.
-	dns_settings = ("fleet_zone", "gateway_host", "dns_provider")
+	dns_settings = GATEWAY_DNS_SETTINGS
 	dns_fields = ("public_ip", "region")
 
 	def validate(self):
 		self.set_admin_url()
 		self.set_admin_token()
-		self.validate_region_is_free()
-
-	def validate_region_is_free(self):
-		"""One gateway per region, because Route53 allows exactly one.
-
-		A latency record set is keyed on (name, type, REGION) — SetIdentifier names the row but does
-		not make two rows in the same region distinct. A second gateway there is refused by AWS with
-		`InvalidChangeBatch ... a latency RRSet with the same name, type and region already exists`,
-		twenty minutes into a provision, after the binary has been built.
-
-		Checked only when the region CHANGES, and only on a fleet that has DNS configured. Both
-		matter: validating unconditionally would block every unrelated edit to a box that is already
-		in a conflicting state — including the edit that fixes it — and a fleet with no zone writes
-		no records at all, so it has no constraint to honour.
-
-		Terminated boxes are ignored: their records are removed on the way out, so their region is
-		free."""
-		if not self.region or not self.has_value_changed("region"):
-			return
-		settings = frappe.get_single("Grove Settings")
-		if not all(settings.get(field) for field in self.dns_settings):
-			return
-		clash = frappe.db.get_value(
-			"Gateway Server",
-			{"region": self.region, "status": ("!=", "Terminated"), "name": ("!=", self.name)},
-			"name",
-		)
-		if clash:
-			frappe.throw(
-				f"{clash} is already the gateway for {self.region}, and Route53 allows one latency "
-				f"record per region — a second one there is refused by AWS. Give this box a "
-				f"different Region, or terminate {clash} first."
-			)
 
 	def set_admin_token(self):
 		"""The credential the control plane authenticates every push with.
@@ -99,8 +74,7 @@ class GatewayServer(GeneratedName, FleetHost, Document):
 			self.admin_token = frappe.generate_hash(length=48)
 
 	def on_update(self):
-		# A newly-Active proxy needs the full current state now — the background
-		# job only pushes dirty deltas, so full-sync this one immediately.
+		# A newly-Active proxy needs the full current state now, not on the next tick.
 		if self.has_value_changed("status") and self.status == "Active" and self.admin_url:
 			frappe.enqueue(
 				"grove.agent_sync.full_sync",
@@ -124,6 +98,25 @@ class GatewayServer(GeneratedName, FleetHost, Document):
 		sync_fleet_ingress()
 
 	@frappe.whitelist()
+	def check_state(self):
+		"""Button: diff this box's stored state hashes against the current desired state,
+		pushing nothing. Says in-sync, or which sections a tick would push."""
+		import requests
+
+		try:
+			result = agent_sync.check_state("Gateway Server", self.name)
+		except requests.RequestException as e:
+			frappe.throw(f"Could not reach {self.name}: {e}")
+		if result["in_sync"]:
+			frappe.msgprint(f"{self.name} holds the current desired state.", alert=True)
+		else:
+			frappe.msgprint(
+				f"Drift on {self.name}: {', '.join(result['drift'])} — "
+				"the next tick (or Full Sync) will push it."
+			)
+		return result
+
+	@frappe.whitelist()
 	def full_sync(self):
 		"""Button: push the COMPLETE key set + routing table to this proxy now
 		(logged on a Agent Sync doc)."""
@@ -135,26 +128,77 @@ class GatewayServer(GeneratedName, FleetHost, Document):
 		)
 		frappe.msgprint(f"Full sync queued for {self.name}.", alert=True)
 
+	@property
+	def caller_reference(self):
+		"""Idempotency token for this box's health check. The creation stamp is in it so a name
+		handed out again after a terminate cannot collide with the old box's check."""
+		return f"grove-{self.name}-{frappe.utils.get_datetime(self.creation):%Y%m%d%H%M%S}"
+
+	def ensure_health_check(self, client):
+		"""This box's own Route53 health check, created once — and nothing at all on a fleet that has
+		health checking off. Its id is what the box's multivalue row carries and what its region's
+		calculated check counts as a child, so a box without one is permanently healthy to both, which
+		is exactly what a development fleet wants."""
+		if not gateway_health_checks_enabled():
+			return ""
+		if not self.health_check_id:
+			self.db_set(
+				"health_check_id",
+				client.create_endpoint_health_check(self.public_ip, self.hostname, self.caller_reference),
+			)
+		return self.health_check_id
+
+	def set_name(self, gateway_host):
+		"""The multivalue set this box's row belongs in: its region's, under latency routing, or the
+		shared name itself when there is no region tier."""
+		if not gateway_latency_routing_enabled():
+			return gateway_host
+		return group_name(gateway_host, dns_label(self.region))
+
 	@frappe.whitelist()
 	def sync_dns_records(self):
-		"""Button + provision step: point this box's own name at it, and add it to the Gateway
-		Host latency set so clients nearest this region resolve here. UPSERT, so a box that came
-		back on a new address is corrected by running it again."""
+		"""Button + provision step: point this box's own name at it, put it in the multivalue set it
+		belongs to behind its own health check, and reconcile the region tier around it. UPSERT, so a
+		box that came back on a new address is corrected by running it again."""
 		client, settings = self.dns_client()
 		if not client:
 			return None
-		return client.upsert_gateway_records(
+		health_check_id = self.ensure_health_check(client)
+		# The region's row is written AFTER this box joins its set, because it points at a set that
+		# would otherwise be empty — but it has to be GONE BEFORE, in simple mode: it is a CNAME at
+		# the shared name, and Route53 refuses a CNAME beside a record of any other type, which is
+		# exactly what this box is about to write there.
+		latency = gateway_latency_routing_enabled()
+		if not latency:
+			sync_region_dns(self.region)
+		change = client.upsert_gateway_records(
 			settings.fleet_zone,
 			self.hostname,
 			settings.gateway_host,
+			self.set_name(settings.gateway_host),
 			self.public_ip,
-			self.region,
 			self.name,
+			health_check_id,
 		)
+		if latency:
+			sync_region_dns(self.region)
+		# Health checking was turned off since this box was last synced. Its row and its region's
+		# check have both let go by now, so the check it used to name can be released — it would
+		# otherwise sit billed and watching nothing.
+		if not health_check_id:
+			self.delete_health_check(client)
+		return change
+
+	def delete_health_check(self, client):
+		"""Drop this box's check and forget it. Only ever after its own row and its region's
+		calculated check have let go — Route53 refuses to delete a check anything still names."""
+		if self.health_check_id:
+			client.delete_health_check(self.health_check_id)
+			self.db_set("health_check_id", "")
 
 	def remove_dns_records(self):
-		"""Both of this box's records, on the way out. A DELETE has to repeat the record exactly
-		as it was written, so this passes the same values the upsert did.
+		"""This box's two records, then its region's tier, then its health check — in that order,
+		because Route53 refuses to delete a check a record set or a calculated check still names.
 
 		A record that is already gone is not an error worth blocking a deletion over — AWS says
 		so with InvalidChangeBatch, and only that code is tolerated."""
@@ -163,19 +207,24 @@ class GatewayServer(GeneratedName, FleetHost, Document):
 		client, settings = self.dns_client()
 		if not client:
 			return None
+		change = None
 		try:
-			return client.delete_gateway_records(
+			change = client.delete_gateway_records(
 				settings.fleet_zone,
 				self.hostname,
-				settings.gateway_host,
+				self.set_name(settings.gateway_host),
 				self.public_ip,
-				self.region,
 				self.name,
+				self.health_check_id,
 			)
 		except Route53Error as e:
 			if e.code != "InvalidChangeBatch":
 				raise
-			return None
+		# Excluded by name: on_trash runs while this doc's row is still in the database, and a region
+		# whose last gateway is going has its whole tier removed here.
+		sync_region_dns(self.region, exclude=self.name)
+		self.delete_health_check(client)
+		return change
 
 	@frappe.whitelist()
 	def deploy_agent(self):
@@ -189,7 +238,7 @@ class GatewayServer(GeneratedName, FleetHost, Document):
 			timeout=1200,
 		)
 		frappe.msgprint(
-			f"Deploying agent {GATEWAY_AGENT_VERSION} to {self.name} — watch its Ansible Plays.",
+			f"Deploying agent {gateway_agent_version()} to {self.name} — watch its Ansible Plays.",
 			alert=True,
 		)
 
@@ -212,7 +261,7 @@ class GatewayServer(GeneratedName, FleetHost, Document):
 		play_name, rc = self.run_playbook(
 			"deploy_agent.yml",
 			extravars={
-				"agent_version": GATEWAY_AGENT_VERSION,
+				"agent_version": gateway_agent_version(),
 				"admin_token": self.get_password("admin_token"),
 				"gateway_id": self.name,
 				# Which routes this gateway prefers: a same-region row wins its tier outright.
@@ -250,7 +299,7 @@ class GatewayServer(GeneratedName, FleetHost, Document):
 			"gateway.yml",
 			extravars={
 				"admin_token": self.get_password("admin_token"),
-				"agent_version": GATEWAY_AGENT_VERSION,
+				"agent_version": gateway_agent_version(),
 				"gateway_id": self.name,
 				# Which routes this gateway prefers: a same-region row wins its tier outright.
 				"gateway_region": self.region or "",

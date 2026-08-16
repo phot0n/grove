@@ -26,6 +26,10 @@ frappe.ui.form.on('Gateway Server', {
 		}
 
 		if (frm.doc.status === 'Active' && frm.doc.admin_url) {
+			frm.add_custom_button(__('Check State'), () => {
+				frm.call('check_state');
+			}, __('Gateway'));
+
 			frm.add_custom_button(__('Full Sync'), () => {
 				frm.call('full_sync');
 			}, __('Gateway'));

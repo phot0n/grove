@@ -5,9 +5,6 @@ import json
 import pathlib
 import unittest
 from types import SimpleNamespace
-from unittest.mock import patch
-
-import frappe
 
 from grove.grove.doctype.gateway_server.gateway_server import GatewayServer
 
@@ -66,56 +63,6 @@ class TestTheAdminTokenIsAlwaysThere(unittest.TestCase):
 
 	def test_it_is_long_enough_to_be_a_secret(self):
 		self.assertGreaterEqual(len(self.token_for()), 32)
-
-
-class TestOneGatewayPerRegion(unittest.TestCase):
-	"""Route53 allows exactly one latency record per (name, type, region).
-
-	SetIdentifier names the row; it does not make two rows in one region distinct. Without this the
-	second gateway in a region fails at AWS twenty minutes into a provision, after the binary has
-	been built — which is exactly how it was found.
-	"""
-
-	def check(self, region, changed=True, clash=None, dns=True):
-		"""Runs the validation against a fake doc. `clash` is what the database is holding."""
-		settings = SimpleNamespace(
-			fleet_zone="grove.test" if dns else "",
-			gateway_host="api.grove.test" if dns else "",
-			dns_provider="AWS" if dns else "",
-			get=lambda field: getattr(settings, field, ""),
-		)
-		doc = SimpleNamespace(
-			name="gw-new", region=region, dns_settings=GatewayServer.dns_settings,
-			has_value_changed=lambda field: changed,
-		)
-		with (
-			patch("frappe.get_single", return_value=settings),
-			patch("frappe.db.get_value", return_value=clash),
-			patch("frappe.throw", side_effect=frappe.ValidationError) as throw,
-		):
-			try:
-				GatewayServer.validate_region_is_free(doc)
-			except frappe.ValidationError:
-				pass
-			return throw.called
-
-	def test_a_second_gateway_in_a_taken_region_is_refused(self):
-		self.assertTrue(self.check("ap-south-1", clash="gw-existing"))
-
-	def test_a_free_region_is_allowed(self):
-		self.assertFalse(self.check("ap-southeast-1", clash=None))
-
-	def test_an_unrelated_edit_to_a_conflicting_box_still_saves(self):
-		"""The trap this avoids: validating on every save would block the edit that FIXES a
-		conflict, and every unrelated edit to either box while one exists."""
-		self.assertFalse(self.check("ap-south-1", changed=False, clash="gw-existing"))
-
-	def test_a_fleet_with_no_dns_has_no_constraint(self):
-		# No zone means no records are written at all, so there is nothing for AWS to refuse.
-		self.assertFalse(self.check("ap-south-1", clash="gw-existing", dns=False))
-
-	def test_a_box_with_no_region_is_not_checked(self):
-		self.assertFalse(self.check("", clash="gw-existing"))
 
 
 class TestTheDoctypeKeepsItsSecretsSecret(unittest.TestCase):

@@ -3,7 +3,7 @@
 """What the Deploy Agent button ships. Pure — the doc is a SimpleNamespace and run_playbook is
 recorded, so no site and no SSH.
 
-The play writes /etc/grove-gateway/agent.env whole, from extra-vars. That file holds every listener,
+The play writes /etc/pathway/agent.env whole, from extra-vars. That file holds every listener,
 name, path and secret the gateway has, so a caller that omits one variable does not leave a stale
 value behind — it writes a BLANK one. Blank is fatal for the admin token and silently wrong for a
 hostname, which is why these pin that the button passes everything the file renders.
@@ -21,7 +21,7 @@ from unittest.mock import Mock, patch
 import frappe
 import yaml
 
-from grove.fleet import GATEWAY_AGENT_VERSION, FleetHost
+from grove.fleet import FleetHost, gateway_agent_version
 from grove.grove.doctype.gateway_server.gateway_server import GatewayServer
 from grove.grove.doctype.ingress_server.ingress_server import IngressServer
 
@@ -29,6 +29,9 @@ from grove.grove.doctype.ingress_server.ingress_server import IngressServer
 # relative to the app does not resolve.
 PLAYBOOKS = Path(__file__).parent.parent / "playbooks"
 TTL = "2m"
+# Deliberately not a release that exists: these have to fail if the version stops coming from Grove
+# Settings and goes back to being hardcoded.
+PINNED = "v9.9.9"
 
 SETTINGS = SimpleNamespace(
 	gateway_variables={"synthetic_session_ttl": TTL},
@@ -53,7 +56,12 @@ def extravars_for(doctype_class, module, doc):
 	doc.run_playbook = run_playbook
 	# Recording is FleetHost's, and TestTheInstalledVersionIsRecorded holds it to account.
 	doc.record_agent_version = lambda rc: None
-	with patch("frappe.get_single", return_value=SETTINGS):
+	# frappe.db is a Local and unbound without a site; the release is read off Grove Settings
+	# through it, so the whole thing is swapped the way test_agent_sync reaches it.
+	with (
+		patch("frappe.get_single", return_value=SETTINGS),
+		patch.object(frappe, "db", SimpleNamespace(get_single_value=lambda *args: PINNED)),
+	):
 		doctype_class._deploy_agent(doc)
 	return sent
 
@@ -92,7 +100,7 @@ def rendered_variables(play_path, task_name, field):
 
 def upgrade_handler(plane):
 	handlers = yaml.safe_load((PLAYBOOKS / plane / "deploy_agent.yml").read_text())[0]["handlers"]
-	return next(handler for handler in handlers if handler["name"] == "upgrade grove-gateway")
+	return next(handler for handler in handlers if handler["name"] == "upgrade pathway")
 
 
 def install_role_tasks():
@@ -176,11 +184,23 @@ class TestDeployAgentShipsBothHalves(unittest.TestCase):
 	def test_the_tuning_comes_from_grove_settings(self):
 		self.assertEqual(TTL, gateway_extravars()["synthetic_session_ttl"])
 
-	def test_it_asks_for_the_release_the_control_plane_is_pinned_to(self):
+	def test_it_asks_for_the_release_the_fleet_is_pinned_to(self):
 		# The agent lives in its own repo, so this variable is the only thing that decides which
-		# binary a box ends up running.
-		self.assertEqual(GATEWAY_AGENT_VERSION, gateway_extravars()["agent_version"])
-		self.assertEqual(GATEWAY_AGENT_VERSION, ingress_extravars()["agent_version"])
+		# binary a box ends up running — and it comes from Grove Settings, so a rollback is an edit
+		# and a Deploy Agent rather than a control-plane release.
+		self.assertEqual(PINNED, gateway_extravars()["agent_version"])
+		self.assertEqual(PINNED, ingress_extravars()["agent_version"])
+
+	def test_a_fleet_that_pins_nothing_is_refused_before_it_ships(self):
+		# Blank renders an empty release tag into the download URL, which 404s the play twenty
+		# minutes in. A Single doc predating the field never applies its JSON default, so this is a
+		# state a real site lands in rather than a hypothetical.
+		with (
+			patch.object(frappe, "db", SimpleNamespace(get_single_value=lambda *args: None)),
+			patch("frappe.throw", side_effect=frappe.ValidationError),
+			self.assertRaises(frappe.ValidationError),
+		):
+			gateway_agent_version()
 
 	def test_the_fleet_private_key_never_rides_along(self):
 		# A config push has no business carrying it: agent.env names the certificate's PATH, and
@@ -221,13 +241,14 @@ class TestTheInstalledVersionIsRecorded(unittest.TestCase):
 		# same way test_agent_sync reaches it.
 		doc = SimpleNamespace(doctype="Gateway Server", name="gw-1")
 		db = Mock()
+		db.get_single_value.return_value = PINNED
 		with patch.object(frappe, "db", db):
 			FleetHost.record_agent_version(doc, rc)
 		return db.set_value
 
 	def test_a_finished_play_records_what_it_installed(self):
 		self.set_value_after(0).assert_called_once_with(
-			"Gateway Server", "gw-1", "agent_version", GATEWAY_AGENT_VERSION
+			"Gateway Server", "gw-1", "agent_version", PINNED
 		)
 
 	def test_a_failed_play_leaves_the_old_version_standing(self):

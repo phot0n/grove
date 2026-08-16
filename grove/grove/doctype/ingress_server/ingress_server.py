@@ -7,7 +7,7 @@ from frappe.model.document import Document
 from grove import failure
 from grove import agent_sync
 from grove.cloud_provider.route53 import Route53Error
-from grove.fleet import GATEWAY_AGENT_VERSION, FleetHost
+from grove.fleet import FleetHost, gateway_agent_version
 from grove.grove.doctype.network.network import sync_fleet_ingress
 from grove.naming import GeneratedName
 
@@ -190,7 +190,7 @@ class IngressServer(GeneratedName, FleetHost, Document):
 		return {
 			"admin_token": self.get_password("admin_token"),
 			"data_token": self.get_password("data_token"),
-			"agent_version": GATEWAY_AGENT_VERSION,
+			"agent_version": gateway_agent_version(),
 			"ingress_id": self.name,
 			"ingress_hostname": self.hostname,
 			# nginx.conf declares a metrics server on :443 — grove_https puts the certificate and
@@ -207,7 +207,7 @@ class IngressServer(GeneratedName, FleetHost, Document):
 		this already-provisioned ingress."""
 		frappe.enqueue_doc(self.doctype, self.name, "_deploy_agent", queue="long", timeout=1200)
 		frappe.msgprint(
-			f"Deploying agent {GATEWAY_AGENT_VERSION} to {self.name} — watch its Ansible Plays.",
+			f"Deploying agent {gateway_agent_version()} to {self.name} — watch its Ansible Plays.",
 			alert=True,
 		)
 
@@ -224,7 +224,7 @@ class IngressServer(GeneratedName, FleetHost, Document):
 		play_name, rc = self.run_playbook(
 			"deploy_agent.yml",
 			extravars={
-				"agent_version": GATEWAY_AGENT_VERSION,
+				"agent_version": gateway_agent_version(),
 				"admin_token": self.get_password("admin_token"),
 				"data_token": self.get_password("data_token"),
 				"ingress_id": self.name,
