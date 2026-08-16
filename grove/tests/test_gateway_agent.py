@@ -57,7 +57,7 @@ def extravars_for(doctype_class, module, doc):
 	# Recording is FleetHost's, and TestTheInstalledVersionIsRecorded holds it to account.
 	doc.record_agent_version = lambda rc: None
 	# frappe.db is a Local and unbound without a site; the release is read off Grove Settings
-	# through it, so the whole thing is swapped the way test_agent_sync reaches it.
+	# through it, so the whole thing is swapped the way test_pathway_sync reaches it.
 	with (
 		patch("frappe.get_single", return_value=SETTINGS),
 		patch.object(frappe, "db", SimpleNamespace(get_single_value=lambda *args: PINNED)),
@@ -238,7 +238,7 @@ class TestTheInstalledVersionIsRecorded(unittest.TestCase):
 
 	def set_value_after(self, rc):
 		# frappe.db is a Local and unbound without a site, so the whole thing is swapped — the
-		# same way test_agent_sync reaches it.
+		# same way test_pathway_sync reaches it.
 		doc = SimpleNamespace(doctype="Gateway Server", name="gw-1")
 		db = Mock()
 		db.get_single_value.return_value = PINNED

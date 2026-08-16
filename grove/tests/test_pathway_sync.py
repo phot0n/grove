@@ -15,7 +15,7 @@ import unittest.mock
 
 import frappe
 
-from grove import agent_sync
+from grove import pathway_sync
 from grove.serve_command import DEFAULT_MAX_NUM_SEQS
 
 
@@ -62,7 +62,7 @@ class TestGatewayRoutes(unittest.TestCase):
 			),
 			unittest.mock.patch.object(frappe, "get_doc", return_value=doc),
 		):
-			return agent_sync._gateway_routes()
+			return pathway_sync._gateway_routes()
 
 	def test_an_active_deployment_names_itself_and_its_box(self):
 		[route] = self.routes([deployment("MD-00007")])["qwen3-35b"]
@@ -139,14 +139,14 @@ class TestRouteModality(unittest.TestCase):
 			return []
 
 		with (
-			unittest.mock.patch.object(agent_sync.frappe, "get_all", get_all),
+			unittest.mock.patch.object(pathway_sync.frappe, "get_all", get_all),
 			unittest.mock.patch.object(
-				agent_sync.frappe, "get_doc",
+				pathway_sync.frappe, "get_doc",
 				lambda *a: frappe._dict(get_password=lambda *_a, **_k: "k"),
 			),
-			unittest.mock.patch.object(agent_sync, "_ingress_targets", lambda: {}),
+			unittest.mock.patch.object(pathway_sync, "_ingress_targets", lambda: {}),
 		):
-			return agent_sync._gateway_routes()
+			return pathway_sync._gateway_routes()
 
 	def test_a_deployment_row_carries_its_models_modality(self):
 		routes = self.routes(
@@ -185,7 +185,7 @@ class TestEffectiveGroups(unittest.TestCase):
 			raise AssertionError(f"unexpected get_all({doctype})")
 
 		with unittest.mock.patch.object(frappe, "get_all", side_effect=get_all):
-			return agent_sync._effective_groups()
+			return pathway_sync._effective_groups()
 
 	def test_a_group_carries_its_name_and_models(self):
 		[group] = self.groups(
@@ -234,7 +234,7 @@ class TestPublicCatalog(unittest.TestCase):
 			raise AssertionError(f"unexpected get_all({doctype})")
 
 		with unittest.mock.patch.object(frappe, "get_all", side_effect=get_all):
-			return agent_sync._public_catalog(), seen
+			return pathway_sync._public_catalog(), seen
 
 	def test_only_groups_flagged_for_it_are_asked_for(self):
 		# The filter is the whole access story: a group nobody ticked must never be read here.
@@ -282,7 +282,7 @@ class TestEffectiveUsers(unittest.TestCase):
 			raise AssertionError(f"unexpected get_all({doctype})")
 
 		with unittest.mock.patch.object(frappe, "get_all", side_effect=get_all):
-			return agent_sync._effective_users()
+			return pathway_sync._effective_users()
 
 	def test_a_user_carries_their_group_their_deltas_and_their_budget_flag(self):
 		[user] = self.users(
@@ -348,7 +348,7 @@ class TestEffectiveKeys(unittest.TestCase):
 			raise AssertionError(f"unexpected get_all({doctype})")
 
 		with unittest.mock.patch.object(frappe, "get_all", side_effect=get_all):
-			projected = agent_sync._effective_keys()
+			projected = pathway_sync._effective_keys()
 		self.filters = seen.get("filters")
 		return projected
 
@@ -384,26 +384,26 @@ class TestSnapshotHashes(unittest.TestCase):
 		return {"key_hash": key_hash, "prefix": "K-" + key_hash, "user": user, "status": "active"}
 
 	def test_bucket_of_is_a_two_hex_label(self):
-		label = agent_sync.bucket_of("anything")
+		label = pathway_sync.bucket_of("anything")
 		self.assertRegex(label, r"^[0-9a-f]{2}$")
-		self.assertEqual(label, agent_sync.bucket_of("anything"))
+		self.assertEqual(label, pathway_sync.bucket_of("anything"))
 
 	def test_the_same_content_hashes_the_same(self):
 		records = [self.key("aa"), self.key("bb")]
-		one = agent_sync._bucketed_section(records, "key_hash")
-		two = agent_sync._bucketed_section(list(records), "key_hash")
+		one = pathway_sync._bucketed_section(records, "key_hash")
+		two = pathway_sync._bucketed_section(list(records), "key_hash")
 		self.assertEqual(one, two)
 
 	def test_a_changed_record_moves_only_its_own_bucket(self):
 		keys = [self.key(f"k{i}") for i in range(32)]
-		before = agent_sync._bucketed_section(keys, "key_hash")["buckets"]
+		before = pathway_sync._bucketed_section(keys, "key_hash")["buckets"]
 		keys[0] = {**keys[0], "user": "GU-2"}
-		after = agent_sync._bucketed_section(keys, "key_hash")["buckets"]
+		after = pathway_sync._bucketed_section(keys, "key_hash")["buckets"]
 		moved = [b for b in before if before[b]["hash"] != after[b]["hash"]]
-		self.assertEqual(moved, [agent_sync.bucket_of("k0")])
+		self.assertEqual(moved, [pathway_sync.bucket_of("k0")])
 
 	def test_a_flat_section_carries_its_hash(self):
-		section = agent_sync._flat_section({"table": {"m": []}})
+		section = pathway_sync._flat_section({"table": {"m": []}})
 		self.assertIn("hash", section)
 		self.assertEqual(section["table"], {"m": []})
 
@@ -414,8 +414,8 @@ class TestDelta(unittest.TestCase):
 
 	def snapshot(self, keys=()):
 		return {
-			"groups": agent_sync._flat_section({"records": [], "catalog": ""}),
-			"keys": agent_sync._bucketed_section(list(keys), "key_hash"),
+			"groups": pathway_sync._flat_section({"records": [], "catalog": ""}),
+			"keys": pathway_sync._bucketed_section(list(keys), "key_hash"),
 		}
 
 	def hashes(self, snapshot):
@@ -433,34 +433,34 @@ class TestDelta(unittest.TestCase):
 
 	def test_a_box_holding_everything_gets_nothing(self):
 		snapshot = self.snapshot([self.key("aa")])
-		self.assertEqual(agent_sync._delta(snapshot, self.hashes(snapshot)), {})
+		self.assertEqual(pathway_sync._delta(snapshot, self.hashes(snapshot)), {})
 
 	def test_a_wiped_box_gets_everything(self):
 		# An empty hash map is what a fresh or wiped Redis reports — the resync backstop this
 		# design replaced, as one ordinary tick.
 		snapshot = self.snapshot([self.key("aa")])
-		self.assertEqual(agent_sync._delta(snapshot, {}), snapshot)
+		self.assertEqual(pathway_sync._delta(snapshot, {}), snapshot)
 
 	def test_only_the_changed_bucket_is_sent(self):
 		old = self.snapshot([self.key("aa"), self.key("bb")])
 		new = self.snapshot([self.key("aa", user="GU-2"), self.key("bb")])
-		delta = agent_sync._delta(new, self.hashes(old))
+		delta = pathway_sync._delta(new, self.hashes(old))
 		self.assertEqual(list(delta), ["keys"])
-		self.assertEqual(list(delta["keys"]["buckets"]), [agent_sync.bucket_of("aa")])
+		self.assertEqual(list(delta["keys"]["buckets"]), [pathway_sync.bucket_of("aa")])
 
 	def test_a_bucket_the_box_still_holds_but_no_longer_exists_is_sent_empty(self):
 		# The last key in a bucket was deleted. The box's hash map still names the bucket, so it
 		# is pushed explicitly empty — the agent prunes its members — rather than left forever.
 		old = self.snapshot([self.key("aa")])
-		delta = agent_sync._delta(self.snapshot(), self.hashes(old))
+		delta = pathway_sync._delta(self.snapshot(), self.hashes(old))
 		self.assertEqual(
-			delta["keys"]["buckets"][agent_sync.bucket_of("aa")], {"records": []}
+			delta["keys"]["buckets"][pathway_sync.bucket_of("aa")], {"records": []}
 		)
 
 	def test_a_changed_flat_section_is_sent_whole(self):
 		snapshot = self.snapshot()
 		remote = {**self.hashes(snapshot), "groups": "stale"}
-		self.assertEqual(agent_sync._delta(snapshot, remote), {"groups": snapshot["groups"]})
+		self.assertEqual(pathway_sync._delta(snapshot, remote), {"groups": snapshot["groups"]})
 
 
 class TestSyncTarget(unittest.TestCase):
@@ -484,12 +484,12 @@ class TestSyncTarget(unittest.TestCase):
 			return remote or {}
 
 		with (
-			unittest.mock.patch.object(agent_sync, "_conn", return_value=(None, "http://x", "t")),
-			unittest.mock.patch.object(agent_sync, "_post", side_effect=_post),
-			unittest.mock.patch.object(agent_sync, "remote_hashes", side_effect=_remote),
+			unittest.mock.patch.object(pathway_sync, "_conn", return_value=(None, "http://x", "t")),
+			unittest.mock.patch.object(pathway_sync, "_post", side_effect=_post),
+			unittest.mock.patch.object(pathway_sync, "remote_hashes", side_effect=_remote),
 			unittest.mock.patch.object(frappe, "local", frappe._dict()),
 		):
-			row = agent_sync._sync_target("Gateway Server", "gw1", self.SNAPSHOT, force)
+			row = pathway_sync._sync_target("Gateway Server", "gw1", self.SNAPSHOT, force)
 		return row, calls
 
 	def test_a_box_already_in_sync_is_not_pushed_and_leaves_no_row(self):
@@ -536,15 +536,15 @@ class TestCheckState(unittest.TestCase):
 
 	def check(self, remote):
 		with (
-			unittest.mock.patch.object(agent_sync, "gateway_snapshot", return_value=self.SNAPSHOT),
-			unittest.mock.patch.object(agent_sync, "_conn", return_value=(None, "http://x", "t")),
-			unittest.mock.patch.object(agent_sync, "remote_hashes", return_value=remote),
+			unittest.mock.patch.object(pathway_sync, "gateway_snapshot", return_value=self.SNAPSHOT),
+			unittest.mock.patch.object(pathway_sync, "_conn", return_value=(None, "http://x", "t")),
+			unittest.mock.patch.object(pathway_sync, "remote_hashes", return_value=remote),
 			unittest.mock.patch.object(
-				agent_sync, "_post",
+				pathway_sync, "_post",
 				side_effect=AssertionError("check_state must never push"),
 			),
 		):
-			return agent_sync.check_state("Gateway Server", "gw1")
+			return pathway_sync.check_state("Gateway Server", "gw1")
 
 	def test_a_matching_box_reads_in_sync(self):
 		result = self.check({"groups": "g1", "keys:3f": "k1"})
@@ -596,11 +596,11 @@ class TestSyncProjection(unittest.TestCase):
 			self.stamps.append((name, field))
 
 		with (
-			unittest.mock.patch.object(agent_sync, "_new_run", return_value=doc),
-			unittest.mock.patch.object(agent_sync, "_active_proxies", return_value=list(proxies)),
-			unittest.mock.patch.object(agent_sync, "_active_ingresses", return_value=[]),
-			unittest.mock.patch.object(agent_sync, "gateway_snapshot", return_value={"s": 1}),
-			unittest.mock.patch.object(agent_sync, "_sync_target", side_effect=sync_target),
+			unittest.mock.patch.object(pathway_sync, "_new_run", return_value=doc),
+			unittest.mock.patch.object(pathway_sync, "_active_proxies", return_value=list(proxies)),
+			unittest.mock.patch.object(pathway_sync, "_active_ingresses", return_value=[]),
+			unittest.mock.patch.object(pathway_sync, "gateway_snapshot", return_value={"s": 1}),
+			unittest.mock.patch.object(pathway_sync, "_sync_target", side_effect=sync_target),
 			unittest.mock.patch.object(
 				frappe, "db", frappe._dict(commit=lambda: None, set_value=set_value)
 			),
@@ -608,7 +608,7 @@ class TestSyncProjection(unittest.TestCase):
 				frappe.utils, "now_datetime", lambda: "2026-08-16 00:00:00"
 			),
 		):
-			name = (entry or agent_sync.sync_projection)(**kwargs)
+			name = (entry or pathway_sync.sync_projection)(**kwargs)
 		return name, doc, targets
 
 	def row(self, success=1):
@@ -644,7 +644,7 @@ class TestSyncProjection(unittest.TestCase):
 
 	def test_full_sync_forces_every_box(self):
 		# The wrapper the buttons and provisioning call — it must arrive with force on.
-		_name, _doc, targets = self.run_projection({"gw1": self.row()}, proxies=("gw1",), entry=agent_sync.full_sync)
+		_name, _doc, targets = self.run_projection({"gw1": self.row()}, proxies=("gw1",), entry=pathway_sync.full_sync)
 		self.assertEqual(targets, [("Gateway Server", "gw1", True)])
 
 	def test_an_empty_proxies_list_means_no_gateway_work(self):
@@ -653,10 +653,10 @@ class TestSyncProjection(unittest.TestCase):
 		doc = FakeRun()
 		seen = []
 		with (
-			unittest.mock.patch.object(agent_sync, "_new_run", return_value=doc),
-			unittest.mock.patch.object(agent_sync, "ingress_snapshot", return_value={}),
+			unittest.mock.patch.object(pathway_sync, "_new_run", return_value=doc),
+			unittest.mock.patch.object(pathway_sync, "ingress_snapshot", return_value={}),
 			unittest.mock.patch.object(
-				agent_sync, "_sync_target",
+				pathway_sync, "_sync_target",
 				side_effect=lambda *a: seen.append(a) or None,
 			),
 			unittest.mock.patch.object(
@@ -667,7 +667,7 @@ class TestSyncProjection(unittest.TestCase):
 				frappe.utils, "now_datetime", lambda: "2026-08-16 00:00:00"
 			),
 		):
-			agent_sync.sync_projection(proxies=[], ingresses=["ing1"])
+			pathway_sync.sync_projection(proxies=[], ingresses=["ing1"])
 		self.assertEqual([(a[0], a[1]) for a in seen], [("Ingress Server", "ing1")])
 
 

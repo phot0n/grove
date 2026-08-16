@@ -6,7 +6,7 @@ import frappe
 from frappe.model.document import Document
 
 from grove import failure
-from grove import agent_sync
+from grove import pathway_sync
 from grove.ansible import AnsibleHost
 from grove.monitoring import run_exporters_play
 from grove.naming import GeneratedName
@@ -65,10 +65,10 @@ class InferenceServer(GeneratedName, AnsibleHost, Document):
 		before = self.get_doc_before_save()
 		moved = [self.ingress, before.ingress if before else None]
 		frappe.enqueue(
-			"grove.agent_sync.full_sync",
+			"grove.pathway_sync.full_sync",
 			queue="short",
 			trigger="Provision",
-			ingresses=agent_sync.active_among(moved),
+			ingresses=pathway_sync.active_among(moved),
 		)
 
 	def validate_ingress_network(self):

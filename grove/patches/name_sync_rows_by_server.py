@@ -11,10 +11,18 @@ import frappe
 
 
 def execute():
-	# The doctype is renamed to Agent Sync Row by a later pre-model-sync patch, which therefore
-	# runs BEFORE this one on any site that has not migrated yet. Resolved rather than hardcoded,
-	# or this silently finds no column and skips the backfill it exists to do.
-	doctype = "Agent Sync Row" if frappe.db.exists("DocType", "Agent Sync Row") else "Gateway Sync Row"
+	# Later pre-model-sync patches rename this doctype, and therefore run BEFORE this one on any
+	# site that has not migrated yet. Resolved rather than hardcoded, or this silently finds no
+	# column and skips the backfill it exists to do. Newest name first — the chain is
+	# Gateway Sync Row → Agent Sync Row → Pathway Sync Row.
+	doctype = next(
+		(
+			name
+			for name in ("Pathway Sync Row", "Agent Sync Row", "Gateway Sync Row")
+			if frappe.db.exists("DocType", name)
+		),
+		"Pathway Sync Row",
+	)
 	if not frappe.db.has_column(doctype, "proxy"):
 		return
 	frappe.db.sql(f"""

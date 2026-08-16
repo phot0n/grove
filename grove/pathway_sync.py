@@ -21,12 +21,12 @@ snapshot. An INGRESS takes one thing — the replica table for the boxes it owns
 
 Two entry points:
   * sync_projection() — the cron tick: hash-gate each Active box, push drift only.
-    Logs an Agent Sync doc only when something was actually pushed (or failed).
+    Logs an Pathway Sync doc only when something was actually pushed (or failed).
   * full_sync(proxies, ingresses) — force-push the complete snapshot to the named
     boxes, or to every Active one. Buttons, activation and provisioning use this; an
     empty proxies list means "no gateway work", which is how an ingress-only run asks.
 
-Both serialize on the Agent Sync doc's advisory lock so a slow run can't land a stale
+Both serialize on the Pathway Sync doc's advisory lock so a slow run can't land a stale
 write after a newer one. Every path that reaches a box goes through here, so a push
 that left no row did not happen."""
 
@@ -656,7 +656,7 @@ def _stamp_synced(doctype, name, res):
 
 
 def _new_run(sync_type, trigger):
-	doc = frappe.new_doc("Agent Sync")
+	doc = frappe.new_doc("Pathway Sync")
 	doc.run_at = frappe.utils.now_datetime()
 	doc.sync_type = sync_type
 	doc.trigger = trigger

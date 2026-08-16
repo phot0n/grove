@@ -267,11 +267,11 @@ class PodProvisioner:
 		if not push:
 			return
 		try:
-			from grove import agent_sync
+			from grove import pathway_sync
 
 			# Gateways only: a pod has no Machine and so no ingress, and never appears in any
 			# ingress's replica table.
-			agent_sync.full_sync(trigger="Provision", ingresses=[])
+			pathway_sync.full_sync(trigger="Provision", ingresses=[])
 		except Exception:
 			frappe.log_error(title="gateway full_sync after pod change failed")
 

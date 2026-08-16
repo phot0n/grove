@@ -96,7 +96,7 @@
    "fieldtype": "Datetime",
    "label": "Last Synced At",
    "read_only": 1,
-   "description": "When a Projection run last confirmed this box holds the desired state \u2014 stamped on every in-sync check and every successful push, never on failure. Goes stale = the box is unreachable or rejecting pushes; the failed Agent Sync rows say why."
+   "description": "When a Projection run last confirmed this box holds the desired state \u2014 stamped on every in-sync check and every successful push, never on failure. Goes stale = the box is unreachable or rejecting pushes; the failed Pathway Sync rows say why."
   },
   {
    "description": "Generated on insert. Authenticates every control-plane push, and the agent refuses to start without it.",

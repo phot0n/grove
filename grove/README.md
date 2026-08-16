@@ -31,7 +31,7 @@ topology stays inside its VPC and several deployments behind one ingress fold in
 
 | File | Owns |
 |---|---|
-| `agent_sync.py` | Every push to every box. A push that left no Agent Sync row did not happen. |
+| `pathway_sync.py` | Every push to every box. A push that left no Pathway Sync row did not happen. |
 | `usage_pull.py` | Draining `usage:<prefix>` into monthly Usage Records. |
 | `access.py` | Which models a user may call, as the CSV each grant record carries. |
 | `serve_command.py` | The vLLM argv a deployment is started with. |
@@ -52,7 +52,7 @@ prunes**: `POST state` carries any subset of the four sections (groups, users, k
 each stamped with a hash the agent stores in `grove:state_hash` and returns from `GET state-hash`.
 The tick pushes only sections whose hash the box does not already hold; a wiped Redis holds no
 hashes, so the next tick re-pushes everything — that IS the repair path. `users` and `keys` are
-split into 256 buckets (`agent_sync.bucket_of`) hashed independently, so one key minted re-pushes
+split into 256 buckets (`pathway_sync.bucket_of`) hashed independently, so one key minted re-pushes
 one bucket, not the population. The full contract lives in `plan_agent_state_sync.md` at the
 repo root.
 
@@ -113,7 +113,7 @@ is ever consulted.
 
 | When | Job | Note |
 |---|---|---|
-| `*/2` | `agent_sync.sync_projection` | hash-gated: pushes each box only what it does not already hold; a fleet in sync logs nothing |
+| `*/2` | `pathway_sync.sync_projection` | hash-gated: pushes each box only what it does not already hold; a fleet in sync logs nothing |
 | `*/2` | `usage_pull.pull_all` | drain is delete-on-read, so it is **1-shot, never retried** |
 | `*/5` | `cloud_provider.reconcile.sync_all` | the provider owns whether a pod is up; this closes the drift |
 | daily | `usage_pull.reactivate_rate_limited`, `tls.renew_fleet_certificate` | |
@@ -124,7 +124,7 @@ MariaDB advisory lock, so a slow run cannot land a stale write after a newer one
 
 A quiet tick still leaves a trace: every in-sync check and successful push stamps the box's
 `last_synced_at` (Gateway/Ingress Server). Failures never stamp it, so the timestamp going stale
-means the box is unreachable or rejecting pushes — and the Failed Agent Sync rows say why.
+means the box is unreachable or rejecting pushes — and the Failed Pathway Sync rows say why.
 
 ## Gotchas worth knowing before you touch something
 

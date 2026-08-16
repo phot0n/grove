@@ -307,7 +307,7 @@ def engine_entry(engine_url, labels, address=None):
 	return {
 		"targets": [f"{address or parsed.hostname}:{port}"],
 		"labels": {
-			# Verbatim: the exact string agent_sync pushes as this engine's route target.
+			# Verbatim: the exact string pathway_sync pushes as this engine's route target.
 			# Reformatted, the series can no longer be joined to the route it describes.
 			"engine": engine_url,
 			"__scheme__": parsed.scheme or "http",

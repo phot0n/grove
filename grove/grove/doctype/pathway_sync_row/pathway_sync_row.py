@@ -4,5 +4,5 @@
 from frappe.model.document import Document
 
 
-class AgentSyncRow(Document):
+class PathwaySyncRow(Document):
 	pass

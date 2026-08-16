@@ -168,7 +168,7 @@ scheduler_events = {
 		"*/2 * * * *": [
 			# Hash-gated: each box is pushed only what it does not already hold, and a box that
 			# lost its store lost its hashes with it, so the same tick is also the full repair.
-			"grove.agent_sync.sync_projection",
+			"grove.pathway_sync.sync_projection",
 			"grove.usage_pull.pull_all",
 		],
         "*/5 * * * *": [
@@ -271,11 +271,11 @@ export_python_type_annotations = True
 # Require all whitelisted methods to have type annotations
 require_type_annotated_api_methods = True
 
-# Agent Sync is a log: the scheduled run writes one doc every two minutes whether or not
+# Pathway Sync is a log: the scheduled run writes one doc every two minutes whether or not
 # anything moved, each with a row per box and the payload that box was sent. Registering it here
 # is what lets Log Settings clear it, and what puts it in that form for an operator to retune.
 default_log_clearing_doctypes = {
-	"Agent Sync": 60,  # days to retain sync runs
+	"Pathway Sync": 60,  # days to retain sync runs
 }
 
 # Translation

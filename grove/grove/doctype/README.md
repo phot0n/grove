@@ -50,8 +50,8 @@ Append-only. Never read to decide anything; read to find out why.
 
 | Doctype | Owns |
 |---|---|
-| `Agent Sync` | One push run. |
-| `Agent Sync Row` | One TARGET in that run (child) — names the **doctype as well as the box**, because the two planes take different pushes. |
+| `Pathway Sync` | One push run. |
+| `Pathway Sync Row` | One TARGET in that run (child) — names the **doctype as well as the box**, because the two planes take different pushes. |
 | `Gateway Deletion` | One Redis record a box still holds and should not. Every other push is an UPSERT, so without this a revoked key would keep working. |
 | `Ansible Play` | One playbook run. |
 | `Ansible Task` | One task in it, created as it starts — including handler tasks, or a failure inside a handler produces a play that failed with no row saying why. |

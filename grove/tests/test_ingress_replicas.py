@@ -111,7 +111,7 @@ DEPLOYMENTS = [
 
 class TestReplicasForIngress(unittest.TestCase):
 	def routes(self, ingress="ING-1"):
-		from grove import agent_sync
+		from grove import pathway_sync
 
 		query = FakeQuery(SERVERS, MACHINES, DEPLOYMENTS, MODELS)
 		with (
@@ -121,7 +121,7 @@ class TestReplicasForIngress(unittest.TestCase):
 				side_effect=lambda *a, **k: frappe._dict(get_password=lambda *a, **k: "internal"),
 			),
 		):
-			return agent_sync._replicas_for_ingress(ingress)
+			return pathway_sync._replicas_for_ingress(ingress)
 
 	def test_a_local_replica_is_dialled_privately(self):
 		[route] = self.routes()["qwen3-35b"]
@@ -190,10 +190,10 @@ class TestIngressSnapshot(unittest.TestCase):
 	groups section on that plane, so the control plane can never leak tenant state to it."""
 
 	def snapshot(self, table):
-		from grove import agent_sync
+		from grove import pathway_sync
 
-		with patch.object(agent_sync, "_replicas_for_ingress", return_value=table):
-			return agent_sync.ingress_snapshot("ING-1")
+		with patch.object(pathway_sync, "_replicas_for_ingress", return_value=table):
+			return pathway_sync.ingress_snapshot("ING-1")
 
 	def test_it_is_the_routes_section_and_nothing_else(self):
 		self.assertEqual(list(self.snapshot({"m": []})), ["routes"])
@@ -218,7 +218,7 @@ class TestWhichIngressesAPushReaches(unittest.TestCase):
 	"""
 
 	def owners(self, servers, ingresses):
-		from grove import agent_sync
+		from grove import pathway_sync
 
 		def get_all(doctype, filters=None, pluck=None, **kwargs):
 			filters = dict(filters or {})
@@ -233,7 +233,7 @@ class TestWhichIngressesAPushReaches(unittest.TestCase):
 			]
 
 		with patch.object(frappe, "get_all", side_effect=get_all):
-			return agent_sync.owning_ingresses([s["name"] for s in servers])
+			return pathway_sync.owning_ingresses([s["name"] for s in servers])
 
 	def test_only_the_owner_is_pushed_to(self):
 		owners = self.owners(

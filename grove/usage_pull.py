@@ -14,7 +14,7 @@ commit loses that cycle's delta. Net: never double-count, rare bounded loss on
 failure. Requests metered mid-pull are safe (atomic drain → they land either
 fully in the pulled snapshot or on the fresh live key, never split).
 
-Each run is logged as a **Agent Sync** doc (sync_type=Usage) with a per-proxy
+Each run is logged as a **Pathway Sync** doc (sync_type=Usage) with a per-proxy
 child row, same as the keys/routes sync, and serialized by that doc's own lock so
 two overlapping pulls can't drain the same counters twice."""
 
@@ -24,7 +24,7 @@ import requests
 
 import frappe
 
-from grove.agent_sync import _active_proxies, _finalize, _new_run
+from grove.pathway_sync import _active_proxies, _finalize, _new_run
 from grove.grove.doctype.grove_user.grove_user import monthly_budget, set_rate_limited
 from grove.grove.doctype.usage_record.usage_record import billable_tokens, current_month
 
@@ -34,7 +34,7 @@ _FIELDS = ("prompt_tokens", "completion_tokens", "total_tokens", "cached_tokens"
 
 def pull_all():
 	"""Scheduled: pull + drain usage from every Active proxy, logged as one
-	Agent Sync doc. Skips if another pull is in flight."""
+	Pathway Sync doc. Skips if another pull is in flight."""
 	doc = _new_run("Usage", "Scheduled")
 	if not doc.acquire_lock(wait=0):  # scheduled → skip if a pull is in flight
 		return None

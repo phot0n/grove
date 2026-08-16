@@ -59,7 +59,7 @@ class ModelDeployment(Document):
 	# end: auto-generated types
 
 	# No on_update sync hook: any change here moves the routes snapshot hash and
-	# grove.agent_sync.sync_projection pushes it on the next tick.
+	# grove.pathway_sync.sync_projection pushes it on the next tick.
 
 	def validate(self):
 		self._assign_engine_port()
@@ -527,14 +527,14 @@ def deploy_model(model_deployment):
 	sync_published(md.model)
 	frappe.db.commit()
 	if rc == 0:
-		from grove import agent_sync
+		from grove import pathway_sync
 
 		# Gateway routes are global — every gateway holds a row for every model — so all of them.
 		# The replica table is not: only the ingress that OWNS this box has changed, and the rest
 		# of the fleet already holds the table this push would hand them.
-		agent_sync.full_sync(
+		pathway_sync.full_sync(
 			trigger="Provision",
-			ingresses=agent_sync.owning_ingresses([md.inference_server]),
+			ingresses=pathway_sync.owning_ingresses([md.inference_server]),
 		)
 	return play_name, rc
 
