@@ -350,6 +350,31 @@ class TestHealthPath(unittest.TestCase):
 		self.assertEqual(PodProvisioner(pod).health_path, "/v1/models")
 
 
+class TestGatedStatus(unittest.TestCase):
+	"""What a gated pod's status is allowed to say, given the provider's own state."""
+
+	def gated(self, state, serving, **pod_kwargs):
+		from grove.cloud_provider import provisioner
+
+		with patch.object(provisioner, "_is_engine_serving", return_value=serving):
+			return PodProvisioner(serving_pod(**pod_kwargs)).gated_status(state)
+
+	def test_the_gate_alone_may_write_running(self):
+		self.assertEqual(self.gated("Running", serving=True), ("Running", "https://abc123-8080.proxy.runpod.net"))
+
+	def test_a_container_the_provider_calls_running_is_loading_until_it_answers(self):
+		# The bug this exists for: RunPod reports RUNNING as soon as the container starts, so a
+		# pod still pulling the image read Running with a blank route target.
+		self.assertEqual(self.gated("Running", serving=False), ("Loading", ""))
+
+	def test_a_pod_with_no_published_endpoint_is_loading(self):
+		self.assertEqual(self.gated("Running", serving=True, pod_id=""), ("Loading", ""))
+
+	def test_every_other_provider_state_passes_through(self):
+		for state in ("Provisioning", "Stopped", "Terminated"):
+			self.assertEqual(self.gated(state, serving=True), (state, ""))
+
+
 class TestPodStatus(unittest.TestCase):
 	def test_running_and_the_stopped_states(self):
 		self.assertEqual(pod_status("RUNNING"), "Running")

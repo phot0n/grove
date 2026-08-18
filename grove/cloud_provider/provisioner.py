@@ -220,17 +220,24 @@ class PodProvisioner:
 		if pod_api.get("ssh_port"):
 			pod.ssh_port = pod_api["ssh_port"]
 			pod.ssh_user = "root"
-		path = self.health_path
-		if not path:
+		if not self.health_path:
 			pod.status = state
 		else:
-			url = self.engine_endpoint if running else ""
-			if url and _is_engine_serving(url + path):
-				pod.status, pod.engine_url = "Running", url
-			else:
-				pod.status, pod.engine_url = ("Loading" if running else state), ""
+			pod.status, pod.engine_url = self.gated_status(state)
 		pod.save(ignore_permissions=True)
 		frappe.db.commit()
+
+	def gated_status(self, state):
+		"""Status + route target for a pod with a health gate. The provider saying RUNNING only
+		means the container started — the image can still be pulling and the weights downloading
+		for many minutes — so a gated pod reads Running only when its engine answers, and every
+		other provider state passes through as-is (a stopped pod is Stopped, not Loading)."""
+		if state != "Running":
+			return state, ""
+		url = self.engine_endpoint
+		if url and _is_engine_serving(url + self.health_path):
+			return "Running", url
+		return "Loading", ""
 
 	def await_engine(self, pod_api):
 		"""Poll the health gate until the engine serves (status → Running) or ENGINE_READY_TIMEOUT
