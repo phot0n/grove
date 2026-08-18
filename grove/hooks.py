@@ -170,10 +170,6 @@ scheduler_events = {
 			# lost its store lost its hashes with it, so the same tick is also the full repair.
 			"grove.pathway_sync.sync_projection",
 			"grove.usage_pull.pull_all",
-		],
-        "*/5 * * * *": [
-			# The provider owns whether a pod/instance is up; lifecycle jobs only see it while
-			# they run. This closes the drift they leave behind.
 			"grove.cloud_provider.reconcile.sync_all",
 		],
 		# Daily: reactivate rate_limited keys whose current-month usage is back
