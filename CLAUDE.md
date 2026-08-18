@@ -58,6 +58,7 @@ These rules are mandatory for agents changing this repo:
 - For bug fixes, identify the root cause before attempting a fix.
 - Use `@faliure.reports_failure` decorator wherever things are async and a faliure reporting is necessary (check some existing examples to get a feel).
 - Don't ignore_permissions, `frappe.get_all` in a whitelisted (`@frappe.whitelist`) function.
+- Update the relevant `Readme.md` when changing the relevant code behaviour.
 
 ## Docs
 
