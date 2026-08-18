@@ -76,6 +76,9 @@ BASE = {
 	"vllm_cuda_visible_devices": "0,1",
 	"vllm_env": {"HF_TOKEN": "hf_secret", "ODD": "a b;c"},
 	"vllm_effective_api_key": "deadbeef",
+	# Role defaults: the play pre-downloads the whole repo, so nothing is a GGUF file glob.
+	"vllm_predownload_model": True,
+	"vllm_download_glob": "",
 }
 # The unpinned single-GPU box with no operator env and a caller-supplied key.
 BARE = {**BASE, "vllm_cuda_visible_devices": "", "vllm_env": {}, "vllm_effective_api_key": ""}
@@ -122,13 +125,14 @@ CACHE_LINES = [
 	"TRITON_CACHE_DIR=/root/.cache/vllm/triton",
 	"TORCHINDUCTOR_CACHE_DIR=/root/.cache/vllm/torchinductor",
 ]
+FIXED_LINES = CACHE_LINES + ["HF_HUB_OFFLINE=1"]
 
 
 class TestContainerEnvFile(unittest.TestCase):
 	def test_one_key_value_per_line(self):
 		lines = render("vllm-container.env.j2", BASE).splitlines()
 		self.assertEqual(
-			lines, CACHE_LINES + ["HF_TOKEN=hf_secret", "ODD=a b;c", "VLLM_API_KEY=deadbeef"]
+			lines, FIXED_LINES + ["HF_TOKEN=hf_secret", "ODD=a b;c", "VLLM_API_KEY=deadbeef"]
 		)
 
 	def test_a_deployment_env_row_overrides_the_cache_defaults(self):
@@ -138,7 +142,31 @@ class TestContainerEnvFile(unittest.TestCase):
 		self.assertLess(lines.index(CACHE_LINES[0]), lines.index("TRITON_CACHE_DIR=/elsewhere"))
 
 	def test_no_api_key_line_when_none_resolved(self):
-		self.assertEqual(render("vllm-container.env.j2", BARE).splitlines(), CACHE_LINES)
+		self.assertEqual(render("vllm-container.env.j2", BARE).splitlines(), FIXED_LINES)
+
+
+class TestTheEngineDoesNotFetchWeightsItself(unittest.TestCase):
+	"""The pre-download task owns the weights. Left online, the engine resolves `main` and
+	pulls a new upstream revision inline — a deploy that changed nothing then serves
+	different weights, or OOMs loading them."""
+
+	def env(self, **overrides):
+		return render("vllm-container.env.j2", {**BASE, **overrides}).splitlines()
+
+	def test_a_predownloaded_repo_runs_offline(self):
+		self.assertIn("HF_HUB_OFFLINE=1", self.env())
+
+	def test_a_gguf_ref_stays_online(self):
+		# Its download is one file; the config and tokenizer beside it are fetched at boot.
+		self.assertNotIn("HF_HUB_OFFLINE=1", self.env(vllm_download_glob="*Q4_K_M.gguf"))
+
+	def test_a_streaming_placement_stays_online(self):
+		# Weights come from S3, but the tokenizer is still the hub's.
+		self.assertNotIn("HF_HUB_OFFLINE=1", self.env(vllm_predownload_model=False))
+
+	def test_it_can_be_overridden_per_deployment(self):
+		lines = self.env(vllm_env={"HF_HUB_OFFLINE": "0"})
+		self.assertLess(lines.index("HF_HUB_OFFLINE=1"), lines.index("HF_HUB_OFFLINE=0"))
 
 
 class TestEngineProxyLocation(unittest.TestCase):
