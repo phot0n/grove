@@ -106,7 +106,7 @@ class PodProvisioner:
 			if pod.allow_long_max_model_len:
 				env["VLLM_ALLOW_LONG_MAX_MODEL_LEN"] = "1"
 			if frappe.conf.get("hf_token"):
-				env["HUGGING_FACE_HUB_TOKEN"] = frappe.conf.get("hf_token")
+				env["HF_TOKEN"] = frappe.conf.get("hf_token")
 			# Streaming pod (serve command carries the S3 mirror): bucket creds + tuning.
 			if "runai_streamer" in (pod.serve_command or ""):
 				env.update(frappe.get_single("Grove Settings").weights_s3_engine_environment)
