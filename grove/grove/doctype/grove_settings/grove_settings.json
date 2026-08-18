@@ -189,7 +189,7 @@
   {
    "fieldname": "weights_bucket_tab",
    "fieldtype": "Tab Break",
-   "label": "Weights Bucket"
+   "label": "Object Storage"
   },
   {
    "fieldname": "section_weights_bucket",
@@ -241,7 +241,7 @@
  ],
  "issingle": 1,
  "links": [],
- "modified": "2026-08-13 13:37:18.716502",
+ "modified": "2026-08-17 00:41:45.339773",
  "modified_by": "Administrator",
  "module": "Grove",
  "name": "Grove Settings",

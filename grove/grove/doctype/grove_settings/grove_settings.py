@@ -51,6 +51,12 @@ class GroveSettings(Document):
 		scrape_password_hash: DF.Data | None
 		sd_token: DF.Password | None
 		synthetic_session_ttl: DF.Data | None
+		weights_bucket: DF.Data | None
+		weights_s3_access_key_id: DF.Data | None
+		weights_s3_region: DF.Data | None
+		weights_s3_secret_access_key: DF.Password | None
+		weights_s3_write_access_key_id: DF.Data | None
+		weights_s3_write_secret_access_key: DF.Password | None
 	# end: auto-generated types
 
 	def validate(self):
