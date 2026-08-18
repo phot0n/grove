@@ -19,7 +19,12 @@ from grove.cloud_provider.aws import (
 	parse_instance_store,
 	root_volume_id,
 )
-from grove.grove.doctype.machine.machine import Machine, _scan_message, parse_nvidia_smi
+from grove.grove.doctype.machine.machine import (
+	Machine,
+	_scan_message,
+	parse_gpu_memory,
+	parse_nvidia_smi,
+)
 from grove.utils import vram_gb_from_mib
 
 # describe_instance_types for a g6.12xlarge, trimmed to the two keys Grove reads.
@@ -76,6 +81,36 @@ class TestParseNvidiaSmi(unittest.TestCase):
 		# must not mistake it for inventory.
 		stdout = "Failed to initialize NVML: Driver/library version mismatch\nNVML library version: 580.173"
 		self.assertEqual(parse_nvidia_smi(stdout), [])
+
+
+class TestParseGpuMemory(unittest.TestCase):
+	"""The live half of the same CSV — index, name, total, uuid, used, free."""
+
+	def test_used_and_free_come_off_the_last_two_columns(self):
+		stdout = (
+			"0, Tesla T4, 15360, GPU-a, 14000, 1360\n"
+			"1, Tesla T4, 15360, GPU-b, 0, 15360"
+		)
+		rows = parse_gpu_memory(stdout)
+		self.assertEqual(len(rows), 2)
+		self.assertEqual(rows[0], {
+			"gpu_index": 0, "gpu_model": "Tesla T4",
+			"total_mib": 15360, "used_mib": 14000, "free_mib": 1360,
+		})
+		self.assertEqual(rows[1]["free_mib"], 15360)
+
+	def test_a_scan_without_the_memory_columns_is_not_reported_as_idle(self):
+		# An older box could still answer the four-column query; 0 used would read as a free GPU.
+		self.assertEqual(parse_gpu_memory("0, Tesla T4, 15360, GPU-a"), [])
+
+	def test_unreadable_figures_are_skipped(self):
+		self.assertEqual(parse_gpu_memory("0, Tesla T4, 15360, GPU-a, [N/A], [N/A]"), [])
+
+	def test_warnings_and_empty_output(self):
+		stdout = "WARNING: infoROM is corrupted\n0, Tesla T4, 15360, GPU-a, 100, 15260\n"
+		self.assertEqual(len(parse_gpu_memory(stdout)), 1)
+		self.assertEqual(parse_gpu_memory(""), [])
+		self.assertEqual(parse_gpu_memory(None), [])
 
 
 class TestScanMessage(unittest.TestCase):

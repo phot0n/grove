@@ -15,6 +15,12 @@ frappe.ui.form.on('Machine', {
 			});
 		}
 
+		// Any box with cards, cloud or not: this reads nvidia-smi, it never writes the table,
+		// so the bare-metal gate above does not apply.
+		if ((frm.doc.gpus || []).length) {
+			frm.add_custom_button(__('GPU Memory'), () => show_gpu_memory(frm));
+		}
+
 		// machine_type says which server doctype this box backs — works for bare-metal too,
 		// so this sits above the AWS-only gate below. public_ip/region are fetch_from on both
 		// doctypes, so setting `machine` on the new doc is all that's needed to fill them in.
@@ -90,3 +96,45 @@ frappe.ui.form.on('Machine', {
 		}, __('AWS'));
 	},
 });
+
+// Live nvidia-smi memory, in a table. The call SSHes to the box, so freeze while it runs —
+// without it the button looks dead for the ten seconds Ansible takes.
+function show_gpu_memory(frm) {
+	frappe.dom.freeze(__('Reading nvidia-smi on {0}…', [frm.doc.name]));
+	frm.call('gpu_memory')
+		.then(({message}) => {
+			frappe.dom.unfreeze();
+			new frappe.ui.Dialog({
+				title: __('GPU Memory — {0}', [frm.doc.name]),
+				fields: [{fieldtype: 'HTML', fieldname: 'table', options: gpu_memory_table(message || [])}],
+			}).show();
+		})
+		.catch(() => frappe.dom.unfreeze());
+}
+
+function gpu_memory_table(rows) {
+	if (!rows.length) return `<p class="text-muted">${__('nvidia-smi reported no usable GPU memory figures.')}</p>`;
+	const gb = (mib) => (mib / 1024).toFixed(1);
+	const body = rows
+		.map(
+			(row) => `<tr>
+				<td>${row.gpu_index}</td>
+				<td>${frappe.utils.escape_html(row.gpu_model)}</td>
+				<td class="text-right">${gb(row.used_mib)}</td>
+				<td class="text-right">${gb(row.free_mib)}</td>
+				<td class="text-right">${gb(row.total_mib)}</td>
+				<td class="text-right">${Math.round((row.used_mib / row.total_mib) * 100)}%</td>
+			</tr>`,
+		)
+		.join('');
+	return `<table class="table table-bordered">
+		<thead><tr>
+			<th>${__('#')}</th><th>${__('GPU')}</th>
+			<th class="text-right">${__('Used (GB)')}</th>
+			<th class="text-right">${__('Free (GB)')}</th>
+			<th class="text-right">${__('Total (GB)')}</th>
+			<th class="text-right">${__('Used')}</th>
+		</tr></thead>
+		<tbody>${body}</tbody>
+	</table>`;
+}
