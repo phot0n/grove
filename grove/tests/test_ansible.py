@@ -122,5 +122,71 @@ class TestEveryRoleAPlaybookNamesResolves(unittest.TestCase):
 					self.assertNotIn(role.name, shared)
 
 
+class FakeRunner:
+	"""Records what the callback would have written, instead of inserting docs."""
+
+	def __init__(self):
+		self.tasks = {}
+		self.order = []
+
+	def add_task(self, task_name):
+		name = f"t{len(self.tasks)}"
+		self.tasks[name] = {"task_name": task_name, "status": "Running"}
+		self.order.append(name)
+		return name
+
+	def finish_task(self, name, status, result):
+		self.tasks[name]["status"] = status
+
+	def update_play(self, values):
+		pass
+
+
+class TestNoTaskIsLeftRunning(unittest.TestCase):
+	"""A `meta:` task starts but never reports a result, so nothing closed its row."""
+
+	def callback(self):
+		from grove.ansible_runner import AnsibleCallback
+
+		runner = FakeRunner()
+		callback = AnsibleCallback.__new__(AnsibleCallback)
+		callback.runner, callback.current_task, callback.stopped, callback.log = runner, None, False, []
+		callback._stop_if_asked = lambda: None
+		return callback, runner
+
+	def start(self, callback, name):
+		callback.v2_playbook_on_task_start(SimpleNamespace(get_name=lambda: name), False)
+
+	def result(self, changed=False):
+		return SimpleNamespace(_result={"changed": changed}, _task=SimpleNamespace(name="x"))
+
+	def test_a_meta_task_is_closed_by_the_one_that_follows_it(self):
+		callback, runner = self.callback()
+		self.start(callback, "flush handlers")
+		self.start(callback, "wait for health")
+		callback.v2_runner_on_ok(self.result())
+		self.assertEqual([t["status"] for t in runner.tasks.values()], ["ok", "ok"])
+
+	def test_a_meta_task_at_the_end_is_closed_by_the_play(self):
+		callback, runner = self.callback()
+		self.start(callback, "flush handlers")
+		callback.v2_playbook_on_stats(SimpleNamespace(processed={}, summarize=lambda host: {}))
+		self.assertEqual(runner.tasks["t0"]["status"], "ok")
+
+	def test_a_stopped_play_does_not_call_its_unfinished_task_a_success(self):
+		callback, runner = self.callback()
+		self.start(callback, "wait for health")
+		callback.stopped = True
+		callback.v2_playbook_on_stats(SimpleNamespace(processed={}, summarize=lambda host: {}))
+		self.assertEqual(runner.tasks["t0"]["status"], "skipped")
+
+	def test_a_task_that_reported_is_not_closed_twice(self):
+		callback, runner = self.callback()
+		self.start(callback, "copy config")
+		callback.v2_runner_on_failed(self.result())
+		self.start(callback, "next")
+		self.assertEqual(runner.tasks["t0"]["status"], "failed")
+
+
 if __name__ == "__main__":
 	unittest.main()

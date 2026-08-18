@@ -102,15 +102,26 @@ class AnsibleCallback(CallbackBase):
 		self.runner.update_play({"status": "Running", "started": frappe.utils.now()})
 
 	def v2_playbook_on_task_start(self, task, is_conditional):
-		self._stop_if_asked()
-		self.current_task = self.runner.add_task(task.get_name())
+		self._begin_task(task)
 
 	# Handlers are where a deploy actually restarts things, so they are where it fails. Without this
 	# the row is never created and the failure reaches the control plane as a bare "[failed] <name>"
 	# in the play output, with the module's message — the only thing that says why — dropped.
 	def v2_playbook_on_handler_task_start(self, task):
+		self._begin_task(task)
+
+	def _begin_task(self, task):
 		self._stop_if_asked()
+		self._close_orphan("ok")
 		self.current_task = self.runner.add_task(task.get_name())
+
+	def _close_orphan(self, status):
+		"""A `meta:` task (flush_handlers) is run by the strategy, not a task worker, so no
+		runner result ever comes back for it and its row would sit at Running forever.
+		Whoever comes next — the following task, or the play's own end — closes it."""
+		if self.current_task:
+			self.runner.finish_task(self.current_task, status, {})
+			self.current_task = None
 
 	# Fires on every attempt of a task with `until`/`retries` — the health gate is one task
 	# that can hold the play for 15 minutes, so this is where a stop lands for most of a
@@ -146,6 +157,9 @@ class AnsibleCallback(CallbackBase):
 			self.thread_db = frappe.db
 
 	def v2_playbook_on_stats(self, stats):
+		# A play whose last task was a meta one, or that was terminated mid-task, still has a
+		# row open here. Stopped means the task did not finish, so it is not a success.
+		self._close_orphan("skipped" if self.stopped else "ok")
 		hosts = sorted(stats.processed.keys())
 		failed = any(
 			stats.summarize(h).get("failures", 0) or stats.summarize(h).get("unreachable", 0)
