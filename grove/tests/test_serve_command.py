@@ -160,6 +160,13 @@ class TestServeCommand(unittest.TestCase):
 		self.assertEqual(args[:4], ["--served-model-name", "qwen3-35b", "old-name", "older-name"])
 		self.assertEqual(args[-2:], ["--kv-cache-dtype", "fp8"])  # appended verbatim, last
 
+	def test_a_quoted_extra_arg_stays_one_argument(self):
+		# A JSON value is one argument. Split on spaces it became five, each re-quoted by
+		# shlex.join into a fragment vLLM reads as its own flag.
+		kwargs = '{"thinking": true, "reasoning_effort": "high"}'
+		args = serve(extra_serve_args=f"--default-chat-template-kwargs '{kwargs}'").args
+		self.assertEqual(args[-2:], ["--default-chat-template-kwargs", kwargs])
+
 	def test_command_is_repo_then_args(self):
 		command = serve().command
 		self.assertTrue(command.startswith("Qwen/Qwen3-35B --served-model-name qwen3-35b "))

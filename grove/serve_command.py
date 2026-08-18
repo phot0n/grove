@@ -73,7 +73,7 @@ class ServeCommand:
 		self.max_num_seqs = int(max_num_seqs or 0)
 		self.attention_backend = attention_backend or "auto"
 		self.aliases = (aliases or "").replace(",", " ").split()
-		self.extra_serve_args = (extra_serve_args or "").split()
+		self.extra_serve_args = shlex.split(extra_serve_args or "")
 		self.host = host
 
 	@classmethod
