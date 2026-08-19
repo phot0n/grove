@@ -1,9 +1,10 @@
 # Copyright (c) 2026, Grove and contributors
 # For license information, please see license.txt
-"""One source of truth for `vllm serve` arguments. Both placements build them here: a Pod
-serves a Model in a container (args → dockerStartCmd) and a Model Deployment serves it under
-systemd on an Inference Server (args → the unit's ExecStart). Model-intrinsic flags come
-from the Model, per-box tuning from whichever doc owns the placement."""
+"""One source of truth for `vllm serve` arguments, and for the one request that proves the engine
+they started can serve. Both placements build them here: a Pod serves a Model in a container
+(args → dockerStartCmd) and a Model Deployment serves it under systemd on an Inference Server
+(args → the unit's ExecStart). Model-intrinsic flags come from the Model, per-box tuning from
+whichever doc owns the placement."""
 
 import json
 import math
@@ -179,6 +180,25 @@ class ServeCommand:
 	def is_embedding(self):
 		"""Pooling model: serves /v1/embeddings, so the chat-only flags are meaningless."""
 		return self.model.get("modality") == "embedding"
+
+	@property
+	def warmup_request(self):
+		"""The smallest real inference this placement can serve, as {path, body} — proof the engine
+		runs a forward pass under the name the gateway routes on, which a 200 from /v1/models does
+		not give. Empty when the surface costs more to assert than the assertion is worth.
+
+		/v1/completions rather than /v1/chat/completions: chat needs a tokenizer chat template, and
+		a base repo without one answers 400 — a config answer, not a GPU one, on an engine that
+		serves fine. Both paths tokenize, schedule, prefill, decode once and detokenize."""
+		if self.model.get("modality") == "audio":
+			# Transcription wants a base64 audio file. Not worth carrying to prove one forward pass.
+			return {}
+		if self.is_embedding:
+			return {"path": "/v1/embeddings", "body": {"model": self.model_name, "input": "ping"}}
+		return {
+			"path": "/v1/completions",
+			"body": {"model": self.model_name, "prompt": "ping", "max_tokens": 1},
+		}
 
 	@property
 	def args(self):

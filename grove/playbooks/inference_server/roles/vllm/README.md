@@ -22,6 +22,9 @@ serving FP8 models. Codifies the runbook in [`../../../README.md`](../../README.
    box-shared cache every instance mounts.
 5. Renders the container's env file and run script, replaces the container when either
    moved, and waits for `/v1/models` to return `200`.
+6. POSTs `vllm_warmup_request` once. A 200 from `/v1/models` only means the API server bound
+   its port; this is the first thing that asks the GPU to run a forward pass, so a kernel that
+   cannot run on this card fails the play here rather than on a customer's request.
 
 All steps are idempotent (`creates:` guards on the key and the weights; the run script's
 content is what decides whether the container is replaced).
@@ -58,6 +61,9 @@ See [`defaults/main.yml`](defaults/main.yml) for the full list. Most-used:
 | `vllm_api_key` | `""` | Blank → auto-generated + persisted |
 | `vllm_hf_token` | `""` | For gated models / faster downloads |
 | `vllm_predownload_model` | `true` | Fetch weights during the play |
+| `vllm_wait_for_healthy` | `true` | Block until `/v1/models` returns `200` |
+| `vllm_warmup` | `true` | POST one real request after the health gate |
+| `vllm_warmup_request` | `{}` | `{path, body}` from `ServeCommand`; empty skips the step |
 
 The individual serve flags (`--max-model-len`, `--gpu-memory-utilization`, the tool/reasoning
 parsers, …) are **not** role variables. Grove builds the full list in

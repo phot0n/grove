@@ -444,3 +444,52 @@ class TestOneWebServerForTheFleet(unittest.TestCase):
 
 if __name__ == "__main__":
 	unittest.main()
+
+
+class TestWarmupGate(unittest.TestCase):
+	"""A 200 from /v1/models means the API server bound its port, nothing more. The warmup task is
+	the first thing that asks the GPU for a forward pass, so it is what stands between a kernel
+	that cannot run on this card and a gateway route pointing at it."""
+
+	@classmethod
+	def setUpClass(cls):
+		cls.tasks = yaml.safe_load((INFERENCE_ROLES / "vllm/tasks/config.yml").read_text())
+		cls.defaults = role_defaults(INFERENCE_ROLES / "vllm")
+
+	def index_of(self, marker):
+		return next(i for i, task in enumerate(self.tasks) if marker in str(task))
+
+	def warmup(self):
+		return self.tasks[self.index_of("vllm_warmup_request.path")]
+
+	def test_it_runs_after_the_health_gate(self):
+		# Before it, the engine has not bound its port and every attempt is a connection refused.
+		self.assertLess(self.index_of("/v1/models"), self.index_of("vllm_warmup_request.path"))
+
+	def test_it_carries_the_bearer(self):
+		# The engine runs with VLLM_API_KEY set, so an unauthenticated POST is a 401 on a healthy
+		# engine — a warmup that fails every deploy for the wrong reason.
+		headers = self.warmup()["ansible.builtin.uri"]["headers"]
+		self.assertEqual(headers["Authorization"], "Bearer {{ vllm_effective_api_key }}")
+
+	def test_it_asks_the_engine_not_the_proxy(self):
+		# Box-local plain HTTP. The nginx front carries a self-signed cert, and the assertion is
+		# about the engine rather than the proxy in front of it.
+		self.assertIn("http://127.0.0.1:{{ vllm_port }}", self.warmup()["ansible.builtin.uri"]["url"])
+
+	def test_a_failed_warmup_fails_the_play(self):
+		# rc != 0 is the whole mechanism: it leaves the deployment Broken and unpublished. Suppress
+		# the failure and the route goes live on an engine that cannot serve a request.
+		warmup = self.warmup()
+		self.assertEqual(warmup["ansible.builtin.uri"]["status_code"], 200)
+		for suppressor in ("failed_when", "ignore_errors"):
+			self.assertNotIn(suppressor, warmup, suppressor)
+
+	def test_it_is_on_by_default_and_switchable(self):
+		self.assertIs(self.defaults["vllm_warmup"], True)
+		self.assertEqual(self.defaults["vllm_warmup_request"], {})
+		self.assertIn("vllm_warmup", self.warmup()["when"])
+
+	def test_a_modality_with_nothing_to_prove_skips_it(self):
+		# ServeCommand hands back {} for audio; the same guard covers a role run that sets nothing.
+		self.assertIn("vllm_warmup_request | length > 0", self.warmup()["when"])

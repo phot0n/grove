@@ -266,3 +266,34 @@ class TestPlacementsPassTheirTuning(unittest.TestCase):
 
 if __name__ == "__main__":
 	unittest.main()
+
+
+class TestWarmupRequest(unittest.TestCase):
+	"""The one request that proves an engine serves. Both placements post it — the Pod path in
+	Python, the Model Deployment path as an Ansible extra-var — so it is built once, here."""
+
+	def test_a_generative_model_is_asked_for_one_token(self):
+		request = serve().warmup_request
+		self.assertEqual(request["path"], "/v1/completions")
+		self.assertEqual(request["body"]["max_tokens"], 1)
+
+	def test_completions_not_chat_completions(self):
+		# Chat needs a tokenizer chat template. A base repo has none and answers 400 — a config
+		# answer, not a GPU one, which would fail warmup on an engine that serves fine.
+		self.assertNotIn("chat", serve().warmup_request["path"])
+
+	def test_an_embedding_model_is_asked_to_embed(self):
+		request = serve(dict(CHAT_MODEL, modality="embedding")).warmup_request
+		self.assertEqual(request["path"], "/v1/embeddings")
+		self.assertEqual(request["body"]["input"], "ping")
+		self.assertNotIn("max_tokens", request["body"])
+
+	def test_the_model_asked_for_is_the_one_the_gateway_routes_on(self):
+		# pathway_sync publishes `deploy:<Model docname>`, which is the first --served-model-name.
+		# An alias or the hf_repo here would prove an engine serves under a name nothing routes to.
+		request = serve(aliases="old-name").warmup_request
+		self.assertEqual(request["body"]["model"], "qwen3-35b")
+
+	def test_audio_has_nothing_cheap_to_prove(self):
+		# Transcription wants a base64 audio file; an empty request turns the step off on both paths.
+		self.assertEqual(serve(dict(CHAT_MODEL, modality="audio")).warmup_request, {})

@@ -62,3 +62,9 @@ vllm_hf_token: ""                      # optional; gated models / faster HF down
 
 # ── Health gate ─────────────────────────────────────────────────────────────
 vllm_wait_for_healthy: true            # block until /v1/models returns 200
+
+# ── Warmup gate ─────────────────────────────────────────────────────────────
+# /v1/models answering 200 only proves the API server bound its port. One real request proves the
+# engine runs a forward pass under the name the gateway is about to route on.
+vllm_warmup: true                      # POST the warmup request once the health gate passes
+vllm_warmup_request: {}                # {path, body} from ServeCommand; empty = nothing to prove

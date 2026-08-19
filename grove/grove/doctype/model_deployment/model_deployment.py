@@ -440,6 +440,8 @@ def _vllm_extravars(md, m, inf, key):
 		"vllm_model": serve.repo,
 		"vllm_served_name": " ".join([md.model, *serve.aliases]),
 		"vllm_serve_args": serve.args,
+		# One real request after the health gate, from the same source the args came from.
+		"vllm_warmup_request": serve.warmup_request,
 		# One container + port + key file per deployment (multi-tenant box). Slug from the
 		# MD name → container vllm-<instance> and its run script beside the key.
 		"vllm_instance": _instance_slug(md.name),

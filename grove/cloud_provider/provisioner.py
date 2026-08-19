@@ -20,11 +20,15 @@ from grove import log_relay
 from grove import failure
 from grove.cloud_provider.runpod import RunPodClient, RunPodError, pod_status
 from grove.grove.doctype.ssh_key.ssh_key import injected_public_keys
+from grove.serve_command import ServeCommand
 
 # How long spawn waits for vLLM to actually serve (weights download + load) after the pod is
 # SSH-reachable, before giving up and leaving it Loading for a later Sync to pick up.
 ENGINE_READY_TIMEOUT = 1500
 ENGINE_POLL_INTERVAL = 15
+# One forward pass on an engine that already answers its health path — a blip budget, not a
+# load budget.
+WARMUP_TIMEOUT = 120
 
 # Fallback mount for the pod's persistent volume disk (HF_HOME lives under it so weights
 # survive restart). A Pod can override via its volume_mount_path field.
@@ -196,6 +200,36 @@ class PodProvisioner:
 		anything answers on the port."""
 		return self.pod.health_path or ("" if self.pod.is_custom_engine else "/health")
 
+	@property
+	def is_warmup_due(self):
+		"""Whether there is an engine here worth proving. A custom image serves something we
+		cannot build a payload for, and a bring-up that outran await_engine has nothing serving
+		yet."""
+		return not self.pod.is_custom_engine and self.current_status == "Running"
+
+	def get_warmup_error(self):
+		"""Why this engine could not serve one real request, "" when it did. Posts the payload the
+		Ansible path posts, at the endpoint the gateway is about to be handed.
+
+		Carries the bearer /health never needed: a non-custom pod with an api_key runs with
+		VLLM_API_KEY set, so an unauthenticated POST is a 401 on a perfectly good engine."""
+		request = ServeCommand.for_pod(self.pod).warmup_request
+		if not request:
+			return ""
+		key = self.pod.get_password("api_key", raise_exception=False)
+		try:
+			response = requests.post(
+				self.engine_endpoint + request["path"],
+				json=request["body"],
+				headers={"Authorization": f"Bearer {key}"} if key else {},
+				timeout=WARMUP_TIMEOUT,
+			)
+		except requests.RequestException as error:
+			return str(error)
+		if response.status_code == 200:
+			return ""
+		return f"{response.status_code} {response.text[:200]}"
+
 	def apply_provider_state(self, pod_api, running):
 		"""Write a pod's provider state onto the Pod doc: each Ports row's external port (from
 		the provider's remap), the public IP + SSH port, and status. For a pod with a health
@@ -253,13 +287,25 @@ class PodProvisioner:
 	def await_ready(self):
 		"""The tail every bring-up shares (spawn / start / restart): wait for the provider to
 		publish endpoints, write them onto the Pod, then — for a gated pod — wait for the engine
-		to answer its health path before the gateway route goes live. Returns the parsed pod."""
+		to answer its health path and prove one forward pass before the gateway route goes live.
+		Returns the parsed pod."""
 		ready = self.client.poll_pod_ready(self.pod.pod_id)
 		self.apply_provider_state(ready, running=True)
 		if self.health_path:
 			# The engine keeps loading weights after SSH is up — wait for the health gate so the
 			# status flips Loading → Running and the route registers only once it serves.
 			self.await_engine(ready)
+		if self.is_warmup_due and (error := self.get_warmup_error()):
+			# Loading with no engine_url is a Pod's Broken: the route table needs Running AND an
+			# engine_url, so this withholds the route sync_gateway would otherwise publish.
+			#
+			# It withholds it for the bring-up, not for good. reconcile.sync_all runs on the
+			# two-minute tick and apply_provider_state re-decides on the health path alone, so a
+			# pod that answers /health but cannot generate flips back to Running and publishes.
+			# The Failure doc is what survives. Making it stick means teaching the drift loop
+			# about warmup, which is a synthetic liveness probe — a different feature.
+			self.set_state({"status": "Loading", "engine_url": ""})
+			failure.report("Pod", self.pod.name, "Pod engine failed warmup", error)
 		self.sync_gateway()
 		return ready
 

@@ -12,6 +12,7 @@ import requests
 from grove.cloud_provider.provisioner import PodProvisioner
 from grove.grove.doctype.pod.pod import Pod
 from grove.cloud_provider.runpod import RunPodClient, RunPodError, pod_status
+from grove.serve_command import ServeCommand
 
 
 class FakeClient(RunPodClient):
@@ -440,3 +441,103 @@ class TestServePortIsOpened(unittest.TestCase):
 
 if __name__ == "__main__":
 	unittest.main()
+
+
+WARMUP = ServeCommand("qwen3-35b", {"modality": "text"}, port=8080)
+
+
+class TestPodWarmup(unittest.TestCase):
+	"""One real request before the gateway route goes live. A 200 from /health proves a socket is
+	open; this proves the engine can run a forward pass under the name the gateway routes on."""
+
+	def provisioner(self, api_key="engine-key", **pod_kwargs):
+		pod = serving_pod(**pod_kwargs)
+		pod.get_password = lambda field, raise_exception=True: api_key
+		return PodProvisioner(pod)
+
+	def post(self, response=None, error=None, **kwargs):
+		"""Run get_warmup_error against a stubbed POST; returns (reason, captured call)."""
+		with patch("grove.cloud_provider.provisioner.ServeCommand.for_pod", return_value=WARMUP):
+			with patch("grove.cloud_provider.provisioner.requests.post") as posted:
+				posted.side_effect = error
+				posted.return_value = response
+				return self.provisioner(**kwargs).get_warmup_error(), posted
+
+	def test_it_posts_the_payload_at_the_endpoint_the_gateway_gets(self):
+		# Same address engine_url carries, so a warmup that passes proves the route's own target.
+		_, posted = self.post(SimpleNamespace(status_code=200, text="{}"))
+		url, = posted.call_args.args
+		self.assertEqual(url, "https://abc123-8080.proxy.runpod.net/v1/completions")
+		self.assertEqual(posted.call_args.kwargs["json"]["max_tokens"], 1)
+
+	def test_it_sends_the_bearer_health_never_needed(self):
+		# /health is open, but the engine runs with VLLM_API_KEY set — an unauthenticated POST is
+		# a 401 on a pod that serves perfectly well.
+		_, posted = self.post(SimpleNamespace(status_code=200, text="{}"))
+		self.assertEqual(posted.call_args.kwargs["headers"], {"Authorization": "Bearer engine-key"})
+
+	def test_a_pod_without_a_key_sends_no_header(self):
+		_, posted = self.post(SimpleNamespace(status_code=200, text="{}"), api_key=None)
+		self.assertEqual(posted.call_args.kwargs["headers"], {})
+
+	def test_a_serving_engine_gives_no_reason(self):
+		reason, _ = self.post(SimpleNamespace(status_code=200, text="{}"))
+		self.assertEqual(reason, "")
+
+	def test_a_refusal_is_reported_with_its_status(self):
+		reason, _ = self.post(SimpleNamespace(status_code=500, text="CUDA error: no kernel image"))
+		self.assertIn("500", reason)
+		self.assertIn("no kernel image", reason)
+
+	def test_an_unreachable_engine_is_reported_not_raised(self):
+		reason, _ = self.post(error=requests.ConnectionError("connection refused"))
+		self.assertIn("connection refused", reason)
+
+	def test_a_custom_engine_has_no_payload_to_prove(self):
+		with patch("grove.cloud_provider.provisioner.PodProvisioner.current_status", "Running"):
+			self.assertFalse(self.provisioner(is_custom_engine=True).is_warmup_due)
+			self.assertTrue(self.provisioner().is_warmup_due)
+
+	def test_a_pod_that_never_served_is_not_warmed(self):
+		# await_engine timed out — there is no engine to prove, and the failure would be noise.
+		with patch("grove.cloud_provider.provisioner.PodProvisioner.current_status", "Loading"):
+			self.assertFalse(self.provisioner().is_warmup_due)
+
+
+class TestWarmupWithholdsTheRoute(unittest.TestCase):
+	"""What a failed warmup does to a bring-up: no route, a Failure someone sees, and the pod left
+	Loading rather than Running-but-broken."""
+
+	def await_ready(self, reason):
+		provisioner = PodProvisioner(serving_pod())
+		provisioner._client = SimpleNamespace(poll_pod_ready=lambda pod_id: {"id": "pod1"})
+		calls = {}
+		with patch.multiple(
+			PodProvisioner,
+			apply_provider_state=lambda self, ready, running: None,
+			await_engine=lambda self, ready: None,
+			is_warmup_due=True,
+			get_warmup_error=lambda self: reason,
+			set_state=lambda self, values: calls.setdefault("state", values),
+			sync_gateway=lambda self: calls.setdefault("synced", True),
+		):
+			with patch("grove.cloud_provider.provisioner.failure.report") as reported:
+				provisioner.await_ready()
+		return calls, reported
+
+	def test_a_failed_warmup_takes_the_pod_out_of_the_route_table(self):
+		# Loading with no engine_url is a Pod's Broken — the route table needs Running AND a url.
+		calls, reported = self.await_ready("500 CUDA error")
+		self.assertEqual(calls["state"], {"status": "Loading", "engine_url": ""})
+		self.assertIn("500 CUDA error", reported.call_args.args)
+
+	def test_the_gateway_is_still_synced_so_a_stale_route_is_revoked(self):
+		# Skipping the push would leave whatever the 2-minute tick already published standing.
+		calls, _ = self.await_ready("500 CUDA error")
+		self.assertTrue(calls["synced"])
+
+	def test_a_serving_engine_is_left_alone(self):
+		calls, reported = self.await_ready("")
+		self.assertNotIn("state", calls)
+		self.assertTrue(calls["synced"])
+		reported.assert_not_called()
