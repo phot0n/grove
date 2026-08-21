@@ -13,8 +13,8 @@ from unittest.mock import patch
 
 import frappe
 
-from grove.naming import next_server_name
-from grove.utils import is_id_safe, is_label_under
+from grove.naming import next_deployment_name, next_server_name
+from grove.utils import is_id_safe, is_label_under, slugify
 
 ZONE = "grove.example.com"
 
@@ -96,6 +96,62 @@ class TestServerNaming(unittest.TestCase):
 		# Region doc names are AWS codes today, but nothing forces that — and a space or an
 		# underscore would otherwise reach a DNS record.
 		self.assertEqual(name(self.series, region="AP South 1"), "gw1-ap-south-1")
+
+
+class TestDeploymentNaming(unittest.TestCase):
+	"""The name is what a list row reads as AND the engine's container name (`vllm-<name>`), so it
+	has to say model, region and box, and stay one safe token."""
+
+	def setUp(self):
+		self.series = FakeSeries()
+
+	def name(self, model="frappe/qwen3-8b", server="inf3-ap-south-1", region="ap-south-1"):
+		return next_deployment_name(model, server, region, counter=self.series)
+
+	def test_the_name_says_what_where_and_which_box(self):
+		self.assertEqual(self.name(), "qwen3-8b-ap-south-1-inf3-00001")
+
+	def test_the_provider_prefix_is_not_repeated(self):
+		# Every model of ours is `frappe/...` — the prefix separates nothing inside a deployment.
+		self.assertEqual(self.name(model="acme/llama-3.1-8b"), "llama-3.1-8b-ap-south-1-inf3-00001")
+
+	def test_the_box_keeps_only_its_own_part_of_its_name(self):
+		# inf3-ap-south-1 already ends in the region, which the name carries once already.
+		self.assertEqual(
+			self.name(server="inf12-us-east-1", region="us-east-1"), "qwen3-8b-us-east-1-inf12-00001"
+		)
+
+	def test_a_region_code_goes_in_as_the_provider_writes_it(self):
+		# No shortening rule: AWS, GCP and Azure each code a region differently, and one fitted
+		# to AWS turns `asia-south1` and `southeastasia` into noise.
+		for region in ("asia-south1", "southeastasia", "EU-RO-1"):
+			with self.subTest(region):
+				self.assertIn(slugify(region), self.name(region=region))
+
+	def test_a_colo_box_in_no_region_simply_has_no_region_part(self):
+		self.assertEqual(self.name(server="inf1", region=None), "qwen3-8b-inf1-00001")
+
+	def test_the_number_is_what_keeps_two_of_the_same_apart(self):
+		# One model twice on one box is legitimate — a second engine, its own port and cards.
+		self.assertEqual(
+			[self.name(), self.name()],
+			["qwen3-8b-ap-south-1-inf3-00001", "qwen3-8b-ap-south-1-inf3-00002"],
+		)
+
+	def test_one_counter_serves_every_deployment(self):
+		# Keyed as the old `MD-{#####}` format was, so the numbers carry on from what exists
+		# rather than restarting onto names already taken.
+		self.name()
+		self.name(model="frappe/llama-70b", server="inf9-us-east-1", region="us-east-1")
+		self.assertEqual(list(self.series.current), ["MD-"])
+
+	def test_the_name_is_safe_as_a_container_name(self):
+		# It reaches Docker as `vllm-<name>` and nginx as /e/<name> — the deployment's own
+		# `_instance_slug` would otherwise rewrite it and the doc would name a container that
+		# is not the one running. Dots are legal there, and model ids carry them.
+		generated = self.name(model="acme/Qwen3.5 Coder")
+		self.assertEqual(generated, "qwen3.5-coder-ap-south-1-inf3-00001")
+		self.assertRegex(generated, r"^[a-z0-9._-]+$")
 
 
 if __name__ == "__main__":

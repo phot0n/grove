@@ -28,8 +28,8 @@ class TestSlugify(unittest.TestCase):
 			"-Leading-": "leading",
 			"": "",  # caller throws on empty
 		}
-		for display_name, want in cases.items():
-			self.assertEqual(slugify(display_name), want, display_name)
+		for typed, want in cases.items():
+			self.assertEqual(slugify(typed), want, typed)
 
 
 class TestIsIdSafe(unittest.TestCase):

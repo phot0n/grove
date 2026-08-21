@@ -22,9 +22,9 @@ one own**, because Grove's rule is that state has exactly one owner and everythi
 
 | Doctype | Owns |
 |---|---|
-| `Model` | A model, named `<provider>/<id>`. `published` means *reachable* — it tracks whether a live route exists and is never a manual claim. Not an access gate. |
+| `Model` | A model, named `<provider>/<id>` off the Model ID typed at creation and frozen there. Every one names an HF repo — that is what an engine serves, and what the S3 mirror is filled from. `published` means *reachable* — it tracks whether a live route exists and is never a manual claim. Not an access gate. |
 | `Model Provider` | Who serves a model: `frappe` for our own engines, a vendor for a third-party API. The name is the whole record. |
-| `Model Deployment` | One on-prem placement of a Model on an Inference Server. Re-derives its arguments at deploy time. |
+| `Model Deployment` | One on-prem placement of a Model on an Inference Server, named `<model id>-<region>-<server>-<n>` (`qwen3-8b-ap-south-1-inf3-00007`). Re-derives its arguments at deploy time. |
 | `Model Deployment GPU` | Which GPUs that placement takes (child). |
 | `Pod` | A standalone RunPod vLLM instance. Fully self-contained — its own spawn/sync/restart/terminate, and it registers its own endpoint. Sends its **stored** `serve_command`, so it must be saved before it is re-spawned. |
 | `Pod Env` / `Pod Port` | That pod's environment and its port pool (children). |
@@ -61,6 +61,13 @@ Append-only. Never read to decide anything; read to find out why.
 - **Server names are generated, never typed** (`grove/naming.py`): `<prefix><n>-<region>`, counted per
   region out of `tabSeries`. A name is one DNS label, so the region is a suffix rather than a
   namespace — `*.<zone>` covers `gw1-ap-south-1.<zone>` and nothing deeper.
+- **A deployment's name says what it serves and where** (`grove/naming.py`):
+  `<model id>-<region>-<server>-<n>`, e.g. `qwen3-8b-ap-south-1-inf3-00007`. The region goes in as
+  its provider codes it — no shortening rule, since `ap-south-1`, `asia-south1` and `southeastasia`
+  share none. The box contributes only the part of its name that is not the region (`inf3`), and
+  the number comes out of the same `MD-` series the old `MD-00007` names used. The name is also the
+  engine's container name (`vllm-<name>`) and its path on the box's proxy, so it is never renamed
+  after insert.
 - **A cloud resource id lives in a read-only `Data` field**, written with `db_set`, and its creator is
   guarded by `if self.<id>: return` (see `Network.create_network`). That is what makes provisioning
   re-runnable.

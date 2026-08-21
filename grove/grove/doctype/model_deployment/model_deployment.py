@@ -8,6 +8,7 @@ import frappe
 from frappe.model.document import Document
 
 from grove import failure
+from grove.naming import next_deployment_name
 from grove.utils import is_env_key, is_env_value
 from grove.serve_command import ServeCommand
 
@@ -60,6 +61,13 @@ class ModelDeployment(Document):
 
 	# No on_update sync hook: any change here moves the routes snapshot hash and
 	# grove.pathway_sync.sync_projection pushes it on the next tick.
+
+	def autoname(self):
+		"""`<model id>-<region>-<server>-<n>`, e.g. `qwen3-8b-ap-south-1-inf3-00007` (`grove/naming.py`) — what it serves, where, and off
+		which box, readable from a list row. Region is read off the Inference Server here: the
+		field's `fetch_from` has not run this early."""
+		region = frappe.db.get_value("Inference Server", self.inference_server, "region")
+		self.name = next_deployment_name(self.model, self.inference_server, region)
 
 	def validate(self):
 		self._assign_engine_port()

@@ -6,7 +6,6 @@
  "engine": "InnoDB",
  "field_order": [
   "provider",
-  "display_name",
   "model_id",
   "hf_repo",
   "weights_s3_uri",
@@ -40,25 +39,20 @@
    "options": "Model Provider"
   },
   {
-   "description": "Names the doc: lowercased with spaces/underscores as dashes (e.g. 'Qwen3.5 Coder' → qwen3.5-coder). That name is the client-facing model id — set at creation, not changed if you edit this later.",
-   "fieldname": "display_name",
-   "fieldtype": "Data",
-   "in_list_view": 1,
-   "label": "Display Name",
-   "reqd": 1
-  },
-  {
-   "description": "The id without its provider prefix, slugged from Display Name. Both spellings route during the transition, so a client may send either.",
+   "description": "The client-facing id, without its provider prefix — what a client sends as `model`. Lowercased on save, with spaces and underscores as dashes ('Qwen3.5 Coder' → qwen3.5-coder). Names the doc, so it is set once at creation.",
    "fieldname": "model_id",
    "fieldtype": "Data",
+   "in_list_view": 1,
    "label": "Model ID",
-   "read_only": 1
+   "reqd": 1,
+   "set_only_once": 1
   },
   {
    "description": "→ vllm serve ; the name is the --served-model-name. A GGUF repo ships many quantizations — name one with repo:QUANT (unsloth/Qwen3-0.6B-GGUF:Q4_K_M) so only that file is pulled, and add --tokenizer &lt;base repo&gt; to Extra Serve Args on the deployment, since converting a GGUF's own tokenizer is slow and unreliable. Single-file quantizations only; a split one has to be merged first.",
    "fieldname": "hf_repo",
    "fieldtype": "Data",
-   "label": "HF Repo"
+   "label": "HF Repo",
+   "reqd": 1
   },
   {
    "description": "S3 mirror of the safetensors weights. When set, engines stream them straight from S3 to the GPU (runai streamer) instead of downloading from HF — fill it with Mirror Weights To S3, or clear it to fall back to HF.",

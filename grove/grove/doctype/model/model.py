@@ -28,12 +28,12 @@ class Model(Document):
 		from frappe.types import DF
 
 		attention_heads: DF.Int
-		display_name: DF.Data
 		enable_auto_tool_choice: DF.Check
 		enable_prefix_caching: DF.Check
-		hf_repo: DF.Data | None
+		hf_repo: DF.Data
 		hidden_layers: DF.Int
 		modality: DF.Literal["text", "multimodal", "embedding", "audio"]
+		model_id: DF.Data
 		published: DF.Check
 		reasoning_parser: DF.Data | None
 		thinking: DF.Check
@@ -56,19 +56,19 @@ class Model(Document):
 			)
 
 	def autoname(self):
-		"""Name = `<provider>/<slugged Display Name>`. The name is the client-facing model id (what
-		clients send as `model` and what routes are keyed by), so it's set once at insert
-		— editing Display Name or Provider later does NOT rename it and break live clients.
+		"""Name = `<provider>/<model id>`. The name is what clients send as `model` and what routes
+		are keyed by, so the id is normalised here and then frozen — `set_only_once` on the field
+		is what stops an edit renaming a live model out from under its callers.
 
 		Always prefixed, blank provider included: the prefix IS the id, and one model reachable
 		without it would be an id nobody could tell was ours."""
-		self.model_id = slugify(self.display_name)
+		self.model_id = slugify(self.model_id)
 		if not self.model_id:
-			frappe.throw("Display Name must contain at least one letter or digit.")
-		# slugify keeps a slash, and the slash is what separates the provider from the id — a Display
-		# Name carrying one would name `frappe/a/b` and read as a provider nobody registered.
+			frappe.throw("No Model ID set")
+		# slugify keeps a slash, and the slash is what separates the provider from the id — an id
+		# carrying one would name `frappe/a/b` and read as a provider nobody registered.
 		if "/" in self.model_id:
-			frappe.throw("Display Name cannot contain '/' — it separates the provider from the model id.")
+			frappe.throw("Model ID cannot contain '/'")
 		self.name = f"{self.provider or DEFAULT_PROVIDER}/{self.model_id}"
 
 		# `published` means "reachable" — it tracks whether a live route exists, and is
