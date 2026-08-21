@@ -114,7 +114,7 @@ def sync_from_bucket():
 	for (digest, gpu, tp, model), stats in entries.items():
 		doc = _upsert(digest, gpu, tp, model, stats, bucket)
 		seen.add(doc.name)
-	for name in frappe.get_all("Compile Cache", pluck="name"):
+	for name in frappe.get_list("Compile Cache", pluck="name"):
 		if name not in seen:
 			stale = frappe.get_doc("Compile Cache", name)
 			stale.flags.from_sync = True

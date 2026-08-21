@@ -197,6 +197,10 @@
    "role": "System Manager",
    "share": 1,
    "write": 1
+  },
+  {
+   "read": 1,
+   "role": "Grove Control"
   }
  ],
  "row_format": "Dynamic",

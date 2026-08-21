@@ -17,6 +17,7 @@
  ],
  "fields": [
   {
+   "description": "The login this policy belongs to. One policy per user \u2014 a second one for the same login is what let a budget be doubled by re-provisioning.",
    "fieldname": "user",
    "fieldtype": "Link",
    "in_list_view": 1,
@@ -64,6 +65,7 @@
    "options": "Grove Model Row"
   },
   {
+   "depends_on": "eval: doc.user_group",
    "description": "Models this user may never call. Deny wins over everything \u2014 a group grant and a Public release both lose to it.",
    "fieldname": "section_deny",
    "fieldtype": "Section Break",
@@ -88,7 +90,7 @@
    "link_fieldname": "user"
   }
  ],
- "modified": "2026-07-29 03:46:09.548744",
+ "modified": "2026-08-20 12:35:26.697007",
  "modified_by": "Administrator",
  "module": "Grove",
  "name": "Grove User",
@@ -104,6 +106,12 @@
    "report": 1,
    "role": "System Manager",
    "share": 1,
+   "write": 1
+  },
+  {
+   "create": 1,
+   "read": 1,
+   "role": "Grove Control",
    "write": 1
   }
  ],

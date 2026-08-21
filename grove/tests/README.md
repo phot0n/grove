@@ -32,10 +32,13 @@ For behaviour that only exists against a database: `autoname`, link updates, rea
 bench --site grove.localhost run-tests --app grove --module grove.tests.test_model_ids
 ```
 
-**Subclass `IntegrationTestCase`, never `unittest.TestCase`.** `IntegrationTestCase` wraps each test in
-a transaction and rolls it back; plain `unittest.TestCase` does **not**. A file that got this wrong
-committed four probe Models, two invented Model Providers and one malformed record into the dev site,
-and they had to be deleted by hand. If a test inserts anything, check its base class first.
+**Subclass `IntegrationTestCase`, never `unittest.TestCase`.** `IntegrationTestCase` rolls its writes
+back; plain `unittest.TestCase` does **not**. A file that got this wrong committed four probe Models,
+two invented Model Providers and one malformed record into the dev site, and they had to be deleted by
+hand. If a test inserts anything, check its base class first.
+
+The rollback is **once per class, not once per test** (`addClassCleanup`), so a doc one test inserts is
+still there for the next one — give each test its own names, or insert shared fixtures in `setUpClass`.
 
 ## What a test here is for
 

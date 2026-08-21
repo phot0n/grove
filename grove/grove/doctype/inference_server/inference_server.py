@@ -145,15 +145,16 @@ class InferenceServer(GeneratedName, AnsibleHost, Document):
 		reports every claimant so the clash is visible rather than silently halving VRAM."""
 		gpus = self.gpus
 		claims = {}
-		for deployment in frappe.get_all(
+		for deployment in frappe.get_list(
 			"Model Deployment",
 			filters={"inference_server": self.name, "status": "Active"},
 			fields=["name", "model"],
 		):
-			for row in frappe.get_all(
+			for row in frappe.get_list(
 				"Model Deployment GPU",
 				filters={"parent": deployment.name, "parenttype": "Model Deployment"},
 				fields=["gpu_index"],
+				parent_doctype="Model Deployment",
 			):
 				claims.setdefault(row.gpu_index, []).append(deployment)
 		for gpu in gpus:
