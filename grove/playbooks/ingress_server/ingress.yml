@@ -19,6 +19,7 @@
     ingress_hostname: ""
     # No self-signed certificate on a front box — see gateway.yml.
     grove_tls_selfsigned: false
+    monitoring_arch: "{{ 'arm64' if ansible_architecture == 'aarch64' else 'amd64' }}"
 
   pre_tasks:
     - name: refuse to provision without an admin token
@@ -38,6 +39,10 @@
           the Ingress Server's button, or pass the same extra-vars it does.
 
   roles:
+    # node_exporter before the binary: pathway publishes /metrics/node behind the htpasswd
+    # grove_https writes, and a front that proxies to nothing answers 502 to every scrape. A
+    # front box has no cards, so there is no dcgm_exporter here.
+    - node_exporter
     - grove_https
     - fleet_tls
     - install_gateway_agent

@@ -17,6 +17,17 @@
   vars:
     monitoring_arch: "{{ 'arm64' if ansible_architecture == 'aarch64' else 'amd64' }}"
   roles:
+    # The credential the exporters answer behind, written alongside them: this play is the only
+    # way to re-establish a box's scrape auth without a reboot (Inference Server Setup) or an
+    # engine restart (Deploy), which is what an operator needs when the hash changes. Skipped by
+    # its own guard if no hash was passed, so a hand-run play cannot lock an agent out.
+    #
+    # No certificate here. grove_tls_selfsigned is off because only the inference box's nginx ever
+    # needed one, it is `creates:`-guarded and already on disk, and issuing one on a front box is
+    # what that box explicitly refuses.
+    - role: grove_https
+      vars:
+        grove_tls_selfsigned: false
     - node_exporter
     - role: dcgm_exporter
       when: monitoring_has_gpu | bool

@@ -17,6 +17,7 @@
     # either. The reason this box ever had one (nginx will not start `listen 443 ssl` without a file
     # on disk) left with nginx.
     grove_tls_selfsigned: false
+    monitoring_arch: "{{ 'arm64' if ansible_architecture == 'aarch64' else 'amd64' }}"
 
   # Checked before anything installs: the gateway refuses to start without this token, so a run that
   # forgot it would leave a box with pathway crash-looping.
@@ -33,6 +34,10 @@
   # no wildcard it comes up on :80 in the clear rather than refusing, which is the honest answer for
   # a fleet that has not been given a zone.
   roles:
+    # node_exporter before the binary: pathway publishes /metrics/node behind the htpasswd
+    # grove_https writes, and a front that proxies to nothing answers 502 to every scrape. A
+    # front box has no cards, so there is no dcgm_exporter here.
+    - node_exporter
     - grove_https
     - fleet_tls
     - install_gateway_agent
