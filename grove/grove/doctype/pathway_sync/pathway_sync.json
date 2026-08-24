@@ -19,7 +19,7 @@
  "fields": [
   {"fieldname": "run_at", "fieldtype": "Datetime", "label": "Run At", "read_only": 1, "in_list_view": 1},
   {"fieldname": "sync_type", "fieldtype": "Select", "label": "Sync Type", "options": "Projection\nUsage", "read_only": 1, "in_list_view": 1, "description": "Lock domain: Projection = keys/routes (Full+Incremental share one lock); Usage = usage pull+drain. Runs of the same type serialize."},
-  {"fieldname": "trigger", "fieldtype": "Select", "label": "Trigger", "options": "Scheduled\nProxy Activated\nIngress Activated\nProvision\nManual", "default": "Scheduled", "read_only": 1, "in_list_view": 1},
+  {"fieldname": "trigger", "fieldtype": "Select", "label": "Trigger", "options": "Scheduled\nManual", "default": "Scheduled", "read_only": 1, "in_list_view": 1},
   {"fieldname": "status", "fieldtype": "Select", "label": "Status", "options": "Success\nPartial\nFailed", "read_only": 1, "in_list_view": 1},
   {"fieldname": "column_break_counts", "fieldtype": "Column Break"},
   {"fieldname": "targets_total", "fieldtype": "Int", "label": "Targets Total", "read_only": 1, "in_list_view": 1, "description": "Boxes this run pushed to \u2014 gateways and ingresses together. A run can target one plane only."},

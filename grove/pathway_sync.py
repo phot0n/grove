@@ -20,11 +20,13 @@ Two planes, and what each is given is what keeps them apart. A GATEWAY takes the
 snapshot. An INGRESS takes one thing — the replica table for the boxes it owns.
 
 Two entry points:
-  * sync_projection() — the cron tick: hash-gate each Active box, push drift only.
-    Logs an Pathway Sync doc only when something was actually pushed (or failed).
-  * full_sync(proxies, ingresses) — force-push the complete snapshot to the named
-    boxes, or to every Active one. Buttons, activation and provisioning use this; an
-    empty proxies list means "no gateway work", which is how an ingress-only run asks.
+  * sync_projection() — the cron tick, every minute, and the ONLY automatic path there is:
+    hash-gate each Active box, push drift only. Logs a Pathway Sync doc only when something was
+    actually pushed (or failed). Nothing in a doctype hook, a provision or a pod lifecycle
+    pushes inline — they move the state, and the next tick carries it.
+  * full_sync(proxies, ingresses) — force-push the complete snapshot to the named boxes, or to
+    every Active one. Operator buttons only; an empty proxies list means "no gateway work",
+    which is how the ingress-only button asks.
 
 Both serialize on the Pathway Sync doc's advisory lock so a slow run can't land a stale
 write after a newer one. Every path that reaches a box goes through here, so a push
@@ -590,9 +592,9 @@ def check_state(server_type, name):
 
 
 def full_sync(proxies=None, trigger="Manual", ingresses=None, wait=60):
-	"""Force-push the complete snapshot, skipping the hash gate. Buttons, activation and
-	provisioning use this — those callers mean "this box missed something", so it waits for an
-	in-flight run rather than skipping."""
+	"""Force-push the complete snapshot, skipping the hash gate. The operator buttons use this —
+	a button means "this box missed something", so it waits for an in-flight run rather than
+	skipping."""
 	return sync_projection(
 		trigger=trigger, proxies=proxies, ingresses=ingresses, force=True, wait=wait
 	)
@@ -602,37 +604,6 @@ def full_sync(proxies=None, trigger="Manual", ingresses=None, wait=60):
 
 def _active_proxies():
 	return frappe.get_all("Gateway Server", filters={"status": "Active"}, pluck="name")
-
-
-def active_among(ingresses):
-	"""Those of these ingresses that can actually take a push — Active, and with a Network to
-	build a table from. A Broken or half-configured one is skipped rather than thrown on."""
-	names = {name for name in ingresses if name}
-	if not names:
-		return []
-	return frappe.get_all(
-		"Ingress Server",
-		filters={"name": ("in", list(names)), "status": "Active", "network": ("is", "set")},
-		pluck="name",
-	)
-
-
-def owning_ingresses(inference_servers):
-	"""The Active ingresses that own any of these boxes — the only ones a change to those boxes
-	moves. Everything else in the fleet, including other ingresses in the same Network, holds a
-	table this push would not change.
-
-	Empty for a box that names no ingress, which is a box the gateways still dial directly."""
-	names = [name for name in inference_servers if name]
-	if not names:
-		return []
-	return active_among(
-		frappe.get_all(
-			"Inference Server",
-			filters={"name": ("in", names), "ingress": ("is", "set")},
-			pluck="ingress",
-		)
-	)
 
 
 def _active_ingresses():

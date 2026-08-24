@@ -57,7 +57,7 @@ one bucket, not the population. The full contract lives in `plan_agent_state_syn
 repo root.
 
 ```
-every 2 min             Grove                                    box (pathway + Redis)
+every minute            Grove                                    box (pathway + Redis)
                           │                                        │
   build snapshot,         │──── GET /grove-admin/state-hash ──────▶│
   hash each section       │◀··· hashes the box holds ··············│
@@ -113,10 +113,14 @@ is ever consulted.
 
 | When | Job | Note |
 |---|---|---|
-| `*/2` | `pathway_sync.sync_projection` | hash-gated: pushes each box only what it does not already hold; a fleet in sync logs nothing |
+| `*/1` | `pathway_sync.sync_projection` | hash-gated: pushes each box only what it does not already hold; a fleet in sync logs nothing |
 | `*/2` | `usage_pull.pull_all` | drain is delete-on-read, so it is **1-shot, never retried** |
-| `*/5` | `cloud_provider.reconcile.sync_all` | the provider owns whether a pod is up; this closes the drift |
+| `*/2` | `cloud_provider.reconcile.sync_all` | the provider owns whether a pod is up; this closes the drift |
 | daily | `usage_pull.reactivate_rate_limited`, `tls.renew_fleet_certificate` | |
+
+Nothing else pushes. A doctype hook, a provision and a pod lifecycle all just write state; the
+tick carries it within a minute. The only manual paths are Gateway Server → **Full Sync**, Ingress
+Server → **Sync Replicas**, and **Force Sync All** on the Pathway Sync list.
 
 There is no separate backstop job: the hashes live on the box, so losing the store means losing
 them, which the very next tick reads as drift and heals. All Projection runs serialize on one

@@ -12,6 +12,7 @@ contract is plan_agent_state_sync.md at the repo root.
 
 import unittest
 import unittest.mock
+from pathlib import Path
 
 import frappe
 
@@ -643,7 +644,7 @@ class TestSyncProjection(unittest.TestCase):
 		self.assertEqual(doc.status, "Partial")
 
 	def test_full_sync_forces_every_box(self):
-		# The wrapper the buttons and provisioning call — it must arrive with force on.
+		# The wrapper the operator buttons call — it must arrive with force on.
 		_name, _doc, targets = self.run_projection({"gw1": self.row()}, proxies=("gw1",), entry=pathway_sync.full_sync)
 		self.assertEqual(targets, [("Gateway Server", "gw1", True)])
 
@@ -669,6 +670,28 @@ class TestSyncProjection(unittest.TestCase):
 		):
 			pathway_sync.sync_projection(proxies=[], ingresses=["ing1"])
 		self.assertEqual([(a[0], a[1]) for a in seen], [("Ingress Server", "ing1")])
+
+
+
+class TestTheTickIsTheOnlyAutomaticPush(unittest.TestCase):
+	"""Projection is the cron tick's job. Every other caller is an operator pressing a button —
+	an inline push in a lifecycle hook is the drift this replaced."""
+
+	BUTTONS = {
+		"pathway_sync.py",
+		"grove/doctype/gateway_server/gateway_server.py",
+		"grove/doctype/ingress_server/ingress_server.py",
+		"grove/doctype/pathway_sync/pathway_sync.py",
+	}
+
+	def test_nothing_but_the_buttons_names_full_sync(self):
+		root = Path(pathway_sync.__file__).parent
+		found = {
+			str(path.relative_to(root))
+			for path in root.rglob("*.py")
+			if "tests" not in path.parts and "full_sync" in path.read_text()
+		}
+		self.assertEqual(found, self.BUTTONS)
 
 
 if __name__ == "__main__":

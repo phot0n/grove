@@ -541,16 +541,6 @@ def deploy_model(model_deployment):
 
 	sync_published(md.model)
 	frappe.db.commit()
-	if rc == 0:
-		from grove import pathway_sync
-
-		# Gateway routes are global — every gateway holds a row for every model — so all of them.
-		# The replica table is not: only the ingress that OWNS this box has changed, and the rest
-		# of the fleet already holds the table this push would hand them.
-		pathway_sync.full_sync(
-			trigger="Provision",
-			ingresses=pathway_sync.owning_ingresses([md.inference_server]),
-		)
 	return play_name, rc
 
 

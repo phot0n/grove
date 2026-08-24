@@ -168,10 +168,12 @@ fixtures = [
 
 scheduler_events = {
 	"cron": {
+		# The only automatic projection there is — nothing in a doctype hook, a provision or a pod
+		# lifecycle pushes inline. Hash-gated: each box is pushed only what it does not already
+		# hold, and a box that lost its store lost its hashes with it, so the same tick is also
+		# the full repair. An overrun tick skips on the advisory lock rather than stacking.
+		"* * * * *": ["grove.pathway_sync.sync_projection"],
 		"*/2 * * * *": [
-			# Hash-gated: each box is pushed only what it does not already hold, and a box that
-			# lost its store lost its hashes with it, so the same tick is also the full repair.
-			"grove.pathway_sync.sync_projection",
 			"grove.usage_pull.pull_all",
 			"grove.cloud_provider.reconcile.sync_all",
 		],

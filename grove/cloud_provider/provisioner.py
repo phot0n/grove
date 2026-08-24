@@ -287,7 +287,7 @@ class PodProvisioner:
 	def await_ready(self):
 		"""The tail every bring-up shares (spawn / start / restart): wait for the provider to
 		publish endpoints, write them onto the Pod, then — for a gated pod — wait for the engine
-		to answer its health path and prove one forward pass before the gateway route goes live.
+		to answer its health path and prove one forward pass before it counts as serving.
 		Returns the parsed pod."""
 		ready = self.client.poll_pod_ready(self.pod.pod_id)
 		self.apply_provider_state(ready, running=True)
@@ -297,7 +297,7 @@ class PodProvisioner:
 			self.await_engine(ready)
 		if self.is_warmup_due and (error := self.get_warmup_error()):
 			# Loading with no engine_url is a Pod's Broken: the route table needs Running AND an
-			# engine_url, so this withholds the route sync_gateway would otherwise publish.
+			# engine_url, so this leaves the projection tick nothing to publish.
 			#
 			# It withholds it for the bring-up, not for good. reconcile.sync_all runs on the
 			# two-minute tick and apply_provider_state re-decides on the health path alone, so a
@@ -306,15 +306,14 @@ class PodProvisioner:
 			# about warmup, which is a synthetic liveness probe — a different feature.
 			self.set_state({"status": "Loading", "engine_url": ""})
 			failure.report("Pod", self.pod.name, "Pod engine failed warmup", error)
-		self.sync_gateway()
+		self.sync_model_published()
 		return ready
 
-	def sync_gateway(self, push=True):
-		"""On a serving Pod lifecycle transition: recompute the Model's `published` flag (a
-		Running Pod is a live deployment) and push the route table so the endpoint reaches the
-		gateway. Serving pods have no Model Deployment to drive either, so their lifecycle
-		triggers both here. No-op for a non-serving pod. Best-effort — logged, never fatal.
-		`push=False` keeps the published flag current but leaves the projection to the caller."""
+	def sync_model_published(self):
+		"""On a serving Pod lifecycle transition: recompute the Model's `published` flag — a
+		Running Pod is a live deployment, and a serving pod has no Model Deployment to drive it.
+		No-op for a non-serving pod. The route itself follows from `engine_url`, which the
+		projection tick reads off the Pod."""
 		model = frappe.db.get_value("Pod", self.pod.name, "model")
 		if not model:
 			return
@@ -322,16 +321,6 @@ class PodProvisioner:
 
 		# Running pod → published=1; Stopped/Terminated → 0 (unless another live route).
 		sync_published(model)
-		if not push:
-			return
-		try:
-			from grove import pathway_sync
-
-			# Gateways only: a pod has no Machine and so no ingress, and never appears in any
-			# ingress's replica table.
-			pathway_sync.full_sync(trigger="Provision", ingresses=[])
-		except Exception:
-			frappe.log_error(title="gateway full_sync after pod change failed")
 
 	def set_state(self, values):
 		"""Status-ish writes go through db.set_value: cheap, and they skip validate so a
@@ -342,8 +331,8 @@ class PodProvisioner:
 	# ── Lifecycle ─────────────────────────────────────────────────────────────
 
 	def spawn(self):
-		"""Create the pod on its provider from the Pod doc, record the provider id, wait for it
-		to serve, and register a serving endpoint with the gateway."""
+		"""Create the pod on its provider from the Pod doc, record the provider id, and wait for
+		it to serve."""
 		spawn_kwargs = self.spawn_kwargs  # assembled (and validated) before anything is billed
 		try:
 			self.set_state({"status": "Provisioning"})
@@ -358,11 +347,10 @@ class PodProvisioner:
 		except RunPodError as e:
 			return self.fail(e, f"Pod spawn failed {self.pod.name}")
 
-	def sync(self, wait=False, push_gateway=True):
+	def sync(self, wait=False):
 		"""Pull the pod's current provider state onto the Pod (external ports / IP / SSH /
-		status / engine_url), then refresh the gateway (ports may have moved on restart).
-		`push_gateway=False` skips the projection run — for the scheduled reconcile, which
-		pushes once for the whole fleet instead of once per pod."""
+		status / engine_url) and recompute the Model's published flag. The route table follows
+		on the next projection tick."""
 		self.require_pod_id("spawn it first")
 		try:
 			pod_api = (
@@ -374,11 +362,11 @@ class PodProvisioner:
 				raise
 			# Gone on the provider → terminated outside Grove (e.g. the RunPod console).
 			self.set_state({"pod_id": "", "status": "Terminated", "engine_url": ""})
-			self.sync_gateway()
+			self.sync_model_published()
 			return {"status": "Terminated"}
 		running = pod_status(pod_api.get("status")) == "Running" and bool(pod_api.get("public_ip"))
 		self.apply_provider_state(pod_api, running)
-		self.sync_gateway(push=push_gateway)
+		self.sync_model_published()
 		return {"status": self.current_status}
 
 	def restart(self):
@@ -397,10 +385,10 @@ class PodProvisioner:
 
 		config_kwargs = self.config_kwargs
 		try:
-			# Drop the route before the container goes down: the reset can take as long as a
-			# weight load, and the gateway would otherwise keep sending traffic at a dead engine.
+			# Clear the route target before the container goes down: the reset can take as long as
+			# a weight load, and the tick republishes from engine_url once it serves again.
 			self.set_state({"status": "Provisioning", "engine_url": ""})
-			self.sync_gateway()
+			self.sync_model_published()
 
 			self.client.update_pod(self.pod.pod_id, **config_kwargs)
 			# RunPod re-draws the port map on a reset, so endpoints are re-read, not assumed.
@@ -411,11 +399,11 @@ class PodProvisioner:
 
 	def stop(self):
 		"""Stop the provider pod: frees the GPU but keeps the pod and its volume (so weights
-		survive), drops the gateway route, and marks it Stopped. start() resumes it."""
+		survive), clears its route target, and marks it Stopped. start() resumes it."""
 		self.require_pod_id("nothing to stop")
 		self.client.stop_pod(self.pod.pod_id)
 		self.set_state({"status": "Stopped", "engine_url": ""})
-		self.sync_gateway()
+		self.sync_model_published()
 		return {"status": "Stopped"}
 
 	def start(self):
@@ -428,8 +416,8 @@ class PodProvisioner:
 		return {"status": self.current_status}
 
 	def terminate(self):
-		"""Terminate the provider pod (frees GPU/disk/billing), clear its id + engine_url, mark
-		it Terminated, and drop its endpoint from the gateway."""
+		"""Terminate the provider pod (frees GPU/disk/billing), clear its id + engine_url, and
+		mark it Terminated. The tick prunes its route on the next pass."""
 		if not self.pod.pod_id:
 			return {"status": "error", "message": "No provider pod to terminate"}
 		try:
@@ -437,7 +425,7 @@ class PodProvisioner:
 		except RunPodError as e:
 			return {"status": "error", "message": str(e)}
 		self.set_state({"pod_id": "", "status": "Terminated", "engine_url": ""})
-		self.sync_gateway()
+		self.sync_model_published()
 		return {"status": "success"}
 
 	# ── Guards ────────────────────────────────────────────────────────────────

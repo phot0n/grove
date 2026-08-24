@@ -74,14 +74,6 @@ class GatewayServer(GeneratedName, FleetHost, Document):
 			self.admin_token = frappe.generate_hash(length=48)
 
 	def on_update(self):
-		# A newly-Active proxy needs the full current state now, not on the next tick.
-		if self.has_value_changed("status") and self.status == "Active" and self.admin_url:
-			frappe.enqueue(
-				"grove.pathway_sync.full_sync",
-				queue="short",
-				proxies=[self.name],
-				trigger="Proxy Activated",
-			)
 		if self.has_value_changed("status") and self.status == "Terminated":
 			self.remove_dns_records()
 		# An inference box only answers on 443 to addresses in the proxy fleet, so a proxy that
@@ -326,11 +318,10 @@ class GatewayServer(GeneratedName, FleetHost, Document):
 		frappe.db.commit()
 
 		if rc == 0:
-			# DNS before the sync: the routes push goes to admin_url, which is this box's own
-			# name the moment a zone is set, and nothing resolves it until this runs.
+			# Its own name has to resolve before the tick pushes to admin_url, which is that name
+			# the moment a zone is set.
 			self.sync_dns_records()
 			# provision writes status and public_ip through db.set_value, so on_update never
 			# fires here — this is the only thing that lets a new proxy reach an engine.
 			sync_fleet_ingress()
-			pathway_sync.full_sync(proxies=[self.name], trigger="Provision")
 		return play_name, rc

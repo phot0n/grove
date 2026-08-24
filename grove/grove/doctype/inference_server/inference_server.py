@@ -6,7 +6,6 @@ import frappe
 from frappe.model.document import Document
 
 from grove import failure
-from grove import pathway_sync
 from grove.ansible import AnsibleHost
 from grove.monitoring import run_exporters_play
 from grove.naming import GeneratedName
@@ -37,6 +36,9 @@ class InferenceServer(GeneratedName, AnsibleHost, Document):
 	# Its name is no DNS record of its own, but it rides on every route as `server` and into request ids.
 	name_prefix = "inf"
 
+	# No on_update sync hook: moving a box between ingresses moves both tables' hashes and
+	# grove.pathway_sync.sync_projection pushes them on the next tick.
+
 	def validate(self):
 		self.validate_ingress_network()
 		self.validate_instance_store()
@@ -52,24 +54,6 @@ class InferenceServer(GeneratedName, AnsibleHost, Document):
 				f"Machine {self.machine} has no instance-store NVMe (run Sync Instance Type "
 				"on it if that looks wrong) — untick Use Instance Store For HF Cache."
 			)
-
-	def on_update(self):
-		"""Moving a box between ingresses is the cutover, and it changes three tables at once:
-		the old owner loses these replicas, the new one gains them, and every gateway's row for
-		these models flips between a direct engine and an ingress hand-off.
-
-		Pushed here because nothing else would. The scheduled run repairs it within a tick, but a
-		cutover that only takes effect on the next cron is a cutover nobody can watch."""
-		if not self.has_value_changed("ingress"):
-			return
-		before = self.get_doc_before_save()
-		moved = [self.ingress, before.ingress if before else None]
-		frappe.enqueue(
-			"grove.pathway_sync.full_sync",
-			queue="short",
-			trigger="Provision",
-			ingresses=pathway_sync.active_among(moved),
-		)
 
 	def validate_ingress_network(self):
 		"""An ingress can only reach this box privately if the two share a VPC.

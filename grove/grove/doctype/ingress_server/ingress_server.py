@@ -5,7 +5,6 @@ import frappe
 from frappe.model.document import Document
 
 from grove import failure
-from grove import pathway_sync
 from grove.cloud_provider.route53 import Route53Error
 from grove.fleet import FleetHost, gateway_agent_version
 from grove.grove.doctype.network.network import sync_fleet_ingress
@@ -73,16 +72,6 @@ class IngressServer(GeneratedName, FleetHost, Document):
 			)
 
 	def on_update(self):
-		# A newly-Active ingress has an empty replica table until something fills it, and the
-		# scheduled run only ticks when a deployment moved.
-		if self.has_value_changed("status") and self.status == "Active" and self.admin_url:
-			frappe.enqueue(
-				"grove.pathway_sync.full_sync",
-				queue="short",
-				proxies=[],
-				ingresses=[self.name],
-				trigger="Ingress Activated",
-			)
 		if self.has_value_changed("status") and self.status == "Terminated":
 			self.remove_dns_records()
 		# An inference box only opens its front to addresses in the fleet, and this ingress's
@@ -175,13 +164,12 @@ class IngressServer(GeneratedName, FleetHost, Document):
 		frappe.db.commit()
 
 		if rc == 0:
-			# DNS before the table: the push goes to admin_url, which is this box's own name the
-			# moment a zone is set, and nothing resolves it until this runs.
+			# Its own name has to resolve before the tick pushes to admin_url, which is that name
+			# the moment a zone is set.
 			self.sync_dns_records()
-			# provision writes status through db.set_value, so on_update never fires here — these
-			# two are what let a new ingress reach an engine and be let through to one.
+			# provision writes status through db.set_value, so on_update never fires here — this
+			# is what lets a new ingress be let through to an engine.
 			sync_fleet_ingress()
-			pathway_sync.full_sync(proxies=[], ingresses=[self.name], trigger="Provision")
 		return play_name, rc
 
 	def provision_variables(self, settings):

@@ -54,3 +54,12 @@ class PathwaySync(Document):
 			(cutoff,),
 		)
 		frappe.db.delete("Pathway Sync", {"creation": ("<", cutoff)})
+
+
+@frappe.whitelist(methods=["POST"])
+def force_sync_all():
+	"""Button (list view): force-push the complete snapshot to every Active gateway and ingress,
+	skipping the hash gate. Enqueued — a forced run waits on the tick's lock."""
+	frappe.only_for("System Manager")
+	frappe.enqueue("grove.pathway_sync.full_sync", queue="short", trigger="Manual")
+	frappe.msgprint("Force sync queued for every Active box.", alert=True)

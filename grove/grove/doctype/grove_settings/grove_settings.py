@@ -227,9 +227,3 @@ class GroveSettings(Document):
 		it here. Does not ship it — provision and the daily renewal do that."""
 		frappe.enqueue("grove.tls.issue_fleet_certificate", queue="long", timeout=900)
 		frappe.msgprint(f"Requesting a certificate for *.{self.fleet_zone} — this takes a minute.", alert=True)
-
-	@frappe.whitelist()
-	def full_sync_all(self):
-		"""Button: push the COMPLETE state to every Active proxy."""
-		frappe.enqueue("grove.pathway_sync.full_sync", queue="short", trigger="Manual")
-		frappe.msgprint("Full sync queued for all Active proxies.", alert=True)

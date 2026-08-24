@@ -519,7 +519,7 @@ class TestWarmupWithholdsTheRoute(unittest.TestCase):
 			is_warmup_due=True,
 			get_warmup_error=lambda self: reason,
 			set_state=lambda self, values: calls.setdefault("state", values),
-			sync_gateway=lambda self: calls.setdefault("synced", True),
+			sync_model_published=lambda self: calls.setdefault("synced", True),
 		):
 			with patch("grove.cloud_provider.provisioner.failure.report") as reported:
 				provisioner.await_ready()
@@ -531,8 +531,8 @@ class TestWarmupWithholdsTheRoute(unittest.TestCase):
 		self.assertEqual(calls["state"], {"status": "Loading", "engine_url": ""})
 		self.assertIn("500 CUDA error", reported.call_args.args)
 
-	def test_the_gateway_is_still_synced_so_a_stale_route_is_revoked(self):
-		# Skipping the push would leave whatever the 2-minute tick already published standing.
+	def test_the_published_flag_is_still_recomputed(self):
+		# A pod that failed warmup must stop counting as a live deployment for its Model.
 		calls, _ = self.await_ready("500 CUDA error")
 		self.assertTrue(calls["synced"])
 
@@ -541,3 +541,24 @@ class TestWarmupWithholdsTheRoute(unittest.TestCase):
 		self.assertNotIn("state", calls)
 		self.assertTrue(calls["synced"])
 		reported.assert_not_called()
+
+
+class TestSyncOfAPodGoneFromTheProvider(unittest.TestCase):
+	"""A pod the provider 404s is Terminated by sync(), and its Model's published flag is
+	recomputed so it stops advertising a pod that no longer exists."""
+
+	def test_a_vanished_pod_is_terminated_and_unpublished(self):
+		provisioner = PodProvisioner(serving_pod())
+
+		def gone(pod_id):
+			raise RunPodError("404 pod not found")
+
+		provisioner._client = SimpleNamespace(get_pod=gone)
+		synced = []
+		with patch.multiple(
+			PodProvisioner,
+			set_state=lambda self, values: None,
+			sync_model_published=lambda self: synced.append(True),
+		):
+			self.assertEqual(provisioner.sync(), {"status": "Terminated"})
+		self.assertEqual(synced, [True])
