@@ -239,6 +239,25 @@ def has_active_deployment(model, exclude=None):
 	return bool(frappe.db.get_all("Pod", filters={"model": model, "status": "Running"}, limit=1))
 
 
+# The fields an engine derives its launch arguments from — read live off the Model, never mirrored
+# onto a placement, so editing one here reaches every placement on the next deploy.
+LAUNCH_FIELDS = (
+	"hf_repo", "weights_s3_uri", "modality", "enable_prefix_caching",
+	"enable_auto_tool_choice", "tool_call_parser", "thinking", "reasoning_parser",
+	"attention_heads", "weights_gb",
+)
+
+
+def launch_config(model):
+	"""This Model's intrinsic launch config as a plain mapping, {} when it names no Model.
+
+	Lives here rather than in grove/serving so that package stays frappe-free: these are Model
+	columns, and an engine is handed the answer rather than fetching it."""
+	if not model:
+		return {}
+	return frappe.db.get_value("Model", model, LAUNCH_FIELDS, as_dict=True) or {}
+
+
 def sync_published(model, exclude=None):
 	"""Recompute Model.published to reflect whether it has a live deployment.
 	Called whenever a deployment's status changes (deploy / teardown / broken),

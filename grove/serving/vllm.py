@@ -1,127 +1,59 @@
 # Copyright (c) 2026, Grove and contributors
 # For license information, please see license.txt
-"""One source of truth for `vllm serve` arguments, and for the one request that proves the engine
-they started can serve. Both placements build them here: a Pod serves a Model in a container
-(args → dockerStartCmd) and a Model Deployment serves it under systemd on an Inference Server
-(args → the unit's ExecStart). Model-intrinsic flags come from the Model, per-box tuning from
-whichever doc owns the placement."""
+"""`vllm serve` arguments, and the one request that proves the engine they started can serve. Both
+placements build them here: a Pod serves a Model in a container (command → dockerStartCmd) and a
+Model Deployment serves it in a container on a box (repo + args → the rendered run script).
+Model-intrinsic flags come from the Model, per-box tuning from whichever doc owns the placement."""
 
 import json
 import math
 import shlex
 
-import frappe
-
-# Model fields the args are derived from — read live, never mirrored onto the placement.
-MODEL_FIELDS = (
-	"hf_repo", "weights_s3_uri", "modality", "enable_prefix_caching",
-	"enable_auto_tool_choice", "tool_call_parser", "thinking", "reasoning_parser",
-	"attention_heads", "weights_gb",
-)
-
-DEFAULT_PORT = 8080
-DEFAULT_MAX_MODEL_LEN = 8192
-DEFAULT_GPU_MEMORY_UTILIZATION = 0.9
-# What the ROUTING side assumes an engine runs concurrently when the placement names no number.
-# Not passed to vLLM: a placement that states nothing gets vLLM's own sizing, which reads the model
-# and the KV cache it actually ended up with and is a better number than one imposed from here.
-#
-# So this is an assumption, not a contract, and the two can drift: vLLM's V1 default is 1024 today
-# but moves with the image tag, which is per Engine Image and defaults to `latest`. Drift only
-# costs accuracy in the capacity gate — the engine queues what it cannot run, and a placement that
-# needs the number held exactly should set max_num_seqs, which pins both sides to it.
-DEFAULT_MAX_NUM_SEQS = 1024
+from grove.serving.base import Engine
 
 
-class ServeCommand:
-	"""The `vllm serve` arguments for one placement of a Model. `model` is a mapping of
-	MODEL_FIELDS (read live off the Model); everything else is per-box tuning."""
+class VllmEngine(Engine):
+	"""An image whose entrypoint takes `vllm serve` arguments, so a placement derives them from
+	the Model."""
 
-	def __init__(
-		self,
-		model_name,
-		model,
-		port,
-		gpu_count=1,
-		pipeline_parallel_size=1,
-		gpu_vram_gb=None,
-		kv_cache_dtype=None,
-		gpu_memory_utilization=None,
-		max_model_len=None,
-		max_num_batched_tokens=None,
-		max_num_seqs=None,
-		attention_backend=None,
-		aliases=None,
-		extra_serve_args=None,
-		host="0.0.0.0",
-	):
-		self.model_name = model_name
-		self.model = model or {}
-		self.port = int(port or DEFAULT_PORT)
-		self.gpu_count = int(gpu_count or 1)
-		self.pipeline_parallel_size = int(pipeline_parallel_size or 1)
-		self.gpu_vram_gb = gpu_vram_gb
-		self.kv_cache_dtype = kv_cache_dtype or "auto"
-		self.gpu_memory_utilization = gpu_memory_utilization or DEFAULT_GPU_MEMORY_UTILIZATION
-		self.max_model_len = int(max_model_len or DEFAULT_MAX_MODEL_LEN)
-		# 0 = leave it to vLLM, which sizes it off the model and the KV cache it ends up with.
-		# Deliberately not defaulted like max_num_seqs: the right number depends on chunked
-		# prefill and the model kind, and nothing reads it back the way the gateway reads the
-		# sequence cap.
-		self.max_num_batched_tokens = int(max_num_batched_tokens or 0)
-		# 0 = leave it to vLLM, same as max_num_batched_tokens above. The routing side still needs
-		# a number to hold the engine to and assumes DEFAULT_MAX_NUM_SEQS.
-		self.max_num_seqs = int(max_num_seqs or 0)
-		self.attention_backend = attention_backend or "auto"
-		self.aliases = (aliases or "").replace(",", " ").split()
-		self.extra_serve_args = shlex.split(extra_serve_args or "")
-		self.host = host
-
-	@classmethod
-	def for_pod(cls, pod):
-		"""Container placement: the pod's GPUs split TP x PP, serve_port the port."""
-		return cls(
-			pod.model,
-			_model_row(pod.model),
-			port=pod.serve_port,
-			gpu_count=pod.gpu_count,
-			pipeline_parallel_size=pod.pipeline_parallel_size,
-			gpu_vram_gb=pod.gpu_vram_gb,
-			kv_cache_dtype=pod.kv_cache_dtype,
-			gpu_memory_utilization=pod.gpu_memory_utilization,
-			max_model_len=pod.max_model_len,
-			max_num_seqs=pod.max_num_seqs,
-			attention_backend=pod.attention_backend,
-			aliases=pod.aliases,
-			extra_serve_args=pod.extra_serve_args,
-		)
-
-	@classmethod
-	def for_deployment(cls, deployment):
-		"""Systemd placement: the pinned GPU rows split TP x PP, on the box-local
-		engine_port."""
-		return cls(
-			deployment.model,
-			_model_row(deployment.model),
-			port=deployment.engine_port,
-			gpu_count=len(deployment.gpus or []),
-			pipeline_parallel_size=deployment.pipeline_parallel_size,
-			gpu_vram_gb=deployment.gpu_vram_gb,
-			kv_cache_dtype=deployment.kv_cache_dtype,
-			gpu_memory_utilization=deployment.gpu_memory_utilization,
-			max_model_len=deployment.max_model_len,
-			max_num_batched_tokens=deployment.max_num_batched_tokens,
-			max_num_seqs=deployment.max_num_seqs,
-			attention_backend=deployment.attention_backend,
-			aliases=deployment.aliases,
-			extra_serve_args=deployment.extra_serve_args,
-		)
+	# Not passed to vLLM: a placement that states nothing gets vLLM's own sizing, which reads the
+	# model and the KV cache it actually ended up with and is a better number than one imposed
+	# from here.
+	#
+	# So this is an assumption, not a contract, and the two can drift: vLLM's V1 default is 1024
+	# today but moves with the image tag, which is per Engine Image and defaults to `latest`.
+	# Drift only costs accuracy in the capacity gate — the engine queues what it cannot run, and a
+	# placement that needs the number held exactly should set max_num_seqs, which pins both sides.
+	default_concurrency = 1024
 
 	@property
-	def tensor_parallel_size(self):
-		"""GPUs left for tensor parallelism once the pipeline stages are carved out —
-		vLLM's world size is TP x PP, which has to equal the GPUs on hand."""
-		return max(self.gpu_count // self.pipeline_parallel_size, 1)
+	def repo(self):
+		"""The positional argument to `vllm serve` — the S3 mirror when one is set (weights
+		stream straight to the GPU), the HF repo otherwise."""
+		return self.model.get("weights_s3_uri") or self.model.get("hf_repo") or ""
+
+	@property
+	def health_path(self):
+		"""vLLM's own liveness endpoint. Needs no api-key, unlike /v1/models."""
+		return "/health"
+
+	@property
+	def has_api_key(self):
+		"""vLLM enforces VLLM_API_KEY, and on-prem that is the only per-engine credential."""
+		return True
+
+	@property
+	def usable_vram_gb(self):
+		"""VRAM vLLM may allocate across the placement's GPUs, 0 when the per-GPU VRAM
+		isn't known (on-prem rows unfilled, or the provider's GPU types not fetched)."""
+		if not self.gpu_vram_gb:
+			return 0
+		return self.gpu_count * self.gpu_vram_gb * self.gpu_memory_utilization
+
+	@property
+	def is_embedding(self):
+		"""Pooling model: serves /v1/embeddings, so the chat-only flags are meaningless."""
+		return self.model.get("modality") == "embedding"
 
 	@property
 	def placement_errors(self):
@@ -153,35 +85,6 @@ class ServeCommand:
 		return errors
 
 	@property
-	def weights_gb(self):
-		"""Size of the Model's weights, 0 when it hasn't been fetched off the repo yet."""
-		return self.model.get("weights_gb") or 0
-
-	@property
-	def usable_vram_gb(self):
-		"""VRAM vLLM may allocate across the placement's GPUs, 0 when the per-GPU VRAM
-		isn't known (on-prem rows unfilled, or the provider's GPU types not fetched)."""
-		if not self.gpu_vram_gb:
-			return 0
-		return self.gpu_count * self.gpu_vram_gb * self.gpu_memory_utilization
-
-	@property
-	def repo(self):
-		"""The positional argument to `vllm serve` — the S3 mirror when one is set (weights
-		stream straight to the GPU), the HF repo otherwise."""
-		return self.model.get("weights_s3_uri") or self.model.get("hf_repo")
-
-	@property
-	def is_streaming(self):
-		"""Weights come off the S3 mirror via the runai streamer, not the HF cache."""
-		return bool(self.model.get("weights_s3_uri"))
-
-	@property
-	def is_embedding(self):
-		"""Pooling model: serves /v1/embeddings, so the chat-only flags are meaningless."""
-		return self.model.get("modality") == "embedding"
-
-	@property
 	def warmup_request(self):
 		"""The smallest real inference this placement can serve, as {path, body} — proof the engine
 		runs a forward pass under the name the gateway routes on, which a 200 from /v1/models does
@@ -202,7 +105,7 @@ class ServeCommand:
 
 	@property
 	def args(self):
-		"""The flags only, without the positional repo (the systemd unit supplies that)."""
+		"""The flags only, without the positional repo (the run script supplies that)."""
 		args = [
 			"--served-model-name", self.model_name, *self.aliases,
 			"--host", self.host,
@@ -239,7 +142,7 @@ class ServeCommand:
 			args += ["--max-num-batched-tokens", str(self.max_num_batched_tokens)]
 		# Only when the placement states one. Unset means vLLM sizes it off the model and the KV
 		# cache it ends up with, which is a better number than any we would impose — see
-		# DEFAULT_MAX_NUM_SEQS for what the routing side assumes in that case.
+		# default_concurrency for what the routing side assumes in that case.
 		if self.max_num_seqs:
 			args += ["--max-num-seqs", str(self.max_num_seqs)]
 		# A flag, not VLLM_ATTENTION_BACKEND: that env var is gone in vLLM 0.24 (nothing in
@@ -281,10 +184,34 @@ class ServeCommand:
 		shlex-joined: the streamer's JSON arg carries braces a shell would brace-expand."""
 		return shlex.join([self.repo, *self.args]) if self.repo else ""
 
-
-def _model_row(model_name):
-	"""The Model's intrinsic launch config, read live. Delegates while grove.serving and this
-	module coexist — Model.launch_config is the one owner."""
-	from grove.grove.doctype.model.model import launch_config
-
-	return launch_config(model_name)
+	def env(self, hf_home="", cache_root="", api_key="", hf_token="", streaming_env=None):
+		"""vLLM's own variables. Insertion order reproduces the on-prem env file line for line —
+		see Engine.env for why that matters."""
+		env = {
+			# What --enable-log-requests/--enable-log-outputs actually emit at.
+			"VLLM_LOGGING_LEVEL": "DEBUG",
+			# Telemetry is off for every image: huggingface_hub reads this with a plain env lookup
+			# in every version, so unlike hf_transfer it cannot crash an image without extras.
+			"HF_HUB_DISABLE_TELEMETRY": "1",
+			# vLLM phones home on startup unless told not to.
+			"VLLM_NO_USAGE_STATS": "1",
+		}
+		if self.is_streaming:
+			env.update(streaming_env or {})
+		if hf_token:
+			env["HF_TOKEN"] = hf_token
+		if self.allow_long_max_model_len:
+			env["VLLM_ALLOW_LONG_MAX_MODEL_LEN"] = "1"
+		# Only when the placement hands the engine its own HF cache. On a box Ansible pre-downloads
+		# with the host venv, so the container never fetches and the fast-transfer knob is moot.
+		if hf_home:
+			env["HF_HOME"] = hf_home
+			env["HF_XET_HIGH_PERFORMANCE"] = "1"
+		if cache_root:
+			# Compile caches on the placement's durable path so a restart skips torch.compile.
+			env["VLLM_CACHE_ROOT"] = cache_root
+			env["TRITON_CACHE_DIR"] = f"{cache_root}/triton"
+			env["TORCHINDUCTOR_CACHE_DIR"] = f"{cache_root}/torchinductor"
+		if api_key:
+			env["VLLM_API_KEY"] = api_key
+		return env

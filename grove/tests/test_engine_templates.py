@@ -97,6 +97,17 @@ class TestContainerRunScript(unittest.TestCase):
 				check = subprocess.run(["sh", "-n"], input=script, text=True, capture_output=True)
 				self.assertEqual(check.returncode, 0, check.stderr)
 
+	def test_the_image_is_invoked_exactly_as_the_fleet_already_invokes_it(self):
+		# The byte-identity guard for the engine-class split. Every running deployment holds this
+		# line in /opt/vllm/containers/vllm-<slug>.sh; re-rendering it differently — a changed
+		# quoting style, a moved argument — notifies `recreate vllm container` and replaces every
+		# engine in the fleet. The positional is unquoted and every flag is single-quoted, which is
+		# also what stops an operator's argument reaching the shell.
+		self.assertIn(
+			"  vllm/vllm-openai:latest Qwen/Qwen3-35B '--port' '8081' '--tensor-parallel-size' '2'",
+			render("vllm-container-run.sh.j2", BASE),
+		)
+
 	def test_docker_owns_the_restart(self):
 		script = render("vllm-container-run.sh.j2", BASE)
 		self.assertIn("--restart unless-stopped", script)
