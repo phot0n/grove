@@ -40,10 +40,14 @@ class GroveUser(Document):
 			frappe.throw(f"{', '.join(sorted(both))} is in both Allow and Deny")
 
 
+GROVE_USER_ROLE = "Grove User"
+
+
 def register_user(email, full_name=None):
-	"""The Website User behind `email`, created if nobody holds it yet. A policy is provisioned
-	for someone who may never have signed in, and frappe checks the Link before any hook on this
-	doctype runs — so the login is registered a step ahead of it, not from before_insert."""
+	"""The Website User behind `email`, created if nobody holds it yet, carrying the Grove User
+	role. A policy is provisioned for someone who may never have signed in, and frappe checks the
+	Link before any hook on this doctype runs — so the login is registered a step ahead of it, not
+	from before_insert. The role is an identity marker with no perms; it grants nothing in Grove."""
 	if not frappe.db.exists("User", email):
 		frappe.get_doc(
 			{
@@ -52,6 +56,7 @@ def register_user(email, full_name=None):
 				"first_name": full_name or email.split("@")[0],
 				"user_type": "Website User",
 				"send_welcome_email": 0,
+				"roles": [{"role": GROVE_USER_ROLE}],
 			}
 		).insert(ignore_permissions=True)
 	return email

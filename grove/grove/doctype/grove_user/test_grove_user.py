@@ -8,7 +8,7 @@ tests, so anything registered here is still there for the next one."""
 import frappe
 from frappe.tests import IntegrationTestCase
 
-from grove.grove.doctype.grove_user.grove_user import register_user
+from grove.grove.doctype.grove_user.grove_user import GROVE_USER_ROLE, register_user
 
 
 class IntegrationTestGroveUser(IntegrationTestCase):
@@ -18,6 +18,8 @@ class IntegrationTestGroveUser(IntegrationTestCase):
 		self.assertFalse(frappe.db.exists("User", email))
 		frappe.get_doc({"doctype": "Grove User", "user": register_user(email, "Probe Person")}).insert()
 		self.assertEqual(frappe.db.get_value("User", email, "first_name"), "Probe Person")
+		# Carries the Grove User role: an identity to scope later, no perms now.
+		self.assertIn(GROVE_USER_ROLE, frappe.get_roles(email))
 
 	def test_registering_twice_leaves_the_login_alone(self):
 		email = "grove-probe-twice@example.com"

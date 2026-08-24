@@ -88,12 +88,14 @@ app_license = "mit"
 # to exist on every site. It carries exactly what grove.api touches — read on Model and Usage
 # Record, read/write/create on Grove User, read/create on Grove API Key — so those endpoints run
 # under permission checks instead of around them, and reach nothing else.
+# Grove User is the role every registered login carries: no desk access and no perms, an identity
+# marker to scope self-serve access to later, not a way into anything now.
 # Re-imported on migrate (frappe.utils.fixtures.sync_fixtures), so Grove owns desk_access.
 # `frappe` is the provider our own engines serve under, and every Model defaults to it, so it has to
 # exist before the first Model is inserted. Filtered by name: a site's own third-party providers carry
 # credentials and must never be exported into the app.
 fixtures = [
-	{"dt": "Role", "filters": [["name", "in", ["Grove Control"]]]},
+	{"dt": "Role", "filters": [["name", "in", ["Grove Control", "Grove User"]]]},
 	{"dt": "Model Provider", "filters": [["name", "in", ["frappe"]]]},
 ]
 
