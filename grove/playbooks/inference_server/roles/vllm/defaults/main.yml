@@ -61,10 +61,17 @@ vllm_api_key: ""                       # "" = auto-generate + persist to {{ vllm
 vllm_hf_token: ""                      # optional; gated models / faster HF downloads
 
 # ── Health gate ─────────────────────────────────────────────────────────────
-vllm_wait_for_healthy: true            # block until /v1/models returns 200
+vllm_wait_for_healthy: true            # block until the health path below returns 200
+# Polled on vllm_port until it answers, by both the deploy gate and the compile-cache push.
+# Grove sends the engine kind's own (vLLM: /health) or whatever the deployment named. Blank =
+# no gate, which is what an image that publishes no health path gets.
+vllm_health_path: /health
+# What is inside the image: 'vllm' takes `vllm serve` arguments, 'custom' serves on its own. Only
+# the engine proxy's auth block reads it — everything else is driven by the values above.
+vllm_engine_kind: vllm
 
 # ── Warmup gate ─────────────────────────────────────────────────────────────
 # /v1/models answering 200 only proves the API server bound its port. One real request proves the
 # engine runs a forward pass under the name the gateway is about to route on.
 vllm_warmup: true                      # POST the warmup request once the health gate passes
-vllm_warmup_request: {}                # {path, body} from ServeCommand; empty = nothing to prove
+vllm_warmup_request: {}                # {path, body} from the Engine; empty = nothing to prove

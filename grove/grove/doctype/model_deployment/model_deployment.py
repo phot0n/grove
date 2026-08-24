@@ -39,12 +39,14 @@ class ModelDeployment(Document):
 		allow_long_max_model_len: DF.Check
 		attention_backend: DF.Literal["auto", "FLASH_ATTN", "XFORMERS", "FLASHINFER"]
 		engine_image: DF.Link
+		engine_kind: DF.Data | None
 		engine_port: DF.Int
 		engine_url: DF.Data | None
 		env: DF.Table[PodEnv]
 		extra_serve_args: DF.SmallText | None
 		gpu_memory_utilization: DF.Float
 		gpus: DF.Table[ModelDeploymentGPU]
+		health_path: DF.Data | None
 		inference_server: DF.Link
 		internal_api_key: DF.Password | None
 		kv_cache_dtype: DF.Literal["auto", "fp8"]
@@ -56,6 +58,7 @@ class ModelDeployment(Document):
 		pipeline_parallel_size: DF.Int
 		region: DF.Link | None
 		serve_command: DF.Code | None
+		startup_command: DF.SmallText | None
 		status: DF.Literal["Draft", "Provisioning", "Active", "Inactive", "Terminated", "Broken"]
 		tensor_parallel_size: DF.Int
 	# end: auto-generated types
@@ -90,6 +93,7 @@ class ModelDeployment(Document):
 			allow_long_max_model_len=self.allow_long_max_model_len,
 			aliases=self.aliases,
 			extra_serve_args=self.extra_serve_args,
+			startup_command=self.startup_command,
 		)
 
 	def autoname(self):
@@ -466,9 +470,15 @@ def _vllm_extravars(md, m, inf, key):
 	settings = frappe.get_single("Grove Settings")
 
 	extravars = {
+		# The two slots the run script renders after the image: the positional unquoted, every
+		# flag as one quoted argument. A custom image names no positional and its Startup Command
+		# is the whole flag list, so the same two lines serve both kinds.
 		"vllm_model": serve.repo,
 		"vllm_served_name": " ".join([md.model, *serve.aliases]),
 		"vllm_serve_args": serve.args,
+		# Blank = no gate. vLLM's own /health unless this deployment names a path; a custom image
+		# that names none finishes the play as soon as its container starts.
+		"vllm_health_path": md.health_path or serve.health_path,
 		# One real request after the health gate, from the same source the args came from.
 		"vllm_warmup_request": serve.warmup_request,
 		# One container + port + key file per deployment (multi-tenant box). Slug from the
@@ -483,13 +493,15 @@ def _vllm_extravars(md, m, inf, key):
 		"vllm_home": vllm_home,
 		"vllm_hf_home": inf.hf_home,
 		"vllm_cache_dir": f"{vllm_home}/cache",
-		"vllm_predownload_model": not serve.is_streaming,
+		# Nothing of ours to fetch for an image that brings its own model — and the role derives
+		# the repo from vllm_model, so leaving this on would run `hf download` with no repo.
+		"vllm_predownload_model": bool(serve.repo) and not serve.is_streaming,
 		# What the role checks the box's free space against, before either download starts.
 		# 0 means the figure was never fetched, which the role reads as "cannot check".
 		"vllm_weights_gb": serve.weights_gb,
 		# S3 compile-cache pre-warm: blank bucket turns the hooks off. The key's other axes
 		# (image digest, GPU) are computed on the box — only TP and the model come from here.
-		"vllm_cache_bucket": settings.weights_bucket or "",
+		"vllm_cache_bucket": (settings.weights_bucket or "") if serve.repo else "",
 		"vllm_cache_sync_env": settings.weights_s3_engine_environment,
 		"vllm_tensor_parallel_size": serve.tensor_parallel_size,
 		"vllm_model_slug": (m.hf_repo or md.model).split(":")[0].replace("/", "--"),
@@ -503,6 +515,10 @@ def _vllm_extravars(md, m, inf, key):
 	image = frappe.get_cached_doc("Engine Image", md.engine_image)
 	extravars["vllm_image"] = image.full_image
 	extravars["vllm_image_gb"] = image.size_gb or 0
+	# The box's engine proxy is the only thing in front of the container, and it authenticates
+	# nothing itself — vLLM enforces VLLM_API_KEY, an image that serves itself enforces nothing.
+	# So the proxy has to check the bearer for that kind, and this is what tells it to.
+	extravars["vllm_engine_kind"] = image.engine_kind
 	if credentials := image.registry_credentials:
 		extravars["vllm_registry_host"] = image.registry_host
 		extravars["vllm_registry_username"], extravars["vllm_registry_token"] = credentials

@@ -237,7 +237,8 @@
   ansible.builtin.template:
     src: engine-location.conf.j2
     dest: "{{ engine_proxy_engines_dir }}/{{ vllm_instance }}.conf"
-    mode: "0644"
+    # 0600: for a custom image this file carries the engine's key.
+    mode: "0600"
   notify:
     - check engine proxy config
     - reload engine proxy

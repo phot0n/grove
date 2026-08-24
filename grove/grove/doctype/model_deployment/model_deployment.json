@@ -11,6 +11,9 @@
   "column_break_engine",
   "engine_port",
   "engine_image",
+  "engine_kind",
+  "startup_command",
+  "health_path",
   "engine_url",
   "internal_api_key",
   "section_tuning",
@@ -89,6 +92,27 @@
    "reqd": 1
   },
   {
+   "description": "What is inside the image, off the Engine Image. Shown so the form can hide what does not apply; the deploy path reads the Engine Image itself, so this never goes stale against it.",
+   "fetch_from": "engine_image.engine_kind",
+   "fieldname": "engine_kind",
+   "fieldtype": "Data",
+   "label": "Engine Kind",
+   "read_only": 1
+  },
+  {
+   "depends_on": "eval:doc.engine_kind == 'custom'",
+   "description": "Arguments for a custom image's own entrypoint, or blank to run it with none. Each is passed as one argument, so quoting is preserved and nothing reaches the shell. Your image must listen on the Engine Port above.",
+   "fieldname": "startup_command",
+   "fieldtype": "Small Text",
+   "label": "Startup Command"
+  },
+  {
+   "description": "Path polled on the Engine Port until it answers 200, before the deploy is called done. Blank uses the engine kind's own \u2014 vLLM's /health \u2014 and blank for a custom image means no gate at all, so the play finishes as soon as the container starts.",
+   "fieldname": "health_path",
+   "fieldtype": "Data",
+   "label": "Health Path"
+  },
+  {
    "description": "Auto-derived (read-only): https://BOX-IP/e/SLUG \u2014 this deployment's location on its box's engine proxy, which forwards to its own vLLM instance. The gateway forwards straight here (no LiteLLM); vLLM serves /v1/messages natively.",
    "fieldname": "engine_url",
    "fieldtype": "Data",
@@ -116,7 +140,8 @@
    "description": "Per-box serving knobs \u2014 depend on THIS deployment's GPU, not the portable Model profile.",
    "fieldname": "section_tuning",
    "fieldtype": "Section Break",
-   "label": "Hardware Tuning"
+   "label": "Hardware Tuning",
+   "depends_on": "eval:doc.engine_kind != 'custom'"
   },
   {
    "default": "auto",
@@ -200,7 +225,8 @@
   {
    "fieldname": "section_extra",
    "fieldtype": "Section Break",
-   "label": "Extra"
+   "label": "Extra",
+   "depends_on": "eval:doc.engine_kind != 'custom'"
   },
   {
    "description": "Extra --served-model-name values (comma/space separated); old client model-names keep working.",

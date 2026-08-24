@@ -53,9 +53,11 @@
   ansible.builtin.command: "{{ vllm_container_script }}"
   when: (vllm_container_ps.stdout | default('')) | length == 0
 
-- name: Wait for the vLLM API to become healthy
+# The bearer is harmless where nothing checks it: vLLM's /health needs none, and an image that
+# serves itself ignores the header. Sending it always is one branch fewer than deciding per kind.
+- name: Wait for the engine to become healthy
   ansible.builtin.uri:
-    url: "http://127.0.0.1:{{ vllm_port }}/v1/models"
+    url: "http://127.0.0.1:{{ vllm_port }}{{ vllm_health_path }}"
     headers:
       Authorization: "Bearer {{ vllm_effective_api_key }}"
     status_code: 200
@@ -64,7 +66,7 @@
   retries: 90
   delay: 10
   changed_when: false
-  when: vllm_wait_for_healthy | bool
+  when: (vllm_wait_for_healthy | bool) and (vllm_health_path | length > 0)
 
 # A 200 from /v1/models only means the API server bound its port. This is the first thing that
 # asks the GPU to do work, so it is what catches a kernel that cannot run on this card at all.

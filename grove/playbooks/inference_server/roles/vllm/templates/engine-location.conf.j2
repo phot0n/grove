@@ -3,10 +3,17 @@
   server block. A bare location, never a server{}: conf.d holds the server, this holds a route
   into it.
 
-  World-readable (0644, unlike the 0600 env file) because nginx reads it — so nothing secret
-  belongs here. The engine's API key is not in this file; the gateway sends it per request.
+  0600, because for a custom image this file carries the key. nginx parses config in the master,
+  which runs as root to bind 443, so it can still read it.
 #}
 location /e/{{ vllm_instance }}/ {
+{% if vllm_engine_kind == 'custom' %}
+	# vLLM enforces VLLM_API_KEY itself; an image that serves itself enforces nothing, and this
+	# proxy is the only thing between it and the port. The gateway already sends the deployment's
+	# internal key as a bearer, so check it here. A blank key renders `!= "Bearer "` and refuses
+	# everything, which is the direction to fail in.
+	if ($http_authorization != "Bearer {{ vllm_api_key }}") { return 401; }
+{% endif %}
 	# The trailing slash is what strips the prefix: /e/{{ vllm_instance }}/v1/chat/completions
 	# reaches the engine as /v1/chat/completions.
 	proxy_pass http://127.0.0.1:{{ vllm_port }}/;

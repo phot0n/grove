@@ -54,21 +54,23 @@ See [`defaults/main.yml`](defaults/main.yml) for the full list. Most-used:
 | Variable | Default | Notes |
 |---|---|---|
 | `vllm_image` | `""` | **Required** — the engine image, e.g. `vllm/vllm-openai:v0.24.0` |
-| `vllm_model` | — | Any HF repo vLLM supports |
+| `vllm_model` | — | Any HF repo vLLM supports; **blank for a custom image**, which runs its own entrypoint |
 | `vllm_served_name` | — | Name clients pass as `model` |
-| `vllm_serve_args` | `[]` | The whole `vllm serve` flag list — see below |
+| `vllm_serve_args` | `[]` | The whole flag list — `vllm serve` flags, or a custom image's Startup Command |
 | `vllm_env` | `{}` | Engine env vars, rendered as the container's `--env-file` |
 | `vllm_api_key` | `""` | Blank → auto-generated + persisted |
 | `vllm_hf_token` | `""` | For gated models / faster downloads |
 | `vllm_predownload_model` | `true` | Fetch weights during the play |
-| `vllm_wait_for_healthy` | `true` | Block until `/v1/models` returns `200` |
+| `vllm_wait_for_healthy` | `true` | Block until `vllm_health_path` returns `200` |
+| `vllm_health_path` | `/health` | Polled by the deploy gate and the compile-cache push. Blank = no gate |
+| `vllm_engine_kind` | `vllm` | `custom` makes the engine proxy check the bearer, since the image checks nothing |
 | `vllm_warmup` | `true` | POST one real request after the health gate |
 | `vllm_warmup_request` | `{}` | `{path, body}` from `ServeCommand`; empty skips the step |
 
 The individual serve flags (`--max-model-len`, `--gpu-memory-utilization`, the tool/reasoning
 parsers, …) are **not** role variables. Grove builds the full list in
 `grove/serve_command.py` (`ServeCommand`) from the Model ⊕ the Model Deployment and passes it
-as `vllm_serve_args`; the Pod path uses the same builder, so the two can't drift. Running the
+as `vllm_serve_args`; the Pod path uses the same Engine, so the two can't drift. Running the
 role by hand means passing the flags yourself:
 
 ```yaml

@@ -34,7 +34,7 @@ topology stays inside its VPC and several deployments behind one ingress fold in
 | `pathway_sync.py` | Every push to every box. A push that left no Pathway Sync row did not happen. |
 | `usage_pull.py` | Draining `usage:<prefix>` into monthly Usage Records. |
 | `access.py` | Which models a user may call, as the CSV each grant record carries. |
-| `serve_command.py` | The vLLM argv a deployment is started with. |
+| `serving/` | One class per engine kind: what starts it, what environment it needs, what proves it serves. |
 | `fleet.py` | What a named fleet box (Gateway/Ingress) does the same way, plus the fleet-wide settings readers. |
 | `naming.py` | `<prefix><n>-<region>`, e.g. `gw1-ap-south-1` — a box's name IS its DNS label and its request-id prefix. |
 | `ansible.py` / `ansible_runner.py` | Running a playbook against a box, tracked as docs. |

@@ -14,8 +14,10 @@ from grove.grove.doctype.model_deployment.model_deployment import (
 	ENGINE_PORT_BASE,
 	ModelDeployment,
 	_engine_env,
+	_vllm_extravars,
 	reconfigure_deployment,
 )
+from grove.serving.custom import CustomEngine
 
 MODULE = "grove.grove.doctype.model_deployment.model_deployment"
 
@@ -271,6 +273,61 @@ class TestReconfigureKeepsTheModelRoutable(unittest.TestCase):
 		# A play that failed may not have written the box's nginx location, so the URL must not
 		# move — the gateway would forward to a route that is not there.
 		self.assertEqual(self.writes_during(rc=2), [{"status": "Broken"}])
+
+
+class TestExtraVarsFollowTheEngineKind(unittest.TestCase):
+	"""What the role is told to do differs by engine kind, and the role's own switches are what
+	say it — no new `when:` clauses on the play."""
+
+	def extravars(self, engine, engine_kind="vllm"):
+		md = SimpleNamespace(
+			name="MD-00007", model="qwen3-35b", engine_image="img", health_path=None,
+			gpus=[], env=[], engine=engine,
+		)
+		inf = SimpleNamespace(data_path="/opt/vllm", hf_home="/opt/vllm/hf")
+		settings = SimpleNamespace(
+			weights_s3_engine_environment={}, weights_bucket="grove-weights",
+			scrape_auth_variables={},
+		)
+		image = SimpleNamespace(
+			full_image="img:latest", size_gb=15.0, engine_kind=engine_kind,
+			registry_credentials=None,
+		)
+		with (
+			patch.object(frappe, "conf", {}),
+			patch.object(frappe, "get_single", return_value=settings),
+			patch.object(frappe, "get_cached_doc", return_value=image),
+		):
+			return _vllm_extravars(md, SimpleNamespace(hf_repo="Qwen/Qwen3-35B"), inf, "k")
+
+	def test_a_custom_image_is_never_asked_to_predownload(self):
+		# The bug this exists for: the role derives the download repo from vllm_model, so leaving
+		# this on for an image with no positional runs `hf download` with no argument and the
+		# play dies. It also turns off the weights half of the disk pre-check, which is right —
+		# the image half still runs, and a NIM is 15 GB.
+		vars = self.extravars(CustomEngine("nemotron-asr", {}, port=8080), engine_kind="custom")
+		self.assertEqual(vars["vllm_model"], "")
+		self.assertFalse(vars["vllm_predownload_model"])
+		self.assertEqual(vars["vllm_cache_bucket"], "")
+		self.assertEqual(vars["vllm_engine_kind"], "custom")
+
+	def test_a_custom_startup_command_becomes_the_argument_list(self):
+		engine = CustomEngine("nemotron-asr", {}, port=8080, startup_command="--http-port 9000")
+		self.assertEqual(self.extravars(engine)["vllm_serve_args"], ["--http-port", "9000"])
+
+	def test_a_custom_image_gets_no_health_gate_unless_it_names_one(self):
+		# A guessed path is worse than none: plenty of images 404 whatever we would try, and the
+		# role treats blank as "do not gate".
+		vars = self.extravars(CustomEngine("nemotron-asr", {}, port=8080), engine_kind="custom")
+		self.assertEqual(vars["vllm_health_path"], "")
+
+	def test_a_vllm_image_still_predownloads_and_gates_on_health(self):
+		engine = VllmEngine("qwen3-35b", {"hf_repo": "Qwen/Qwen3-35B"}, port=8080)
+		vars = self.extravars(engine)
+		self.assertEqual(vars["vllm_model"], "Qwen/Qwen3-35B")
+		self.assertTrue(vars["vllm_predownload_model"])
+		self.assertEqual(vars["vllm_health_path"], "/health")
+		self.assertEqual(vars["vllm_cache_bucket"], "grove-weights")
 
 
 if __name__ == "__main__":

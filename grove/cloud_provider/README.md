@@ -10,7 +10,7 @@ Nothing here reads or writes a doctype except `reconcile.py`.
 | `runpod.py` | `RunPodClient`. |
 | `route53.py` | DNS. **Deliberately not a `CloudClient`** — see below. |
 | `provisioner.py` | Turning a doc's wishes into a running instance. |
-| `reconcile.py` | The `*/5` job: the provider owns whether an instance is up, so this closes the drift lifecycle jobs leave behind. |
+| `reconcile.py` | The `*/2` job: the provider owns whether an instance is up, so this closes the drift lifecycle jobs leave behind. |
 
 ## Why Route53 is not a CloudClient
 

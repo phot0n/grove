@@ -24,7 +24,7 @@ one own**, because Grove's rule is that state has exactly one owner and everythi
 |---|---|
 | `Model` | A model, named `<provider>/<id>` off the Model ID typed at creation and frozen there. Every one names an HF repo — that is what an engine serves, and what the S3 mirror is filled from. `published` means *reachable* — it tracks whether a live route exists and is never a manual claim. Not an access gate. |
 | `Model Provider` | Who serves a model: `frappe` for our own engines, a vendor for a third-party API. The name is the whole record. |
-| `Model Deployment` | One on-prem placement of a Model on an Inference Server, named `<model id>-<region>-<server>-<n>` (`qwen3-8b-ap-south-1-inf3-00007`). Re-derives its arguments at deploy time. |
+| `Model Deployment` | One on-prem placement of a Model on an Inference Server, named `<model id>-<region>-<server>-<n>` (`qwen3-8b-ap-south-1-inf3-00007`). Re-derives its arguments at deploy time, from the Engine its Engine Image names — a `custom` image runs its own entrypoint and is gated at the box's proxy instead of by a key it does not enforce. |
 | `Model Deployment GPU` | Which GPUs that placement takes (child). |
 | `Pod` | A standalone RunPod vLLM instance. Fully self-contained — its own spawn/sync/restart/terminate, and it registers its own endpoint. Sends its **stored** `serve_command`, so it must be saved before it is re-spawned. |
 | `Pod Env` / `Pod Port` | That pod's environment and its port pool (children). |

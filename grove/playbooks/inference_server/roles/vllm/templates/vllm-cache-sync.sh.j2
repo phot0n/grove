@@ -3,7 +3,7 @@
   Pre-warm/persist the torch.compile cache via S3. The key encodes every invalidation axis —
   image digest (pins torch+vLLM; a :latest tag moves, a digest doesn't), the GPU the box
   actually carries, TP degree, model — so a mismatch is a miss and a miss just recompiles.
-  `pull` runs before the container starts; `push` waits for /health (compile done) and
+  `pull` runs before the container starts; `push` waits for the health path (compile done) and
   uploads once. Both best-effort.
 #}
 set -eu
@@ -23,7 +23,7 @@ case "${1:-}" in
     ;;
   push)
     for _ in $(seq 1 240); do
-      curl -sf -o /dev/null "http://127.0.0.1:{{ vllm_port }}/health" && break
+      curl -sf -o /dev/null "http://127.0.0.1:{{ vllm_port }}{{ vllm_health_path }}" && break
       sleep 15
     done
     # ponytail: the cache dir is box-shared, so a push may carry a neighbour model's

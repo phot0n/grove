@@ -35,7 +35,7 @@ docker run --detach --restart unless-stopped --name {{ vllm_unit }} \
   -v {{ vllm_cache_dir }}:/root/.cache/vllm \
   --env-file {{ vllm_container_env_file }} \
   --log-opt max-size=100m --log-opt max-file=5 \
-  {{ vllm_image }} {{ vllm_model }}{% for arg in vllm_serve_args %} '{{ arg }}'{% endfor %}
+  {{ vllm_image }}{% if vllm_model %} {{ vllm_model }}{% endif %}{% for arg in vllm_serve_args %} '{{ arg }}'{% endfor %}
 
 {% if vllm_cache_bucket %}
 nohup {{ vllm_cache_sync_script }} push >/dev/null 2>&1 &

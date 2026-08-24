@@ -76,6 +76,9 @@ BASE = {
 	"vllm_cuda_visible_devices": "0,1",
 	"vllm_env": {"HF_TOKEN": "hf_secret", "ODD": "a b;c"},
 	"vllm_effective_api_key": "deadbeef",
+	"vllm_api_key": "deadbeef",
+	"vllm_engine_kind": "vllm",
+	"vllm_health_path": "/health",
 	# Role defaults: the play pre-downloads the whole repo, so nothing is a GGUF file glob.
 	"vllm_predownload_model": True,
 	"vllm_download_glob": "",
@@ -106,6 +109,24 @@ class TestContainerRunScript(unittest.TestCase):
 		self.assertIn(
 			"  vllm/vllm-openai:latest Qwen/Qwen3-35B '--port' '8081' '--tensor-parallel-size' '2'",
 			render("vllm-container-run.sh.j2", BASE),
+		)
+
+	def test_a_custom_image_runs_its_own_entrypoint(self):
+		# No positional and no flags of ours: the line ends at the image, and what the container
+		# does next is the image's business. Still has to parse as shell.
+		custom = {**BASE, "vllm_model": "", "vllm_serve_args": []}
+		script = render("vllm-container-run.sh.j2", custom)
+		self.assertIn("  vllm/vllm-openai:latest\n", script)
+		check = subprocess.run(["sh", "-n"], input=script, text=True, capture_output=True)
+		self.assertEqual(check.returncode, 0, check.stderr)
+
+	def test_a_custom_startup_command_rides_the_entrypoint(self):
+		# Each argument single-quoted, which is also what stops an operator's Startup Command
+		# reaching the shell that runs this script.
+		custom = {**BASE, "vllm_model": "", "vllm_serve_args": ["--http-port", "9000", "a b;c"]}
+		self.assertIn(
+			"  vllm/vllm-openai:latest '--http-port' '9000' 'a b;c'",
+			render("vllm-container-run.sh.j2", custom),
 		)
 
 	def test_docker_owns_the_restart(self):
@@ -195,6 +216,26 @@ class TestEngineProxyLocation(unittest.TestCase):
 		# The trailing slash is the whole mechanism: without it nginx forwards
 		# /e/md-00007/v1/chat/completions verbatim and vLLM 404s every request.
 		self.assertIn("proxy_pass http://127.0.0.1:8081/;", self.fragment)
+
+	def test_a_vllm_engine_is_not_gated_at_the_proxy(self):
+		# vLLM enforces VLLM_API_KEY itself, so a second check here would be a second place to
+		# get wrong — and this file would then have to carry the key for every deployment.
+		self.assertNotIn("$http_authorization", self.fragment)
+		self.assertNotIn("deadbeef", self.fragment)
+
+	def test_a_custom_engine_is_gated_at_the_proxy(self):
+		# The bug this exists for: an image that serves itself enforces nothing, and this proxy is
+		# the only thing between it and the box's 443. Without this the engine answers anyone who
+		# can reach the box.
+		fragment = render("engine-location.conf.j2", {**BASE, "vllm_engine_kind": "custom"})
+		self.assertIn('if ($http_authorization != "Bearer deadbeef") { return 401; }', fragment)
+
+	def test_a_custom_engine_with_no_key_refuses_everything(self):
+		# Fails closed: a blank key must not render a check that anything satisfies.
+		fragment = render(
+			"engine-location.conf.j2", {**BASE, "vllm_engine_kind": "custom", "vllm_api_key": ""}
+		)
+		self.assertIn('if ($http_authorization != "Bearer ") { return 401; }', fragment)
 
 	def test_streaming_survives_the_extra_hop(self):
 		# Buffered, an SSE response arrives in one blob at the end — a failure that passes every
@@ -458,7 +499,7 @@ if __name__ == "__main__":
 
 
 class TestWarmupGate(unittest.TestCase):
-	"""A 200 from /v1/models means the API server bound its port, nothing more. The warmup task is
+	"""A 200 from the health path means the container bound its port, nothing more. The warmup task is
 	the first thing that asks the GPU for a forward pass, so it is what stands between a kernel
 	that cannot run on this card and a gateway route pointing at it."""
 
@@ -475,7 +516,7 @@ class TestWarmupGate(unittest.TestCase):
 
 	def test_it_runs_after_the_health_gate(self):
 		# Before it, the engine has not bound its port and every attempt is a connection refused.
-		self.assertLess(self.index_of("/v1/models"), self.index_of("vllm_warmup_request.path"))
+		self.assertLess(self.index_of("vllm_health_path"), self.index_of("vllm_warmup_request.path"))
 
 	def test_it_carries_the_bearer(self):
 		# The engine runs with VLLM_API_KEY set, so an unauthenticated POST is a 401 on a healthy
