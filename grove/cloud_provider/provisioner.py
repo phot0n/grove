@@ -20,7 +20,6 @@ from grove import log_relay
 from grove import failure
 from grove.cloud_provider.runpod import RunPodClient, RunPodError, pod_status
 from grove.grove.doctype.ssh_key.ssh_key import injected_public_keys
-from grove.serve_command import ServeCommand
 
 # How long spawn waits for vLLM to actually serve (weights download + load) after the pod is
 # SSH-reachable, before giving up and leaving it Loading for a later Sync to pick up.
@@ -45,6 +44,15 @@ class PodProvisioner:
 	def __init__(self, pod):
 		self.pod = pod
 		self._client = None
+		self._engine = None
+
+	@property
+	def engine(self):
+		"""The Pod's Engine, built once per provisioner — a sync asks it four separate questions
+		and each build reads the Engine Image and the Model."""
+		if self._engine is None:
+			self._engine = self.pod.engine
+		return self._engine
 
 	# ── Provider access ───────────────────────────────────────────────────────
 
@@ -81,39 +89,24 @@ class PodProvisioner:
 
 	@property
 	def env(self):
-		"""Env injected into the container: HF_HOME on the volume (weights survive restart) +
-		VLLM_API_KEY for a vLLM pod + the HF token for gated models, then the Pod's own Env rows
-		layered on top (user wins on conflict). PUBLIC_KEY is added by config_kwargs. A custom
-		image gets none of the vLLM vars — whatever it needs comes from its own Env rows.
+		"""Env injected into the container: whatever the engine needs, on the volume's paths
+		(so weights and compile caches survive a restart), then the Pod's own Env rows layered on
+		top (user wins on conflict). PUBLIC_KEY is added by config_kwargs.
+
+		The paths are this placement's to choose and the variable names are the engine's — a
+		custom image gets none of vLLM's, and whatever it does need comes from its own Env rows.
 		The attention backend is NOT here — it rides the serve command as --attention-backend,
 		because vLLM 0.24 dropped VLLM_ATTENTION_BACKEND."""
 		pod = self.pod
 		mount = pod.volume_mount_path or VOLUME_MOUNT
-		# Telemetry is off for every image: huggingface_hub reads this with a plain env lookup in
-		# every version, so unlike hf_transfer it cannot crash an image that ships without extras.
-		env = {"HF_HOME": f"{mount}/hf", "HF_HUB_DISABLE_TELEMETRY": "1"}
-		if not pod.is_custom_engine:
-			# What --enable-log-requests/--enable-log-outputs actually emit at.
-			env["VLLM_LOGGING_LEVEL"] = "DEBUG"
-			# vLLM phones home on startup unless told not to. In this block, not beside
-			# HF_HUB_DISABLE_TELEMETRY, because a custom image may not be vLLM at all.
-			env["VLLM_NO_USAGE_STATS"] = "1"
-			# Faster weight downloads; compile caches on the volume so restarts skip
-			# torch.compile (~1 min). Guarded: a custom image may lack hf_transfer.
-			env["HF_XET_HIGH_PERFORMANCE"] = "1"
-			env["VLLM_CACHE_ROOT"] = f"{mount}/vllm-cache"
-			env["TRITON_CACHE_DIR"] = f"{mount}/vllm-cache/triton"
-			env["TORCHINDUCTOR_CACHE_DIR"] = f"{mount}/vllm-cache/torchinductor"
-			key = pod.get_password("api_key", raise_exception=False)
-			if key:
-				env["VLLM_API_KEY"] = key
-			if pod.allow_long_max_model_len:
-				env["VLLM_ALLOW_LONG_MAX_MODEL_LEN"] = "1"
-			if frappe.conf.get("hf_token"):
-				env["HF_TOKEN"] = frappe.conf.get("hf_token")
-			# Streaming pod (serve command carries the S3 mirror): bucket creds + tuning.
-			if "runai_streamer" in (pod.serve_command or ""):
-				env.update(frappe.get_single("Grove Settings").weights_s3_engine_environment)
+		env = self.engine.env(
+			hf_home=f"{mount}/hf",
+			cache_root=f"{mount}/vllm-cache",
+			api_key=pod.get_password("api_key", raise_exception=False) or "",
+			hf_token=frappe.conf.get("hf_token") or "",
+			# Read whatever the engine streams from; it applies them only if it actually does.
+			streaming_env=frappe.get_single("Grove Settings").weights_s3_engine_environment,
+		)
 		for row in pod.env or []:
 			if row.key:
 				env[row.key] = row.value or ""
@@ -198,14 +191,14 @@ class PodProvisioner:
 		back to its /health; a custom image (an ASR container, say) has to name its own — it
 		takes just as long to come up, and without a gate the pod reads Running minutes before
 		anything answers on the port."""
-		return self.pod.health_path or ("" if self.pod.is_custom_engine else "/health")
+		return self.pod.health_path or self.engine.health_path
 
 	@property
 	def is_warmup_due(self):
-		"""Whether there is an engine here worth proving. A custom image serves something we
-		cannot build a payload for, and a bring-up that outran await_engine has nothing serving
-		yet."""
-		return not self.pod.is_custom_engine and self.current_status == "Running"
+		"""Whether there is an engine here worth proving. An engine with no request cheap enough
+		to shape says so by publishing none — a custom image, and an audio model on any engine —
+		and a bring-up that outran await_engine has nothing serving yet."""
+		return bool(self.engine.warmup_request) and self.current_status == "Running"
 
 	def get_warmup_error(self):
 		"""Why this engine could not serve one real request, "" when it did. Posts the payload the
@@ -213,7 +206,7 @@ class PodProvisioner:
 
 		Carries the bearer /health never needed: a non-custom pod with an api_key runs with
 		VLLM_API_KEY set, so an unauthenticated POST is a 401 on a perfectly good engine."""
-		request = ServeCommand.for_pod(self.pod).warmup_request
+		request = self.engine.warmup_request
 		if not request:
 			return ""
 		key = self.pod.get_password("api_key", raise_exception=False)

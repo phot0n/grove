@@ -12,7 +12,7 @@ import requests
 from grove.cloud_provider.provisioner import PodProvisioner
 from grove.grove.doctype.pod.pod import Pod
 from grove.cloud_provider.runpod import RunPodClient, RunPodError, pod_status
-from grove.serve_command import ServeCommand
+from grove.serving.base import build_engine
 
 
 class FakeClient(RunPodClient):
@@ -228,8 +228,12 @@ def serving_pod(
 	public_ip="1.2.3.4",
 	external_port=41234,
 	health_path=None,
-	is_custom_engine=False,
+	engine_kind="vllm",
+	streaming=False,
 ):
+	model = {"hf_repo": "Qwen/Qwen3-35B", "modality": "text"}
+	if streaming:
+		model["weights_s3_uri"] = "s3://grove-weights/models/Qwen--Qwen3-35B"
 	return SimpleNamespace(
 		name="POD-1",
 		pod_id=pod_id,
@@ -237,7 +241,9 @@ def serving_pod(
 		public_ip=public_ip,
 		model="Qwen/Qwen3-35B",
 		health_path=health_path,
-		is_custom_engine=is_custom_engine,
+		# The real class, not a stub: an Engine takes a plain mapping and no site, so the pod
+		# simply carries the one its doctype property would have built.
+		engine=build_engine(engine_kind, "qwen3-35b", model, port=8080),
 		ports=[
 			SimpleNamespace(internal_port=22, protocol="tcp", external_port=22001),
 			SimpleNamespace(internal_port=8080, protocol=protocol, external_port=external_port),
@@ -249,15 +255,18 @@ class TestPodEnv(unittest.TestCase):
 	"""Container env: weights and compile caches live on the persistent volume, so a restart
 	skips both the re-download and torch.compile."""
 
-	def env(self, is_custom_engine=False, rows=(), serve_command=""):
-		pod = serving_pod(is_custom_engine=is_custom_engine)
+	def env(self, engine_kind="vllm", rows=(), streaming=False):
+		pod = serving_pod(engine_kind=engine_kind, streaming=streaming)
 		pod.volume_mount_path = "/data"
 		pod.allow_long_max_model_len = 0
-		pod.serve_command = serve_command
 		pod.get_password = lambda *args, **kwargs: None
 		pod.env = [SimpleNamespace(key=k, value=v) for k, v in rows]
 		from grove.cloud_provider import provisioner
-		with patch.object(provisioner.frappe, "conf", {}):
+		settings = SimpleNamespace(weights_s3_engine_environment={"AWS_ACCESS_KEY_ID": "AKIA"})
+		with (
+			patch.object(provisioner.frappe, "conf", {}),
+			patch.object(provisioner.frappe, "get_single", return_value=settings),
+		):
 			return PodProvisioner(pod).env
 
 	def test_a_vllm_pod_caches_on_the_volume(self):
@@ -271,7 +280,7 @@ class TestPodEnv(unittest.TestCase):
 	def test_a_custom_image_gets_none_of_the_vllm_vars(self):
 		# hf_transfer may not be installed there; its env var would crash huggingface_hub.
 		# Telemetry is the exception: a plain env lookup, safe on any huggingface_hub.
-		env = self.env(is_custom_engine=True)
+		env = self.env(engine_kind="custom")
 		self.assertEqual(set(env), {"HF_HOME", "HF_HUB_DISABLE_TELEMETRY"})
 
 	def test_a_pod_env_row_wins(self):
@@ -279,15 +288,13 @@ class TestPodEnv(unittest.TestCase):
 		self.assertEqual(env["VLLM_CACHE_ROOT"], "/elsewhere")
 
 	def test_a_streaming_pod_gets_the_bucket_env(self):
-		from grove.cloud_provider import provisioner
-		settings = SimpleNamespace(weights_s3_engine_environment={"AWS_ACCESS_KEY_ID": "AKIA"})
-		with patch.object(provisioner.frappe, "get_single", return_value=settings):
-			env = self.env(serve_command="s3://b/m --load-format runai_streamer")
+		# Decided by the Model carrying a mirror, not by matching "runai_streamer" in the stored
+		# serve command — which an operator could also type into extra_serve_args.
+		env = self.env(streaming=True)
 		self.assertEqual(env["AWS_ACCESS_KEY_ID"], "AKIA")
 
 	def test_a_plain_pod_gets_no_bucket_env(self):
-		env = self.env(serve_command="Qwen/Qwen3-35B --port 8080")
-		self.assertNotIn("AWS_ACCESS_KEY_ID", env)
+		self.assertNotIn("AWS_ACCESS_KEY_ID", self.env())
 
 
 class TestEngineEndpoint(unittest.TestCase):
@@ -338,13 +345,13 @@ class TestHealthPath(unittest.TestCase):
 	def test_a_custom_image_gates_on_the_path_it_names(self):
 		# The bug this exists for: an ASR container read Running the moment RunPod said the
 		# container was up, minutes before anything answered on the port.
-		pod = serving_pod(is_custom_engine=True, health_path="/v1/health/ready")
+		pod = serving_pod(engine_kind="custom", health_path="/v1/health/ready")
 		self.assertEqual(PodProvisioner(pod).health_path, "/v1/health/ready")
 
 	def test_a_custom_image_that_names_none_is_not_gated(self):
 		# vLLM's /health must not be assumed onto an image that has never heard of it — that
 		# would leave the pod Loading forever.
-		self.assertEqual(PodProvisioner(serving_pod(is_custom_engine=True)).health_path, "")
+		self.assertEqual(PodProvisioner(serving_pod(engine_kind="custom")).health_path, "")
 
 	def test_a_vllm_pod_may_override_the_path(self):
 		pod = serving_pod(health_path="/v1/models")
@@ -425,14 +432,14 @@ class TestServePortIsOpened(unittest.TestCase):
 		# The bug this exists for: an ASR pod served on 8000 while its Serve Port stayed at the
 		# 8080 default. engine_endpoint found no row for 8080, so the health gate had nothing to
 		# poll and the pod sat Loading forever with a live container behind it.
-		unopened = serving_pod(is_custom_engine=True)
+		unopened = serving_pod(engine_kind="custom")
 		unopened.serve_port = 8000
 		with patch("grove.grove.doctype.pod.pod.frappe.throw") as throw:
 			Pod.validate(unopened)
 		self.assertIn("8000", throw.call_args.args[0])
 
 	def test_a_serve_port_in_the_ports_table_passes(self):
-		custom = serving_pod(is_custom_engine=True)
+		custom = serving_pod(engine_kind="custom")
 		with patch("grove.grove.doctype.pod.pod.frappe.throw") as throw:
 			Pod.validate(custom)
 		throw.assert_not_called()
@@ -441,9 +448,6 @@ class TestServePortIsOpened(unittest.TestCase):
 
 if __name__ == "__main__":
 	unittest.main()
-
-
-WARMUP = ServeCommand("qwen3-35b", {"modality": "text"}, port=8080)
 
 
 class TestPodWarmup(unittest.TestCase):
@@ -457,11 +461,10 @@ class TestPodWarmup(unittest.TestCase):
 
 	def post(self, response=None, error=None, **kwargs):
 		"""Run get_warmup_error against a stubbed POST; returns (reason, captured call)."""
-		with patch("grove.cloud_provider.provisioner.ServeCommand.for_pod", return_value=WARMUP):
-			with patch("grove.cloud_provider.provisioner.requests.post") as posted:
-				posted.side_effect = error
-				posted.return_value = response
-				return self.provisioner(**kwargs).get_warmup_error(), posted
+		with patch("grove.cloud_provider.provisioner.requests.post") as posted:
+			posted.side_effect = error
+			posted.return_value = response
+			return self.provisioner(**kwargs).get_warmup_error(), posted
 
 	def test_it_posts_the_payload_at_the_endpoint_the_gateway_gets(self):
 		# Same address engine_url carries, so a warmup that passes proves the route's own target.
@@ -495,7 +498,7 @@ class TestPodWarmup(unittest.TestCase):
 
 	def test_a_custom_engine_has_no_payload_to_prove(self):
 		with patch("grove.cloud_provider.provisioner.PodProvisioner.current_status", "Running"):
-			self.assertFalse(self.provisioner(is_custom_engine=True).is_warmup_due)
+			self.assertFalse(self.provisioner(engine_kind="custom").is_warmup_due)
 			self.assertTrue(self.provisioner().is_warmup_due)
 
 	def test_a_pod_that_never_served_is_not_warmed(self):

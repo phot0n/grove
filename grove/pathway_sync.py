@@ -42,7 +42,7 @@ import frappe
 
 from grove.access import model_rows
 from grove.net import private_url
-from grove.serve_command import DEFAULT_MAX_NUM_SEQS
+from grove.serving.base import engine_class
 
 TIMEOUT = 10
 
@@ -254,14 +254,32 @@ def _ingress_targets():
 	return targets
 
 
+def _engine_kinds():
+	"""Every Engine Image's kind, resolved once per snapshot rather than per route row — there is a
+	handful of images against every placement in the fleet."""
+	return {
+		image["name"]: image["engine_kind"]
+		for image in frappe.get_all("Engine Image", fields=["name", "engine_kind"])
+	}
+
+
+def _capacity(row, kinds):
+	"""What this placement's engine runs at once. Past it the engine queues, where the gateway can
+	neither see the wait nor spend it on a replica — so it is admission control, not a hint. A
+	placement naming no image reads as vllm, which is what every one predating the field is."""
+	kind = kinds.get(row.get("engine_image")) or "vllm"
+	return int(row.get("max_num_seqs") or engine_class(kind).default_concurrency)
+
+
 def _gateway_routes():
 	"""deploy:<model> table (global — the same for every gateway): every model with an Active
 	engine maps to its engines. A model with none is simply absent; the push prunes its key,
 	so it drops out of Redis and /v1/models on the next tick."""
+	kinds = _engine_kinds()
 	deps = frappe.get_all(
 		"Model Deployment",
 		filters={"status": "Active"},
-		fields=["name", "model", "engine_url", "inference_server", "max_num_seqs"],
+		fields=["name", "model", "engine_url", "inference_server", "max_num_seqs", "engine_image"],
 	)
 	# Which endpoints the model answers on. Stamped per row because deploy:<model> is the only
 	# thing pushed per model — a separate record would be a new namespace and a new push for one
@@ -278,7 +296,7 @@ def _gateway_routes():
 		# --max-num-seqs is what this engine runs at once; past it vLLM queues. Blank resolves to
 		# the same default the serve command uses — the two have to agree or the cap is not the
 		# engine's.
-		capacity = int(d.max_num_seqs or DEFAULT_MAX_NUM_SEQS)
+		capacity = _capacity(d, kinds)
 		if d.inference_server in targets:
 			target = targets[d.inference_server]
 			if target is None:
@@ -310,7 +328,9 @@ def _gateway_routes():
 	# engine_url contribute; others are dropped so the agent 503s instead of routing to a
 	# dead endpoint. A model served by both an MD and a Pod gets both engines (load-balanced).
 	pods = frappe.get_all(
-		"Pod", filters={"status": "Running"}, fields=["name", "model", "engine_url", "max_num_seqs"]
+		"Pod",
+		filters={"status": "Running"},
+		fields=["name", "model", "engine_url", "max_num_seqs", "engine_image"],
 	)
 	for p in pods:
 		# A pod with no Model serves something the gateway has no route key for (an ASR
@@ -322,7 +342,7 @@ def _gateway_routes():
 			"engine_url": p.engine_url,
 			"internal_key": internal_key,
 			"healthy": True,
-			"capacity": int(p.max_num_seqs or DEFAULT_MAX_NUM_SEQS),
+			"capacity": _capacity(p, kinds),
 			# A pod IS its own placement — it carries no separate deployment doc, so both
 			# fields are the pod. Kept explicit so consumers never special-case a pod route.
 			"deployment": p.name,
@@ -382,10 +402,11 @@ def _replicas_for_ingress(ingress_name):
 	if not owned:
 		return routes
 
+	kinds = _engine_kinds()
 	deployments = frappe.get_all(
 		"Model Deployment",
 		filters={"status": "Active", "inference_server": ("in", list(owned))},
-		fields=["name", "model", "engine_url", "inference_server", "max_num_seqs"],
+		fields=["name", "model", "engine_url", "inference_server", "max_num_seqs", "engine_image"],
 	)
 	for deployment in deployments:
 		engine_url = private_url(deployment.engine_url, owned[deployment.inference_server])
@@ -396,7 +417,7 @@ def _replicas_for_ingress(ingress_name):
 			"engine_url": engine_url,
 			"internal_key": internal_key,
 			"healthy": True,
-			"capacity": int(deployment.max_num_seqs or DEFAULT_MAX_NUM_SEQS),
+			"capacity": _capacity(deployment, kinds),
 			# No `server`: which box an engine sits on is the gateway's request-id part, and the
 			# ingress has no use for it — it already holds the box's address in engine_url.
 			"deployment": deployment.name,

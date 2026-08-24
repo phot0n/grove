@@ -17,7 +17,7 @@ from pathlib import Path
 import frappe
 
 from grove import pathway_sync
-from grove.serve_command import DEFAULT_MAX_NUM_SEQS
+from grove.serving.vllm import VllmEngine
 
 
 def deployment(name, model="qwen3-35b", server="INF-1", status="Active", max_num_seqs=0):
@@ -51,6 +51,10 @@ class TestGatewayRoutes(unittest.TestCase):
 			if doctype == "Pod":
 				return list(pods)
 			if doctype in ("Ingress Server", "Inference Server"):
+				return []
+			if doctype == "Engine Image":
+				# No rows, so every placement's kind resolves to vllm — the default a placement
+				# predating engine_kind reads as.
 				return []
 			raise AssertionError(f"unexpected get_all({doctype})")
 
@@ -119,7 +123,7 @@ class TestGatewayRoutes(unittest.TestCase):
 		# --max-num-seqs when the placement names none, so vLLM sizes its own and the two can
 		# differ. A placement that needs them identical sets max_num_seqs, which pins both.
 		[route] = self.routes([deployment("MD-00007")])["qwen3-35b"]
-		self.assertEqual(route["capacity"], DEFAULT_MAX_NUM_SEQS)
+		self.assertEqual(route["capacity"], VllmEngine.default_concurrency)
 
 
 class TestRouteModality(unittest.TestCase):

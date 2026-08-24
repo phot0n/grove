@@ -7,7 +7,8 @@ import secrets
 import frappe
 from frappe.model.document import Document
 
-from grove.serve_command import ServeCommand
+from grove.grove.doctype.model.model import launch_config
+from grove.serving.base import build_engine
 
 # Default port pool seeded on a fresh Pod: SSH + a pool of vLLM engine ports (the provider
 # can't hot-add ports, so open them at spawn).
@@ -71,12 +72,33 @@ class Pod(Document):
 	gets no derived arguments, only its own entrypoint plus startup_command."""
 
 	@property
-	def is_custom_engine(self):
-		"""True when the image serves itself and no vLLM arguments may be derived for it. Guards
-		a blank Engine Image so validate can read this before the mandatory check has run."""
-		if not self.engine_image:
-			return False
-		return frappe.get_cached_value("Engine Image", self.engine_image, "engine_kind") == "custom"
+	def engine(self):
+		"""The Engine this pod's image serves with: the kind off its Engine Image, the Model's
+		launch config read live, and this pod's own tuning. A blank Engine Image reads as vllm, so
+		validate can reach here before the mandatory check has run."""
+		kind = (
+			frappe.get_cached_value("Engine Image", self.engine_image, "engine_kind")
+			if self.engine_image
+			else "vllm"
+		)
+		return build_engine(
+			kind,
+			self.model,
+			launch_config(self.model),
+			port=self.serve_port,
+			gpu_count=self.gpu_count,
+			pipeline_parallel_size=self.pipeline_parallel_size,
+			gpu_vram_gb=self.gpu_vram_gb,
+			kv_cache_dtype=self.kv_cache_dtype,
+			gpu_memory_utilization=self.gpu_memory_utilization,
+			max_model_len=self.max_model_len,
+			max_num_seqs=self.max_num_seqs,
+			attention_backend=self.attention_backend,
+			allow_long_max_model_len=self.allow_long_max_model_len,
+			aliases=self.aliases,
+			extra_serve_args=self.extra_serve_args,
+			startup_command=self.startup_command,
+		)
 
 	def before_insert(self):
 		# Opened at spawn since the provider can't hot-add ports later. The engine is exposed as
@@ -95,17 +117,15 @@ class Pod(Document):
 			frappe.throw(
 				f"Serve Port {serve_port} is not in the Ports table — add it so it's opened at spawn."
 			)
-		if self.is_custom_engine:
-			# Nothing to derive: the image's own entrypoint serves, and its flags (if any) are
-			# the operator's startup_command. The vLLM knobs and the api key are all vLLM's.
-			self.serve_command = ""
-			return
-		if not self.api_key:
+		engine = self.engine
+		# An image that enforces no key of ours must not be handed one: the gateway ships it as
+		# the route's internal key, so minting it would send a bearer to something that never
+		# asked for it.
+		if engine.has_api_key and not self.api_key:
 			self.api_key = secrets.token_hex(24)  # vLLM --api-key via VLLM_API_KEY env
-		serve = ServeCommand.for_pod(self)
-		if errors := serve.placement_errors:
+		if errors := engine.placement_errors:
 			frappe.throw("<br>".join(errors))
-		self.serve_command = serve.command
+		self.serve_command = engine.command
 
 	@property
 	def gpu_vram_gb(self):

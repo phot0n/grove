@@ -9,6 +9,7 @@ from unittest.mock import patch
 
 import frappe
 
+from grove.serving.vllm import VllmEngine
 from grove.grove.doctype.model_deployment.model_deployment import (
 	ENGINE_PORT_BASE,
 	ModelDeployment,
@@ -27,12 +28,19 @@ def deployment(env=None, attention_backend="auto", allow_long_max_model_len=0):
 	)
 
 
+def engine(**tuning):
+	"""The real VllmEngine a deployment would build. These tests are about how the operator's Env
+	rows layer over it, so the engine is the genuine article rather than a stub."""
+	tuning.setdefault("port", 8080)
+	return VllmEngine("qwen3-35b", {"hf_repo": "Qwen/Qwen3-35B"}, **tuning)
+
+
 class TestEngineEnv(unittest.TestCase):
 	def test_a_deployment_that_sets_nothing_still_logs_at_debug(self):
 		# The one thing every engine gets: DEBUG is what makes vLLM log each request's output,
 		# which is the only per-request record on the box itself.
 		self.assertEqual(
-			_engine_env(deployment(), ""),
+			_engine_env(deployment(), engine(), ""),
 			{
 				"VLLM_LOGGING_LEVEL": "DEBUG",
 				"HF_HUB_DISABLE_TELEMETRY": "1",
@@ -43,7 +51,7 @@ class TestEngineEnv(unittest.TestCase):
 	def test_derived_from_the_deployments_own_fields(self):
 		md = deployment(allow_long_max_model_len=1)
 		self.assertEqual(
-			_engine_env(md, "hf_xxx"),
+			_engine_env(md, engine(allow_long_max_model_len=1), "hf_xxx"),
 			{
 				"VLLM_LOGGING_LEVEL": "DEBUG",
 				"HF_HUB_DISABLE_TELEMETRY": "1",
@@ -57,21 +65,22 @@ class TestEngineEnv(unittest.TestCase):
 		# The baseline is a default, not a policy: DEBUG puts prompts and completions in the
 		# container log, so a deployment that must not keep them can say so.
 		md = deployment({"VLLM_LOGGING_LEVEL": "INFO"})
-		self.assertEqual(_engine_env(md, "")["VLLM_LOGGING_LEVEL"], "INFO")
+		self.assertEqual(_engine_env(md, engine(), "")["VLLM_LOGGING_LEVEL"], "INFO")
 
 	def test_attention_backend_is_a_serve_flag_not_env(self):
 		# vLLM 0.24 dropped VLLM_ATTENTION_BACKEND — nothing in the package reads it, so
 		# setting it here would leave the engine auto-selecting while the doc claimed
-		# otherwise. ServeCommand passes --attention-backend instead.
+		# otherwise. VllmEngine passes --attention-backend instead.
 		md = deployment(attention_backend="FLASHINFER")
-		self.assertNotIn("VLLM_ATTENTION_BACKEND", _engine_env(md, ""))
+		self.assertNotIn("VLLM_ATTENTION_BACKEND", _engine_env(md, engine(), ""))
 
 	def test_operator_rows_win_over_the_derived_value(self):
 		md = deployment({"VLLM_ALLOW_LONG_MAX_MODEL_LEN": "0"}, allow_long_max_model_len=1)
-		self.assertEqual(_engine_env(md, "")["VLLM_ALLOW_LONG_MAX_MODEL_LEN"], "0")
+		engine_ = engine(allow_long_max_model_len=1)
+		self.assertEqual(_engine_env(md, engine_, "")["VLLM_ALLOW_LONG_MAX_MODEL_LEN"], "0")
 
 	def test_operator_rows_are_carried_through(self):
-		env = _engine_env(deployment({"AWS_REGION": "us-east-1", "BLANK": None}), "")
+		env = _engine_env(deployment({"AWS_REGION": "us-east-1", "BLANK": None}), engine(), "")
 		self.assertEqual(env["AWS_REGION"], "us-east-1")
 		self.assertEqual(env["BLANK"], "")  # set-but-empty, not dropped
 
@@ -175,14 +184,10 @@ class TestGpuInventory(unittest.TestCase):
 			reject_claimed_gpus=lambda: None,
 			tensor_parallel_size=0,
 			serve_command="",
+			engine=SimpleNamespace(placement_errors=[], tensor_parallel_size=1, command="serve …"),
 		)
-		serve = SimpleNamespace(placement_errors=[], tensor_parallel_size=1, command="serve …")
-		with patch(
-			"grove.grove.doctype.model_deployment.model_deployment.ServeCommand.for_deployment",
-			return_value=serve,
-		):
-			with patch.object(frappe, "throw", side_effect=frappe.ValidationError):
-				ModelDeployment._validate_gpus(doc)
+		with patch.object(frappe, "throw", side_effect=frappe.ValidationError):
+			ModelDeployment._validate_gpus(doc)
 		return row
 
 	def test_display_columns_come_from_the_box(self):
