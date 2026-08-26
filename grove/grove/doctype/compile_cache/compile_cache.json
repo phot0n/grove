@@ -1,0 +1,103 @@
+{
+ "actions": [],
+ "creation": "2026-08-13 00:00:00",
+ "doctype": "DocType",
+ "engine": "InnoDB",
+ "field_order": [
+  "model_slug",
+  "gpu_model",
+  "tensor_parallel_size",
+  "image_digest",
+  "column_break_stats",
+  "s3_uri",
+  "objects",
+  "size_mb",
+  "last_synced"
+ ],
+ "fields": [
+  {
+   "description": "Repo slug (org--repo), as it appears in the S3 key.",
+   "fieldname": "model_slug",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Model",
+   "read_only": 1
+  },
+  {
+   "description": "As the compiling box's nvidia-smi reported it \u2014 kernels are arch-specific.",
+   "fieldname": "gpu_model",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "GPU",
+   "read_only": 1
+  },
+  {
+   "fieldname": "tensor_parallel_size",
+   "fieldtype": "Int",
+   "in_list_view": 1,
+   "label": "TP",
+   "read_only": 1
+  },
+  {
+   "description": "First 16 hex of the engine image digest \u2014 pins the vLLM/torch build a :latest tag doesn't.",
+   "fieldname": "image_digest",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Image Digest",
+   "read_only": 1
+  },
+  {
+   "fieldname": "column_break_stats",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "s3_uri",
+   "fieldtype": "Data",
+   "label": "S3 URI",
+   "read_only": 1
+  },
+  {
+   "fieldname": "objects",
+   "fieldtype": "Int",
+   "label": "Objects",
+   "read_only": 1
+  },
+  {
+   "fieldname": "size_mb",
+   "fieldtype": "Float",
+   "in_list_view": 1,
+   "label": "Size (MB)",
+   "read_only": 1
+  },
+  {
+   "fieldname": "last_synced",
+   "fieldtype": "Datetime",
+   "label": "Last Synced",
+   "read_only": 1
+  }
+ ],
+ "in_create": 1,
+ "links": [],
+ "modified": "2026-08-13 14:21:29.527965",
+ "modified_by": "Administrator",
+ "module": "Grove",
+ "name": "Compile Cache",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "System Manager",
+   "share": 1,
+   "write": 1
+  }
+ ],
+ "row_format": "Dynamic",
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": []
+}

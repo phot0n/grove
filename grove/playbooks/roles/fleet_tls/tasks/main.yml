@@ -1,5 +1,5 @@
 ---
-# Notifies nothing. The only consumers of this certificate are grove-gateway processes, and they
+# Notifies nothing. The only consumers of this certificate are pathway processes, and they
 # reload it from disk on the next handshake — so a renewal is a file copy and nothing else. This
 # role used to notify `reload openresty`, which is why every play that used it had to declare that
 # handler; both went with the nginx that needed them.

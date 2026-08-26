@@ -1,0 +1,42 @@
+{
+ "actions": [],
+ "allow_rename": 0,
+ "autoname": "hash",
+ "creation": "2026-07-02 00:00:00",
+ "doctype": "DocType",
+ "engine": "InnoDB",
+ "field_order": [
+  "run_at",
+  "sync_type",
+  "trigger",
+  "status",
+  "column_break_counts",
+  "targets_total",
+  "targets_ok",
+  "section_results",
+  "results"
+ ],
+ "fields": [
+  {"fieldname": "run_at", "fieldtype": "Datetime", "label": "Run At", "read_only": 1, "in_list_view": 1},
+  {"fieldname": "sync_type", "fieldtype": "Select", "label": "Sync Type", "options": "Projection\nUsage", "read_only": 1, "in_list_view": 1, "description": "Lock domain: Projection = keys/routes (Full+Incremental share one lock); Usage = usage pull+drain. Runs of the same type serialize."},
+  {"fieldname": "trigger", "fieldtype": "Select", "label": "Trigger", "options": "Scheduled\nManual", "default": "Scheduled", "read_only": 1, "in_list_view": 1},
+  {"fieldname": "status", "fieldtype": "Select", "label": "Status", "options": "Success\nPartial\nFailed", "read_only": 1, "in_list_view": 1},
+  {"fieldname": "column_break_counts", "fieldtype": "Column Break"},
+  {"fieldname": "targets_total", "fieldtype": "Int", "label": "Targets Total", "read_only": 1, "in_list_view": 1, "description": "Boxes this run pushed to \u2014 gateways and ingresses together. A run can target one plane only."},
+  {"fieldname": "targets_ok", "fieldtype": "Int", "label": "Targets OK", "read_only": 1, "in_list_view": 1},
+  {"fieldname": "section_results", "fieldtype": "Section Break", "label": "Per-Target Results"},
+  {"fieldname": "results", "fieldtype": "Table", "label": "Results", "options": "Pathway Sync Row", "read_only": 1}
+ ],
+ "links": [],
+ "modified": "2026-07-02 00:01:00",
+ "modified_by": "Administrator",
+ "module": "Grove",
+ "name": "Pathway Sync",
+ "owner": "Administrator",
+ "permissions": [
+  {"create": 1, "delete": 1, "email": 1, "print": 1, "read": 1, "report": 1, "role": "System Manager", "share": 1, "write": 1}
+ ],
+ "sort_field": "creation",
+ "sort_order": "DESC",
+ "states": []
+}

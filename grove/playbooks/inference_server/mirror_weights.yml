@@ -1,0 +1,56 @@
+---
+# Copy one model's cached safetensors snapshot into the weights bucket, flat, for the runai
+# streamer to serve from. Runs on a provisioned box — it already has the weights cached, or
+# downloads them into the cache first (same guard as the serve play, so a re-run is free).
+- name: Mirror model weights to S3
+  hosts: all
+  become: true
+  vars:
+    mirror_venv: "{{ vllm_home }}/hf-venv"
+    mirror_cache_path: "{{ vllm_hf_home }}/hub/models--{{ mirror_repo | replace('/', '--') }}"
+  tasks:
+    # Same reason as the vllm role: ensurepip is a separate package on Ubuntu, and this play
+    # can be the first thing to want the venv on a box that has never served.
+    - name: Ensure python3 can create a virtualenv
+      ansible.builtin.apt:
+        name: python3-venv
+        state: present
+        update_cache: true
+        cache_valid_time: 3600
+
+    - name: Install hf + awscli into the host venv
+      ansible.builtin.pip:
+        name:
+          - huggingface_hub[hf_transfer]
+          - awscli
+        virtualenv: "{{ mirror_venv }}"
+        virtualenv_command: python3 -m venv
+
+    - name: Download the weights if the box does not have them
+      ansible.builtin.command: "{{ mirror_venv }}/bin/hf download {{ mirror_repo }}"
+      environment:
+        HF_TOKEN: "{{ vllm_hf_token }}"
+        HF_HOME: "{{ vllm_hf_home }}"
+        HF_XET_HIGH_PERFORMANCE: "1"
+        HF_HUB_DISABLE_TELEMETRY: "1"
+      args:
+        creates: "{{ mirror_cache_path }}"
+      # Many GB, silent for minutes — detached + poll so a dropped SSH session can't abort it.
+      async: 7200
+      poll: 15
+
+    - name: Resolve the cached snapshot revision
+      ansible.builtin.command: "cat {{ mirror_cache_path }}/refs/main"
+      register: mirror_revision
+      changed_when: false
+
+    # --follow-symlinks: the snapshot dir is symlinks into blobs/; the streamer needs the
+    # real files, flat under the mirror URI.
+    - name: Sync the snapshot to the bucket
+      ansible.builtin.command: >-
+        {{ mirror_venv }}/bin/aws s3 sync
+        {{ mirror_cache_path }}/snapshots/{{ mirror_revision.stdout | trim }}/
+        {{ mirror_uri }}/ --follow-symlinks --no-progress
+      environment: "{{ mirror_env }}"
+      async: 21600
+      poll: 15

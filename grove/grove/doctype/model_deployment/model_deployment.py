@@ -8,8 +8,11 @@ import frappe
 from frappe.model.document import Document
 
 from grove import failure
+from grove.grove.doctype.engine_image.engine_image import engine_tuning
+from grove.grove.doctype.model.model import launch_config
+from grove.naming import next_deployment_name
+from grove.serving.base import build_engine
 from grove.utils import is_env_key, is_env_value
-from grove.serve_command import ServeCommand
 
 
 ENGINE_PORT_BASE = 8080
@@ -37,30 +40,65 @@ class ModelDeployment(Document):
 		allow_long_max_model_len: DF.Check
 		attention_backend: DF.Literal["auto", "FLASH_ATTN", "XFORMERS", "FLASHINFER"]
 		engine_image: DF.Link
+		engine_kind: DF.Data | None
 		engine_port: DF.Int
 		engine_url: DF.Data | None
 		env: DF.Table[PodEnv]
 		extra_serve_args: DF.SmallText | None
 		gpu_memory_utilization: DF.Float
 		gpus: DF.Table[ModelDeploymentGPU]
+		health_path: DF.Data | None
 		inference_server: DF.Link
 		internal_api_key: DF.Password | None
 		kv_cache_dtype: DF.Literal["auto", "fp8"]
 		log_lines: DF.Int
-		max_model_len: DF.Int
+		max_model_len: DF.Data | None
 		max_num_batched_tokens: DF.Int
 		max_num_seqs: DF.Int
 		model: DF.Link
 		pipeline_parallel_size: DF.Int
 		region: DF.Link | None
 		serve_command: DF.Code | None
+		startup_command: DF.SmallText | None
 		status: DF.Literal["Draft", "Provisioning", "Active", "Inactive", "Terminated", "Broken"]
 		tensor_parallel_size: DF.Int
 	# end: auto-generated types
 
-	# Routes are not dirty-gated: grove.agent_sync.sync_dirty pushes the full
-	# route table for every deployment each run (idempotent), so no on_update
-	# hook is needed for routing.
+	# No on_update sync hook: any change here moves the routes snapshot hash and
+	# grove.pathway_sync.sync_projection pushes it on the next tick.
+
+	@property
+	def engine(self):
+		"""The Engine this deployment's image serves with: the kind and the warmup off its Engine
+		Image, the Model's launch config read live, and this deployment's own tuning."""
+		kind, image_tuning = engine_tuning(self.engine_image)
+		return build_engine(
+			kind,
+			self.model,
+			launch_config(self.model),
+			port=self.engine_port,
+			gpu_count=len(self.gpus or []),
+			pipeline_parallel_size=self.pipeline_parallel_size,
+			gpu_vram_gb=self.gpu_vram_gb,
+			kv_cache_dtype=self.kv_cache_dtype,
+			gpu_memory_utilization=self.gpu_memory_utilization,
+			max_model_len=self.max_model_len,
+			max_num_batched_tokens=self.max_num_batched_tokens,
+			max_num_seqs=self.max_num_seqs,
+			attention_backend=self.attention_backend,
+			allow_long_max_model_len=self.allow_long_max_model_len,
+			aliases=self.aliases,
+			extra_serve_args=self.extra_serve_args,
+			startup_command=self.startup_command,
+			**image_tuning,
+		)
+
+	def autoname(self):
+		"""`<model id>-<region>-<server>-<n>`, e.g. `qwen3-8b-ap-south-1-inf3-00007` (`grove/naming.py`) — what it serves, where, and off
+		which box, readable from a list row. Region is read off the Inference Server here: the
+		field's `fetch_from` has not run this early."""
+		region = frappe.db.get_value("Inference Server", self.inference_server, "region")
+		self.name = next_deployment_name(self.model, self.inference_server, region)
 
 	def validate(self):
 		self._assign_engine_port()
@@ -141,12 +179,17 @@ class ModelDeployment(Document):
 
 		self.reject_claimed_gpus()
 
-		serve = ServeCommand.for_deployment(self)
-		if errors := serve.placement_errors:
+		engine = self.engine
+		if errors := engine.placement_errors:
 			frappe.throw("<br>".join(errors))
-		self.tensor_parallel_size = serve.tensor_parallel_size
+		# Store what actually reaches --max-model-len. The suffix is input sugar, so a doc that
+		# kept '128k' would leave the real number derivable only by re-parsing it. Blank stays
+		# blank — that is how a placement asks for the engine default.
+		if self.max_model_len:
+			self.max_model_len = str(engine.max_model_len)
+		self.tensor_parallel_size = engine.tensor_parallel_size
 		# The preview, from the same builder the deploy uses — so what is shown is what runs.
-		self.serve_command = serve.command
+		self.serve_command = engine.command
 
 	def reject_claimed_gpus(self):
 		"""A GPU backs one engine at a time — two vLLMs on one card split its VRAM and both
@@ -264,7 +307,7 @@ class ModelDeployment(Document):
 			timeout=3600,
 			model_deployment=self.name,
 		)
-		frappe.msgprint(f"Deploying {self.model} on {self.inference_server} — watch its Ansible Plays.")
+		frappe.msgprint(f"Deploying {self.model} on {self.inference_server} — watch its Ansible Plays.", alert=True)
 
 	@frappe.whitelist()
 	def apply_engine_config(self):
@@ -278,7 +321,10 @@ class ModelDeployment(Document):
 			timeout=1200,
 			model_deployment=self.name,
 		)
-		frappe.msgprint(f"Re-rendering engine config on {self.inference_server} — watch its Ansible Plays.")
+		frappe.msgprint(
+			f"Re-rendering engine config on {self.inference_server} — watch its Ansible Plays.",
+			alert=True,
+		)
 
 	@frappe.whitelist()
 	def stop(self):
@@ -324,7 +370,10 @@ class ModelDeployment(Document):
 			timeout=600,
 			model_deployment=self.name,
 		)
-		frappe.msgprint(f"Tearing down this instance on {self.inference_server} — watch its Ansible Plays.")
+		frappe.msgprint(
+			f"Tearing down this instance on {self.inference_server} — watch its Ansible Plays.",
+			alert=True,
+		)
 
 	@property
 	def container_name(self):
@@ -393,15 +442,14 @@ def _instance_slug(md_name):
 	return re.sub(r"[^a-z0-9._-]", "-", md_name.lower())
 
 
-def _engine_env(md, hf_token):
-	"""Env vars for the engine container: what Grove derives from the deployment first, the
-	operator's own rows layered on top (same precedence the Pod path uses). VLLM_API_KEY is
-	NOT here — the role resolves it on the box, so the env-file template there adds it."""
-	env = {"VLLM_LOGGING_LEVEL": "DEBUG"}
-	if hf_token:
-		env["HF_TOKEN"] = hf_token
-	if md.allow_long_max_model_len:
-		env["VLLM_ALLOW_LONG_MAX_MODEL_LEN"] = "1"
+def _engine_env(md, engine, hf_token, streaming_env=None):
+	"""Env vars for the engine container: what the engine needs first, the operator's own rows
+	layered on top (same precedence the Pod path uses).
+
+	No paths are handed over — on a box the run-script template writes the cache dirs and the role
+	resolves VLLM_API_KEY on the box, so the engine names neither. Key order is the env file's line
+	order; see Engine.env."""
+	env = engine.env(hf_token=hf_token, streaming_env=streaming_env)
 	env.update({row.key: row.value or "" for row in md.env or []})
 	return env
 
@@ -409,10 +457,10 @@ def _engine_env(md, hf_token):
 def _vllm_extravars(md, m, inf, key):
 	"""Assemble the vLLM Ansible extra-vars from the Model launch profile (m) ⊕ this
 	deployment (md) ⊕ its box (inf) ⊕ the internal key. Shared by deploy_model (full serve)
-	and reconfigure_deployment (config-only) so the two paths can never drift. The `vllm serve`
-	flags come from ServeCommand — the same builder the Pod path uses; the run script on the
-	box only renders them."""
-	serve = ServeCommand.for_deployment(md)
+	and reconfigure_deployment (config-only) so the two paths can never drift. The arguments come
+	from the deployment's Engine — the same builder the Pod path uses; the run script on the box
+	only renders them, positional unquoted and every flag quoted."""
+	serve = md.engine
 
 	# GPU pinning: the deployment names CUDA indices on its box (md.gpus). N GPUs →
 	# tensor-parallel across exactly those, with CUDA_VISIBLE_DEVICES so vLLM only
@@ -421,37 +469,58 @@ def _vllm_extravars(md, m, inf, key):
 
 	hf_token = frappe.conf.get("hf_token", "")
 	vllm_home = inf.data_path
+	settings = frappe.get_single("Grove Settings")
 
 	extravars = {
-		"vllm_model": m.hf_repo,
+		# The two slots the run script renders after the image: the positional unquoted, every
+		# flag as one quoted argument. A custom image names no positional and its Startup Command
+		# is the whole flag list, so the same two lines serve both kinds.
+		"vllm_model": serve.repo,
 		"vllm_served_name": " ".join([md.model, *serve.aliases]),
 		"vllm_serve_args": serve.args,
+		# Blank = no gate. vLLM's own /health unless this deployment names a path; a custom image
+		# that names none finishes the play as soon as its container starts.
+		"vllm_health_path": md.health_path or serve.health_path,
+		# One real request after the health gate, from the same source the args came from.
+		"vllm_warmup_request": serve.warmup_request,
 		# One container + port + key file per deployment (multi-tenant box). Slug from the
 		# MD name → container vllm-<instance> and its run script beside the key.
 		"vllm_instance": _instance_slug(md.name),
 		"vllm_port": serve.port,
 		"vllm_api_key": key,
 		"vllm_cuda_visible_devices": ",".join(str(i) for i in gpu_indexes),
-		"vllm_env": _engine_env(md, hf_token),
+		"vllm_env": _engine_env(md, serve, hf_token, settings.weights_s3_engine_environment),
 		"vllm_hf_token": hf_token,
-		# Keep the weights/caches on the mounted data volume (root is tiny / ephemeral).
+		# Weights/caches on the mounted data volume, or the instance-store NVMe if opted in.
 		"vllm_home": vllm_home,
-		"vllm_hf_home": f"{vllm_home}/hf",
+		"vllm_hf_home": inf.hf_home,
 		"vllm_cache_dir": f"{vllm_home}/cache",
-		"vllm_predownload_model": True,
+		# Nothing of ours to fetch for an image that brings its own model — and the role derives
+		# the repo from vllm_model, so leaving this on would run `hf download` with no repo.
+		"vllm_predownload_model": bool(serve.repo) and not serve.is_streaming,
 		# What the role checks the box's free space against, before either download starts.
 		# 0 means the figure was never fetched, which the role reads as "cannot check".
 		"vllm_weights_gb": serve.weights_gb,
+		# S3 compile-cache pre-warm: blank bucket turns the hooks off. The key's other axes
+		# (image digest, GPU) are computed on the box — only TP and the model come from here.
+		"vllm_cache_bucket": (settings.weights_bucket or "") if serve.repo else "",
+		"vllm_cache_sync_env": settings.weights_s3_engine_environment,
+		"vllm_tensor_parallel_size": serve.tensor_parallel_size,
+		"vllm_model_slug": (m.hf_repo or md.model).split(":")[0].replace("/", "--"),
 		# serve.yml runs grove_https and engine_proxy ahead of the vllm role, so that play
 		# writes the box's htpasswd too — from the same source provision.yml reads. Unused by
 		# reconfigure.yml, which runs neither role.
-		**frappe.get_single("Grove Settings").scrape_auth_variables,
+		**settings.scrape_auth_variables,
 	}
 	# The image is what the box serves from: the role pulls it and Docker owns the container.
 	# Credentials only exist for a private registry; a public pull skips the login task.
 	image = frappe.get_cached_doc("Engine Image", md.engine_image)
 	extravars["vllm_image"] = image.full_image
 	extravars["vllm_image_gb"] = image.size_gb or 0
+	# The box's engine proxy is the only thing in front of the container, and it authenticates
+	# nothing itself — vLLM enforces VLLM_API_KEY, an image that serves itself enforces nothing.
+	# So the proxy has to check the bearer for that kind, and this is what tells it to.
+	extravars["vllm_engine_kind"] = image.engine_kind
 	if credentials := image.registry_credentials:
 		extravars["vllm_registry_host"] = image.registry_host
 		extravars["vllm_registry_username"], extravars["vllm_registry_token"] = credentials
@@ -511,16 +580,6 @@ def deploy_model(model_deployment):
 
 	sync_published(md.model)
 	frappe.db.commit()
-	if rc == 0:
-		from grove import agent_sync
-
-		# Gateway routes are global — every gateway holds a row for every model — so all of them.
-		# The replica table is not: only the ingress that OWNS this box has changed, and the rest
-		# of the fleet already holds the table this push would hand them.
-		agent_sync.full_sync(
-			trigger="Provision",
-			ingresses=agent_sync.owning_ingresses([md.inference_server]),
-		)
 	return play_name, rc
 
 
@@ -556,7 +615,7 @@ def reconfigure_deployment(model_deployment):
 
 	# Status is deliberately NOT moved to Provisioning here, unlike deploy_model.
 	#
-	# It is read as "is this engine serving?" — _routes_for_proxy only routes Active — and the
+	# It is read as "is this engine serving?" — _gateway_routes only routes Active — and the
 	# scheduler pushes the full route table every 2 minutes. Flipping it for the duration of the
 	# play therefore takes the model out of the gateway for MINUTES, and this play usually does
 	# not stop the engine at all: the container is replaced only when the run script or env file

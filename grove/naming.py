@@ -1,6 +1,7 @@
 # Copyright (c) 2026, Grove and contributors
 # For license information, please see license.txt
-"""How a server doc names itself: `<prefix><n>-<region>`, e.g. `gw1-ap-south-1`.
+"""How a server doc names itself (`<prefix><n>-<region>`, e.g. `gw1-ap-south-1`) and how a Model
+Deployment names itself off those parts (`qwen3-8b-ap-south-1-inf3-00007`).
 
 Generated rather than typed because the name is not a label — it is infrastructure. A Gateway
 Server's and an Ingress Server's name IS its DNS record under the fleet zone, and every server's
@@ -58,3 +59,29 @@ def next_server_name(prefix, machine, counter=None):
 	# makes the count per region.
 	number = counter(f"{prefix}-{region}-" if region else f"{prefix}-", 1)
 	return f"{prefix}{number}-{region}" if region else f"{prefix}{number}"
+
+
+# The counter behind every deployment name, and the key the old `MD-{#####}` format used — so the
+# numbers carry on climbing rather than restarting on top of names already taken.
+DEPLOYMENT_SERIES = "MD-"
+
+
+def abbreviate_server(server):
+	"""`inf3-ap-south-1` → `inf3`. A server name already carries its region as a suffix, and a
+	deployment name carries the region of its own."""
+	return slugify(server).split("-")[0]
+
+
+def next_deployment_name(model, server, region, counter=None):
+	"""A deployment's name: `<model id>-<region>-<server>-<n>`, e.g.
+	`qwen3-8b-ap-south-1-inf3-00007`.
+
+	Says what it serves, where, and off which box, without opening the doc. The region goes in as
+	the Region doc names it — every provider codes its regions differently (`ap-south-1`,
+	`asia-south1`, `southeastasia`), and a shortening rule fitted to one of them mangles the rest.
+	The number is what keeps the name unique — two deployments of one model on one box are a
+	legitimate thing to have — and comes from `tabSeries` for the same reason server names do: two
+	inserts racing cannot land on it twice. `counter` is injectable, as `next_server_name`'s is."""
+	counter = counter or getseries
+	parts = [slugify((model or "").split("/")[-1]), slugify(region), abbreviate_server(server)]
+	return "-".join([part for part in parts if part] + [counter(DEPLOYMENT_SERIES, 5)])

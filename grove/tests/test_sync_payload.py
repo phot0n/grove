@@ -1,6 +1,6 @@
 # Copyright (c) 2026, Grove and contributors
 # See license.txt
-"""What a Agent Sync Row records about a push. Pure — no site, no network.
+"""What a Pathway Sync Row records about a push. Pure — no site, no network.
 
 The row is readable by anyone who can open the Desk, and the payloads carry live credentials: the
 engine's own key on a replica row, the ingress's data token on a gateway row, and the hash a
@@ -12,13 +12,13 @@ import re
 import unittest
 from pathlib import Path
 
-import grove.agent_sync
+import grove.pathway_sync
 import grove.usage_pull
-from grove.agent_sync import _redact
+from grove.pathway_sync import _redact
 
 SECRET = "a05749bce74d4e162f98339d3889f3483052d39957a0f3fc"
 
-ROW_DOCTYPE = Path(grove.agent_sync.__file__).parent / "grove/doctype/agent_sync_row/agent_sync_row.json"
+ROW_DOCTYPE = Path(grove.pathway_sync.__file__).parent / "grove/doctype/pathway_sync_row/pathway_sync_row.json"
 ROW_FIELDS = {field["fieldname"] for field in json.loads(ROW_DOCTYPE.read_text())["fields"]}
 
 
@@ -67,7 +67,7 @@ class TestEveryRowNamesTheBoxItIsAbout(unittest.TestCase):
 	That is how the Usage pull kept writing `proxy` after the field became `server`."""
 
 	def rows_written(self):
-		for module in (grove.agent_sync, grove.usage_pull):
+		for module in (grove.pathway_sync, grove.usage_pull):
 			source = Path(module.__file__).read_text()
 			for literal in re.findall(r'append\("results",\s*\{([^}]*)\}', source):
 				yield module.__name__, set(re.findall(r'"(\w+)"\s*:', literal))

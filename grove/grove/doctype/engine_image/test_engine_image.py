@@ -1,10 +1,12 @@
 # Copyright (c) 2026, Grove and contributors
 # See license.txt
-"""Splitting an image ref into what the registry API addresses a manifest by. Pure — the ref
-is passed in, so no site and no registry call."""
+"""Splitting an image ref into what the registry API addresses a manifest by, and checking the
+warmup body an image carries. Pure — both read fields off the doc, so no registry call."""
 
 import unittest
 from types import SimpleNamespace
+
+import frappe
 
 from grove.grove.doctype.engine_image.engine_image import DOCKER_HUB_HOSTS, EngineImage
 
@@ -71,6 +73,29 @@ class TestSplitImagePath(unittest.TestCase):
 		self.assertEqual(
 			split(f"vllm/vllm-openai@{digest}"), ("vllm/vllm-openai", digest)
 		)
+
+
+class TestWarmupBody(unittest.TestCase):
+	"""The body a custom image is warmed up with is typed as JSON, so it is checked where it is
+	typed — the alternative is finding out on the box, minutes into a deploy."""
+
+	def validate(self, warmup_body):
+		EngineImage.validate_warmup_body(SimpleNamespace(warmup_body=warmup_body))
+
+	def test_blank_is_fine(self):
+		self.validate("")
+
+	def test_an_object_is_fine(self):
+		self.validate('{"model": "nemotron-asr", "language": "en"}')
+
+	def test_malformed_json_is_refused(self):
+		with self.assertRaises(frappe.ValidationError):
+			self.validate('{"model": ')
+
+	def test_json_that_is_not_an_object_is_refused(self):
+		# A list parses, and then every caller sends it as a request body nothing accepts.
+		with self.assertRaises(frappe.ValidationError):
+			self.validate('["ping"]')
 
 
 if __name__ == "__main__":

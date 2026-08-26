@@ -6,7 +6,6 @@ import frappe
 from frappe.model.document import Document
 
 from grove import failure
-from grove import agent_sync
 from grove.ansible import AnsibleHost
 from grove.monitoring import run_exporters_play
 from grove.naming import GeneratedName
@@ -31,31 +30,30 @@ class InferenceServer(GeneratedName, AnsibleHost, Document):
 		monitoring_agent: DF.Link | None
 		region: DF.Link | None
 		status: DF.Literal["Pending", "Installing", "Active", "Broken", "Terminated"]
+		use_instance_store_for_hf_cache: DF.Check
 	# end: auto-generated types
 
 	# Its name is no DNS record of its own, but it rides on every route as `server` and into request ids.
 	name_prefix = "inf"
 
+	# No on_update sync hook: moving a box between ingresses moves both tables' hashes and
+	# grove.pathway_sync.sync_projection pushes them on the next tick.
+
 	def validate(self):
 		self.validate_ingress_network()
+		self.validate_instance_store()
 
-	def on_update(self):
-		"""Moving a box between ingresses is the cutover, and it changes three tables at once:
-		the old owner loses these replicas, the new one gains them, and every gateway's row for
-		these models flips between a direct engine and an ingress hand-off.
-
-		Pushed here because nothing else would. The scheduled run repairs it within a tick, but a
-		cutover that only takes effect on the next cron is a cutover nobody can watch."""
-		if not self.has_value_changed("ingress"):
+	def validate_instance_store(self):
+		"""The checkbox is only honest on a box that has the hardware — Machine syncs
+		instance_store_disks from the instance type."""
+		if not self.use_instance_store_for_hf_cache or not self.machine:
 			return
-		before = self.get_doc_before_save()
-		moved = [self.ingress, before.ingress if before else None]
-		frappe.enqueue(
-			"grove.agent_sync.full_sync",
-			queue="short",
-			trigger="Provision",
-			ingresses=agent_sync.active_among(moved),
-		)
+		disks = frappe.db.get_value("Machine", self.machine, "instance_store_disks")
+		if not disks:
+			frappe.throw(
+				f"Machine {self.machine} has no instance-store NVMe (run Sync Instance Type "
+				"on it if that looks wrong) — untick Use Instance Store For HF Cache."
+			)
 
 	def validate_ingress_network(self):
 		"""An ingress can only reach this box privately if the two share a VPC.
@@ -85,6 +83,14 @@ class InferenceServer(GeneratedName, AnsibleHost, Document):
 	# ── The box ───────────────────────────────────────────────────────────────
 	# Everything that reaches the hardware goes through here: a Model Deployment talks to
 	# its Inference Server, and the Server is the only side that knows about a Machine.
+
+	@property
+	def hf_home(self):
+		"""Where this box keeps the HF cache — the instance-store mount when opted in
+		(gpu_instance_store_mount in the gpu_host role), the data volume otherwise."""
+		if self.use_instance_store_for_hf_cache:
+			return "/mnt/instance/hf"
+		return f"{self.data_path}/hf"
 
 	@property
 	def machine_doc(self):
@@ -123,15 +129,16 @@ class InferenceServer(GeneratedName, AnsibleHost, Document):
 		reports every claimant so the clash is visible rather than silently halving VRAM."""
 		gpus = self.gpus
 		claims = {}
-		for deployment in frappe.get_all(
+		for deployment in frappe.get_list(
 			"Model Deployment",
 			filters={"inference_server": self.name, "status": "Active"},
 			fields=["name", "model"],
 		):
-			for row in frappe.get_all(
+			for row in frappe.get_list(
 				"Model Deployment GPU",
 				filters={"parent": deployment.name, "parenttype": "Model Deployment"},
 				fields=["gpu_index"],
+				parent_doctype="Model Deployment",
 			):
 				claims.setdefault(row.gpu_index, []).append(deployment)
 		for gpu in gpus:
@@ -150,7 +157,7 @@ class InferenceServer(GeneratedName, AnsibleHost, Document):
 		frappe.enqueue_doc(
 			self.doctype, self.name, "provision_exporters", queue="long", timeout=1800
 		)
-		frappe.msgprint(f"Installing the metrics exporters on {self.name} — watch its Ansible Plays.")
+		frappe.msgprint(f"Installing the metrics exporters on {self.name} — watch its Ansible Plays.", alert=True)
 
 	@failure.reports_failure(mark_broken=False)
 	def provision_exporters(self):
@@ -171,7 +178,7 @@ class InferenceServer(GeneratedName, AnsibleHost, Document):
 			# Has to outlast the driver reboot, which is half an hour on a bare metal box.
 			timeout=5400,
 		)
-		frappe.msgprint(f"Provisioning {self.name} — watch its Ansible Plays.")
+		frappe.msgprint(f"Provisioning {self.name} — watch its Ansible Plays.", alert=True)
 
 	@failure.reports_failure(mark_broken=True)
 	def provision(self):
@@ -189,6 +196,7 @@ class InferenceServer(GeneratedName, AnsibleHost, Document):
 			"provision.yml",
 			extravars={
 				"gpu_data_mount": self.data_path,
+				"gpu_instance_store_hf_cache": bool(self.use_instance_store_for_hf_cache),
 				"monitoring_has_gpu": bool(self.gpus),
 				# The driver reboot outlasts Ansible's default on a bare metal box.
 				"gpu_reboot_timeout": 1800 if is_bare_metal else 600,

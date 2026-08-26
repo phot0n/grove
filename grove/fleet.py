@@ -13,15 +13,49 @@ no tenant state, and a doctype with no tenant fields cannot be talked into being
 import frappe
 
 from grove.ansible import AnsibleHost
-from grove.cloud_provider.route53 import Route53Client
+from grove.cloud_provider.dns import Route53Client
 from grove.monitoring import run_exporters_play
 from grove.tls import dns_credentials
 from grove.utils import validate_id_safe_name
 
-# The grove-gateway release every box in the fleet runs. The agent lives in its own repo now, so
-# this pin is what ties a control plane to a binary: bump it in the same change as any agent_sync
-# or playbook edit that needs a newer one.
-GATEWAY_AGENT_VERSION = "v0.0.1"
+# What a gateway's DNS needs from Grove Settings: the zone every box is named under, the shared name
+# the latency tier sits at, and the credential. Read by the Gateway Server for its own row and by the
+# Region that owns the tier above it.
+GATEWAY_DNS_SETTINGS = ("fleet_zone", "gateway_host", "dns_provider")
+
+def gateway_latency_routing_enabled():
+	"""Whether the shared name is a per-region latency tier or one record set on its own.
+
+	Off, every gateway's row sits directly in a multivalue set AT Gateway Host — one record per box,
+	exactly as inside a region, minus the CNAME hop and the AWS region name a latency row has to be
+	measured against. That is the development answer: a fleet in one place has no region to be nearest
+	to, and a Region that is not an AWS one has no latency reference to give."""
+	return bool(frappe.db.get_single_value("Grove Settings", "gateway_latency_routing"))
+
+
+def gateway_health_checks_enabled():
+	"""Whether Grove writes Route53 health checks for the fleet.
+
+	Off is the development answer: every row then resolves unconditionally, because Route53 counts a
+	record with no check as healthy — so a one-box fleet behind a real zone still works, and nothing
+	is billed per check. The tiers themselves are unaffected; only ejection is."""
+	return bool(frappe.db.get_single_value("Grove Settings", "gateway_health_checks"))
+
+
+def gateway_agent_version():
+	"""The pathway release every box in the fleet runs.
+
+	A setting rather than a constant: the agent lives in its own repo, so which binary a fleet is on
+	is operational state, and pinning or rolling one back is an edit and a Deploy Agent instead of a
+	control-plane deploy. Read per run, so it takes effect on the next one.
+
+	Refused blank rather than defaulted. A Single doc that predates a field never applies its JSON
+	default, so blank is a state a real site lands in — and it renders an empty release tag into the
+	download URL, which 404s a play twenty minutes in instead of saying what is wrong."""
+	version = frappe.db.get_single_value("Grove Settings", "gateway_agent_version")
+	if not version:
+		frappe.throw("Set Gateway Agent Version in Grove Settings — it names the release each box installs.")
+	return version
 
 
 class FleetHost(AnsibleHost):
@@ -70,7 +104,7 @@ class FleetHost(AnsibleHost):
 		only moment that knows the answer. Written with db.set_value, like the statuses around it,
 		so recording a version never fires on_update and re-syncs the fleet."""
 		if rc == 0:
-			frappe.db.set_value(self.doctype, self.name, "agent_version", GATEWAY_AGENT_VERSION)
+			frappe.db.set_value(self.doctype, self.name, "agent_version", gateway_agent_version())
 
 	@property
 	def has_dns_records(self):
@@ -83,9 +117,6 @@ class FleetHost(AnsibleHost):
 		return all(self.get(field) for field in self.dns_fields)
 
 	def dns_client(self):
-		"""(Route53Client, Grove Settings) once everything a record needs is set, (None, settings)
-		otherwise. Silent rather than loud: a fleet with no zone configured is the pre-TLS setup,
-		and provisioning a box there should not start failing."""
 		settings = frappe.get_single("Grove Settings")
 		if not all(settings.get(field) for field in self.dns_settings):
 			return None, settings
@@ -96,11 +127,6 @@ class FleetHost(AnsibleHost):
 
 	@frappe.whitelist()
 	def deploy_tls(self):
-		"""Write the current fleet certificate on this box and reload OpenResty. Nothing else —
-		this is what the daily renewal pushes, and it runs against live boxes.
-
-		The play lives in the Gateway Server tree and is doctype-agnostic: it runs one role and
-		one config test, the same on either kind of box."""
 		return self.run_playbook(
 			"deploy_tls.yml",
 			project="Gateway Server",
@@ -109,12 +135,10 @@ class FleetHost(AnsibleHost):
 
 	@frappe.whitelist()
 	def install_exporters(self):
-		"""Button: install this box's metrics exporters (long job — it SSHes to the box).
-		They only listen; the Monitoring Agent named on this doc is what scrapes them."""
 		if not self.machine:
 			frappe.throw("Set a Machine before installing exporters.")
 		frappe.enqueue_doc(self.doctype, self.name, "provision_exporters", queue="long", timeout=1800)
-		frappe.msgprint(f"Installing the metrics exporters on {self.name} — watch its Ansible Plays.")
+		frappe.msgprint(f"Installing the metrics exporters on {self.name} — watch its Ansible Plays.", alert=True)
 
 	def provision_exporters(self):
 		return run_exporters_play(self)

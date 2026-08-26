@@ -1,5 +1,5 @@
 ---
-# Provision a Grove Gateway Server: local Redis (zero-loss persistence) + the grove-gateway binary,
+# Provision a Grove Gateway Server: local Redis (zero-loss persistence) + the pathway binary,
 # which owns the whole data path — TLS, routing, auth, metering. Idempotent.
 #
 # There is no OpenResty here any more. The play stops and disables it rather than ignoring it, so a
@@ -12,14 +12,15 @@
   gather_facts: true
   vars:
     grove_dir: "{{ playbook_dir }}"
-    # No self-signed certificate on a front box. grove-gateway serves the fleet's real wildcard or
+    # No self-signed certificate on a front box. pathway serves the fleet's real wildcard or
     # it serves plaintext — one that nothing trusts, on the port customers dial, is worse than
     # either. The reason this box ever had one (nginx will not start `listen 443 ssl` without a file
     # on disk) left with nginx.
     grove_tls_selfsigned: false
+    monitoring_arch: "{{ 'arm64' if ansible_architecture == 'aarch64' else 'amd64' }}"
 
   # Checked before anything installs: the gateway refuses to start without this token, so a run that
-  # forgot it would leave a box with grove-gateway crash-looping.
+  # forgot it would leave a box with pathway crash-looping.
   pre_tasks:
     - name: refuse to provision without an admin token
       ansible.builtin.assert:
@@ -33,19 +34,47 @@
   # no wildcard it comes up on :80 in the clear rather than refusing, which is the honest answer for
   # a fleet that has not been given a zone.
   roles:
+    # node_exporter before the binary: pathway publishes /metrics/node behind the htpasswd
+    # grove_https writes, and a front that proxies to nothing answers 502 to every scrape. A
+    # front box has no cards, so there is no dcgm_exporter here.
+    - node_exporter
     - grove_https
     - fleet_tls
     - install_gateway_agent
 
   tasks:
     # Guarded and non-fatal: most boxes never had OpenResty, and the ones that did must give up the
-    # ports before grove-gateway asks for them. This is the task that performs the cutover.
+    # ports before pathway asks for them. This is the task that performs the cutover.
     - name: stop and disable openresty
       ansible.builtin.systemd:
         name: openresty
         state: stopped
         enabled: false
       failed_when: false
+
+    # The agent used to be named grove-gateway. A box provisioned before the rename still runs
+    # the old unit on the ports pathway is about to take, so it is retired the same way
+    # openresty is. Logs stay under /var/log/grove-gateway as history; config is re-rendered.
+    - name: retire the old grove-gateway unit (agent renamed to pathway)
+      ansible.builtin.systemd:
+        name: grove-gateway
+        state: stopped
+        enabled: false
+      failed_when: false
+
+    - name: remove the old grove-gateway files
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - /etc/systemd/system/grove-gateway.service
+        - /etc/logrotate.d/grove-gateway
+        - /usr/local/bin/grove-gateway
+        - /etc/grove-gateway
+
+    - name: forget the removed unit
+      ansible.builtin.systemd:
+        daemon_reload: true
 
     # A box provisioned before this carries a self-signed certificate nothing now reads. Removed by
     # file, never by directory: /etc/grove/tls also holds the fleet wildcard this box actually
@@ -110,34 +139,34 @@
       register: redis_runtime_persistence
       changed_when: redis_runtime_persistence.stdout | trim == "1"
 
-    - name: grove-gateway directories
+    - name: pathway directories
       ansible.builtin.file:
         path: "{{ item }}"
         state: directory
         mode: "0755"
       loop:
-        - /etc/grove-gateway
-        - /var/log/grove-gateway
+        - /etc/pathway
+        - /var/log/pathway
 
     - name: access log rotation
       ansible.builtin.copy:
-        src: "{{ grove_dir }}/logrotate/grove-gateway"
-        dest: /etc/logrotate.d/grove-gateway
+        src: "{{ grove_dir }}/logrotate/pathway"
+        dest: /etc/logrotate.d/pathway
         mode: "0644"
 
     - name: gateway binary
       ansible.builtin.copy:
-        src: /tmp/grove-gateway
-        dest: /usr/local/bin/grove-gateway
+        src: /tmp/pathway
+        dest: /usr/local/bin/pathway
         mode: "0755"
         remote_src: true
-      notify: restart grove-gateway
+      notify: restart pathway
 
     # Identity, secrets and sockets. Changing any of these makes this a different process, which is
     # why they restart rather than reload.
     - name: agent.env
       ansible.builtin.copy:
-        dest: /etc/grove-gateway/agent.env
+        dest: /etc/pathway/agent.env
         content: |
           GROVE_ADMIN_TOKEN={{ admin_token }}
           GROVE_GATEWAY_ID={{ gateway_id | default('') }}
@@ -150,35 +179,35 @@
           GROVE_TLS_CERT={{ fleet_tls_cert_path if (fleet_tls_cert | default('')) else '' }}
           GROVE_TLS_KEY={{ fleet_tls_key_path if (fleet_tls_cert | default('')) else '' }}
           GROVE_HTPASSWD={{ grove_metrics_htpasswd }}
-          GROVE_ACCESS_LOG=/var/log/grove-gateway/access.log
-          GROVE_ERROR_LOG=/var/log/grove-gateway/error.log
-          GROVE_CONFIG=/etc/grove-gateway/config.json
-          GROVE_PID_FILE=/run/grove-gateway.pid
+          GROVE_ACCESS_LOG=/var/log/pathway/access.log
+          GROVE_ERROR_LOG=/var/log/pathway/error.log
+          GROVE_CONFIG=/etc/pathway/config.json
+          GROVE_PID_FILE=/run/pathway.pid
         mode: "0600"
       no_log: true
-      notify: restart grove-gateway
+      notify: restart pathway
 
     # The tunables. Separate from agent.env because these are re-read on a signal, and a reload is
     # cheaper than a restart on a box carrying live streams.
     - name: config.json
       ansible.builtin.template:
         src: "{{ grove_dir }}/config.json.j2"
-        dest: /etc/grove-gateway/config.json
+        dest: /etc/pathway/config.json
         mode: "0644"
-      notify: reload grove-gateway config
+      notify: reload pathway config
 
     - name: systemd unit
       ansible.builtin.copy:
-        src: "{{ grove_dir }}/systemd/grove-gateway.service"
-        dest: /etc/systemd/system/grove-gateway.service
+        src: "{{ grove_dir }}/systemd/pathway.service"
+        dest: /etc/systemd/system/pathway.service
         mode: "0644"
       notify:
         - reload systemd
-        - restart grove-gateway
+        - restart pathway
 
-    - name: grove-gateway started
+    - name: pathway started
       ansible.builtin.systemd:
-        name: grove-gateway
+        name: pathway
         enabled: true
         state: started
         daemon_reload: true
@@ -188,14 +217,14 @@
       ansible.builtin.systemd:
         daemon_reload: true
 
-    - name: restart grove-gateway
+    - name: restart pathway
       ansible.builtin.systemd:
-        name: grove-gateway
+        name: pathway
         state: restarted
         daemon_reload: true
 
     # SIGUSR1, not a restart: the tunables are re-read in place, so live streams are untouched.
-    - name: reload grove-gateway config
-      ansible.builtin.command: systemctl kill -s SIGUSR1 grove-gateway
+    - name: reload pathway config
+      ansible.builtin.command: systemctl kill -s SIGUSR1 pathway
       changed_when: true
       failed_when: false

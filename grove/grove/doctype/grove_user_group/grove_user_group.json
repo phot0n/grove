@@ -6,21 +6,12 @@
  "engine": "InnoDB",
  "field_order": [
   "description",
-  "dirty",
   "column_break_sfxr",
   "public_catalog",
   "section_models",
   "models"
  ],
  "fields": [
-  {
-   "default": "0",
-   "description": "Set on change; cleared once a sync run has pushed this group's grant to every Active proxy.",
-   "fieldname": "dirty",
-   "fieldtype": "Check",
-   "label": "Pending Sync",
-   "read_only": 1
-  },
   {
    "description": "What this group is for, e.g. \"internal staff\" or \"acme early access\".",
    "fieldname": "description",

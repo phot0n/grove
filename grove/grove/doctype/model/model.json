@@ -6,13 +6,15 @@
  "engine": "InnoDB",
  "field_order": [
   "provider",
-  "display_name",
   "model_id",
-  "hf_repo",
+  "modality",
   "column_break_bhjw",
   "published",
+  "provider_base_url",
+  "upstream_model_id",
   "section_launch",
-  "modality",
+  "hf_repo",
+  "weights_s3_uri",
   "column_break_launch",
   "enable_prefix_caching",
   "section_shape",
@@ -30,7 +32,7 @@
  "fields": [
   {
    "default": "frappe",
-   "description": "Who serves this model. Prefixes the model id (frappe/qwen3.5-4b) — set at creation, part of the name from then on. Models made before providers existed have none and keep their bare id.",
+   "description": "Who serves this model. Prefixes the model id (frappe/qwen3.5-4b) \u2014 set at creation, part of the name from then on. A provider with a Base URL is a third-party vendor: the model routes straight there and no engine is started for it.",
    "fieldname": "provider",
    "fieldtype": "Link",
    "in_list_view": 1,
@@ -39,29 +41,44 @@
    "options": "Model Provider"
   },
   {
-   "description": "Names the doc: lowercased with spaces/underscores as dashes (e.g. 'Qwen3.5 Coder' → qwen3.5-coder). That name is the client-facing model id — set at creation, not changed if you edit this later.",
-   "fieldname": "display_name",
-   "fieldtype": "Data",
-   "in_list_view": 1,
-   "label": "Display Name",
-   "reqd": 1
-  },
-  {
-   "description": "The id without its provider prefix, slugged from Display Name. Both spellings route during the transition, so a client may send either.",
+   "description": "The client-facing id, without its provider prefix \u2014 what a client sends as `model`. Lowercased on save, with spaces and underscores as dashes ('Qwen3.5 Coder' \u2192 qwen3.5-coder). Names the doc, so it is set once at creation.",
    "fieldname": "model_id",
    "fieldtype": "Data",
+   "in_list_view": 1,
    "label": "Model ID",
+   "reqd": 1,
+   "set_only_once": 1
+  },
+  {
+   "description": "What the upstream is asked for, when that is not the id above \u2014 a vendor's dated snapshot (claude-sonnet-4-5-20250929), or the name a container image advertises for itself. Blank sends the id the caller used, which is what our own engines are started under.",
+   "fieldname": "upstream_model_id",
+   "fieldtype": "Data",
+   "label": "Upstream Model ID"
+  },
+  {
+   "default": "text",
+   "description": "Which OpenAI surfaces this model answers on. The gateway refuses the rest itself, before dialling anything: an embedding model asked for chat is a local 404, not a round trip. embedding is a pooling model served at /v1/embeddings; text also sets --language-model-only on an engine we run.",
+   "fieldname": "modality",
+   "fieldtype": "Select",
+   "label": "Modality",
+   "options": "text\nmultimodal\nembedding\naudio"
+  },
+  {
+   "description": "Mirrored from the provider so the form knows whether this model is one we host or one we dial.",
+   "fetch_from": "provider.base_url",
+   "fieldname": "provider_base_url",
+   "fieldtype": "Data",
+   "hidden": 1,
+   "label": "Provider Base URL",
    "read_only": 1
   },
   {
-   "description": "→ vllm serve ; the name is the --served-model-name. A GGUF repo ships many quantizations — name one with repo:QUANT (unsloth/Qwen3-0.6B-GGUF:Q4_K_M) so only that file is pulled, and add --tokenizer &lt;base repo&gt; to Extra Serve Args on the deployment, since converting a GGUF's own tokenizer is slow and unreliable. Single-file quantizations only; a split one has to be merged first.",
-   "fieldname": "hf_repo",
-   "fieldtype": "Data",
-   "label": "HF Repo"
+   "fieldname": "column_break_bhjw",
+   "fieldtype": "Column Break"
   },
   {
    "default": "1",
-   "description": "Auto: this model has a live route (an Active Model Deployment or a Running Pod). Not an access gate — access is granted per user, via Grove User Group or Grove User.",
+   "description": "Auto: this model has a live route (an Active Model Deployment or a Running Pod). Not an access gate \u2014 access is granted per user, via Grove User Group or Grove User.",
    "fieldname": "published",
    "fieldtype": "Check",
    "in_list_view": 1,
@@ -69,31 +86,38 @@
    "read_only": 1
   },
   {
-   "description": "The args required to serve this model (mapped to playbooks/inference_server vllm role vars). Blank = flag omitted / role default.",
+   "depends_on": "eval:!doc.provider_base_url",
+   "description": "How we serve this model ourselves \u2014 the repo, the weights, and the vllm role vars (playbooks/inference_server). Blank = flag omitted / role default. Absent for a model a provider serves: there is no engine to launch.",
    "fieldname": "section_launch",
    "fieldtype": "Section Break",
    "label": "Launch Profile"
+  },
+  {
+   "description": "\u2192 vllm serve ; the name is the --served-model-name. A GGUF repo ships many quantizations \u2014 name one with repo:QUANT (unsloth/Qwen3-0.6B-GGUF:Q4_K_M) so only that file is pulled, and add --tokenizer &lt;base repo&gt; to Extra Serve Args on the deployment, since converting a GGUF's own tokenizer is slow and unreliable. Single-file quantizations only; a split one has to be merged first.",
+   "fieldname": "hf_repo",
+   "fieldtype": "Data",
+   "label": "HF Repo",
+   "mandatory_depends_on": "eval:!doc.provider_base_url"
+  },
+  {
+   "description": "S3 mirror of the safetensors weights. When set, engines stream them straight from S3 to the GPU (runai streamer) instead of downloading from HF \u2014 fill it with Mirror Weights To S3, or clear it to fall back to HF.",
+   "fieldname": "weights_s3_uri",
+   "fieldtype": "Data",
+   "label": "Weights S3 URI"
   },
   {
    "fieldname": "column_break_launch",
    "fieldtype": "Column Break"
   },
   {
-   "default": "text",
-   "description": "What the model consumes and serves. text → --language-model-only. embedding is a pooling model served at /v1/embeddings, not chat — the chat-only tool/reasoning flags are skipped.",
-   "fieldname": "modality",
-   "fieldtype": "Select",
-   "label": "Modality",
-   "options": "text\nmultimodal\nembedding\naudio"
-  },
-  {
    "default": "1",
-   "description": "→ --enable-prefix-caching",
+   "description": "\u2192 --enable-prefix-caching",
    "fieldname": "enable_prefix_caching",
    "fieldtype": "Check",
    "label": "Enable Prefix Caching"
   },
   {
+   "depends_on": "eval:!doc.provider_base_url",
    "description": "From the repo's config.json. Used to reject a GPU split the model can't run before it reaches the box. Blank = that check is skipped.",
    "fieldname": "section_shape",
    "fieldtype": "Section Break",
@@ -106,32 +130,37 @@
    "label": "Attention Heads"
   },
   {
-   "description": "num_hidden_layers. Informational — vLLM splits these across the pipeline-parallel group and spreads any remainder, so the count need not divide evenly.",
+   "description": "num_hidden_layers. Informational \u2014 vLLM splits these across the pipeline-parallel group and spreads any remainder, so the count need not divide evenly.",
    "fieldname": "hidden_layers",
    "fieldtype": "Int",
    "label": "Hidden Layers"
   },
   {
-   "description": "Size of the weights, summed per dtype from the repo's safetensors index. A placement whose GPUs can't hold this much is rejected — note it counts weights only, so the KV cache and activations need headroom on top.",
+   "fieldname": "column_break_iewq",
+   "fieldtype": "Column Break"
+  },
+  {
+   "description": "Size of the weights, summed per dtype from the repo's safetensors index. A placement whose GPUs can't hold this much is rejected \u2014 note it counts weights only, so the KV cache and activations need headroom on top.",
    "fieldname": "weights_gb",
    "fieldtype": "Float",
    "label": "Weights (GB)",
    "precision": "2"
   },
   {
+   "depends_on": "eval:!doc.provider_base_url",
    "fieldname": "section_tools",
    "fieldtype": "Section Break",
    "label": "Tools & Reasoning"
   },
   {
    "default": "1",
-   "description": "→ --enable-auto-tool-choice",
+   "description": "\u2192 --enable-auto-tool-choice",
    "fieldname": "enable_auto_tool_choice",
    "fieldtype": "Check",
    "label": "Enable Auto Tool Choice"
   },
   {
-   "description": "→ --tool-call-parser. e.g. hermes (Qwen2.5), qwen3_coder (Qwen3.6/3.5).",
+   "description": "\u2192 --tool-call-parser. e.g. hermes (Qwen2.5), qwen3_coder (Qwen3.6/3.5).",
    "fieldname": "tool_call_parser",
    "fieldtype": "Data",
    "label": "Tool Call Parser"
@@ -148,18 +177,10 @@
    "label": "Reasoning Model"
   },
   {
-   "description": "→ --reasoning-parser (only when Reasoning Model is checked). e.g. qwen3.",
+   "description": "\u2192 --reasoning-parser (only when Reasoning Model is checked). e.g. qwen3.",
    "fieldname": "reasoning_parser",
    "fieldtype": "Data",
    "label": "Reasoning Parser"
-  },
-  {
-   "fieldname": "column_break_iewq",
-   "fieldtype": "Column Break"
-  },
-  {
-   "fieldname": "column_break_bhjw",
-   "fieldtype": "Column Break"
   }
  ],
  "links": [
@@ -174,7 +195,7 @@
    "link_fieldname": "model"
   }
  ],
- "modified": "2026-08-08 03:21:09.241665",
+ "modified": "2026-08-25 19:25:02.807247",
  "modified_by": "Administrator",
  "module": "Grove",
  "name": "Model",
@@ -190,6 +211,10 @@
    "role": "System Manager",
    "share": 1,
    "write": 1
+  },
+  {
+   "read": 1,
+   "role": "Grove Control"
   }
  ],
  "row_format": "Dynamic",

@@ -14,6 +14,8 @@
   "monitoring_agent",
   "admin_url",
   "agent_version",
+  "last_synced_at",
+  "health_check_id",
   "admin_token",
   "section_redis",
   "redis_appendfsync"
@@ -83,10 +85,25 @@
    "read_only": 1
   },
   {
-   "description": "The grove-gateway release this box last installed successfully. Written by the deploy, not typed \u2014 it is what makes a fleet running mixed versions visible.",
+   "description": "The pathway release this box last installed successfully. Written by the deploy, not typed \u2014 it is what makes a fleet running mixed versions visible.",
    "fieldname": "agent_version",
    "fieldtype": "Data",
    "label": "Agent Version",
+   "read_only": 1
+  },
+  {
+   "fieldname": "last_synced_at",
+   "fieldtype": "Datetime",
+   "label": "Last Synced At",
+   "read_only": 1,
+   "description": "When a Projection run last confirmed this box holds the desired state \u2014 stamped on every in-sync check and every successful push, never on failure. Goes stale = the box is unreachable or rejecting pushes; the failed Pathway Sync rows say why."
+  },
+  {
+   "description": "Route53 health check watching this box's /healthz. Its row in the region's multivalue set carries it, and the region's calculated check counts it as a child.",
+   "fieldname": "health_check_id",
+   "fieldtype": "Data",
+   "label": "Health Check ID",
+   "no_copy": 1,
    "read_only": 1
   },
   {

@@ -21,6 +21,15 @@
     mode: "0600"
   notify: recreate vllm container
 
+# No notify: the sync script is not container config — it changes nothing about the argv.
+- name: Write the compile-cache sync script
+  ansible.builtin.template:
+    src: vllm-cache-sync.sh.j2
+    dest: "{{ vllm_cache_sync_script }}"
+    # Carries the bucket credentials, like the env file above.
+    mode: "0700"
+  when: vllm_cache_bucket | length > 0
+
 - name: Write the container run script
   ansible.builtin.template:
     src: vllm-container-run.sh.j2
@@ -44,9 +53,11 @@
   ansible.builtin.command: "{{ vllm_container_script }}"
   when: (vllm_container_ps.stdout | default('')) | length == 0
 
-- name: Wait for the vLLM API to become healthy
+# The bearer is harmless where nothing checks it: vLLM's /health needs none, and an image that
+# serves itself ignores the header. Sending it always is one branch fewer than deciding per kind.
+- name: Wait for the engine to become healthy
   ansible.builtin.uri:
-    url: "http://127.0.0.1:{{ vllm_port }}/v1/models"
+    url: "http://127.0.0.1:{{ vllm_port }}{{ vllm_health_path }}"
     headers:
       Authorization: "Bearer {{ vllm_effective_api_key }}"
     status_code: 200
@@ -55,7 +66,30 @@
   retries: 90
   delay: 10
   changed_when: false
-  when: vllm_wait_for_healthy | bool
+  when: (vllm_wait_for_healthy | bool) and (vllm_health_path | length > 0)
+
+# A 200 from /v1/models only means the API server bound its port. This is the first thing that
+# asks the GPU to do work, so it is what catches a kernel that cannot run on this card at all.
+# Failing the play is the point: rc != 0 leaves the deployment Broken with no route published,
+# rather than handing the gateway an engine that answers metadata and 500s on inference.
+- name: Prove the engine can run a forward pass
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ vllm_port }}{{ vllm_warmup_request.path }}"
+    method: POST
+    headers:
+      Authorization: "Bearer {{ vllm_effective_api_key }}"
+    body_format: json
+    body: "{{ vllm_warmup_request.body | to_json }}"
+    status_code: 200
+    timeout: 120
+  register: vllm_warmup_result
+  until: vllm_warmup_result.status == 200
+  # Stateless with no side effects, so repeating it is safe. Short budget: the engine has already
+  # answered /v1/models, so this is covering a blip, not a load.
+  retries: 2
+  delay: 5
+  changed_when: false
+  when: vllm_warmup | bool and vllm_warmup_request | length > 0
 
 - name: Show endpoint summary
   ansible.builtin.debug:

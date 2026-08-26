@@ -46,7 +46,7 @@ class MonitoringAgent(AnsibleHost, Document):
 		"""Button: install vmagent on this agent's Machine (long job — it SSHes to the box)."""
 		self.preflight()
 		frappe.enqueue_doc(self.doctype, self.name, "provision", queue="long", timeout=1800)
-		frappe.msgprint(f"Installing vmagent on {self.name} — watch its Ansible Plays.")
+		frappe.msgprint(f"Installing vmagent on {self.name} — watch its Ansible Plays.", alert=True)
 
 	@property
 	def ansible_variables(self):
@@ -145,7 +145,7 @@ class MonitoringAgent(AnsibleHost, Document):
 				f"{self.name} is {self.status} — install vmagent before pushing targets to it."
 			)
 		frappe.enqueue_doc(self.doctype, self.name, "write_targets", queue="short", timeout=600)
-		frappe.msgprint(f"Pushing targets to {self.name} — watch its Ansible Plays.")
+		frappe.msgprint(f"Pushing targets to {self.name} — watch its Ansible Plays.", alert=True)
 
 	@failure.reports_failure(mark_broken=False)
 	def write_targets(self):
@@ -166,7 +166,7 @@ class MonitoringAgent(AnsibleHost, Document):
 		if self.status != "Active":
 			frappe.throw(f"{self.name} is {self.status} — install it before updating its config.")
 		frappe.enqueue_doc(self.doctype, self.name, "write_config", queue="short", timeout=900)
-		frappe.msgprint(f"Updating vmagent config on {self.name} — watch its Ansible Plays.")
+		frappe.msgprint(f"Updating vmagent config on {self.name} — watch its Ansible Plays.", alert=True)
 
 	@failure.reports_failure(mark_broken=False)
 	def write_config(self):
@@ -195,7 +195,7 @@ class MonitoringAgent(AnsibleHost, Document):
 			)
 			return
 		frappe.enqueue_doc(self.doctype, self.name, "write_config", queue="short", timeout=900)
-		frappe.msgprint(f"Token rotated — writing it to {self.name}. Watch its Ansible Plays.")
+		frappe.msgprint(f"Token rotated — writing it to {self.name}. Watch its Ansible Plays.", alert=True)
 
 	def get_target_list_problems(self, variables):
 		"""Fetch this agent's target list the way vmagent will, and report what is wrong with it.

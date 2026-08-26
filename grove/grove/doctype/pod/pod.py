@@ -7,7 +7,9 @@ import secrets
 import frappe
 from frappe.model.document import Document
 
-from grove.serve_command import ServeCommand
+from grove.grove.doctype.engine_image.engine_image import engine_tuning
+from grove.grove.doctype.model.model import launch_config
+from grove.serving.base import build_engine
 
 # Default port pool seeded on a fresh Pod: SSH + a pool of vLLM engine ports (the provider
 # can't hot-add ports, so open them at spawn).
@@ -41,7 +43,7 @@ class Pod(Document):
 		gpu_type_id: DF.Data | None
 		health_path: DF.Data | None
 		kv_cache_dtype: DF.Literal["auto", "fp8"]
-		max_model_len: DF.Int
+		max_model_len: DF.Data | None
 		max_num_seqs: DF.Int
 		model: DF.Link
 		monitoring_agent: DF.Link | None
@@ -71,12 +73,29 @@ class Pod(Document):
 	gets no derived arguments, only its own entrypoint plus startup_command."""
 
 	@property
-	def is_custom_engine(self):
-		"""True when the image serves itself and no vLLM arguments may be derived for it. Guards
-		a blank Engine Image so validate can read this before the mandatory check has run."""
-		if not self.engine_image:
-			return False
-		return frappe.get_cached_value("Engine Image", self.engine_image, "engine_kind") == "custom"
+	def engine(self):
+		"""The Engine this pod's image serves with: the kind and the warmup off its Engine Image,
+		the Model's launch config read live, and this pod's own tuning."""
+		kind, image_tuning = engine_tuning(self.engine_image)
+		return build_engine(
+			kind,
+			self.model,
+			launch_config(self.model),
+			port=self.serve_port,
+			gpu_count=self.gpu_count,
+			pipeline_parallel_size=self.pipeline_parallel_size,
+			gpu_vram_gb=self.gpu_vram_gb,
+			kv_cache_dtype=self.kv_cache_dtype,
+			gpu_memory_utilization=self.gpu_memory_utilization,
+			max_model_len=self.max_model_len,
+			max_num_seqs=self.max_num_seqs,
+			attention_backend=self.attention_backend,
+			allow_long_max_model_len=self.allow_long_max_model_len,
+			aliases=self.aliases,
+			extra_serve_args=self.extra_serve_args,
+			startup_command=self.startup_command,
+			**image_tuning,
+		)
 
 	def before_insert(self):
 		# Opened at spawn since the provider can't hot-add ports later. The engine is exposed as
@@ -95,17 +114,20 @@ class Pod(Document):
 			frappe.throw(
 				f"Serve Port {serve_port} is not in the Ports table — add it so it's opened at spawn."
 			)
-		if self.is_custom_engine:
-			# Nothing to derive: the image's own entrypoint serves, and its flags (if any) are
-			# the operator's startup_command. The vLLM knobs and the api key are all vLLM's.
-			self.serve_command = ""
-			return
-		if not self.api_key:
+		engine = self.engine
+		# An image that enforces no key of ours must not be handed one: the gateway ships it as
+		# the route's internal key, so minting it would send a bearer to something that never
+		# asked for it.
+		if engine.has_api_key and not self.api_key:
 			self.api_key = secrets.token_hex(24)  # vLLM --api-key via VLLM_API_KEY env
-		serve = ServeCommand.for_pod(self)
-		if errors := serve.placement_errors:
+		# Store what actually reaches --max-model-len. The suffix is input sugar, so a doc that
+		# kept '128k' would leave the real number derivable only by re-parsing it. Blank stays
+		# blank — that is how a placement asks for the engine default.
+		if self.max_model_len:
+			self.max_model_len = str(engine.max_model_len)
+		if errors := engine.placement_errors:
 			frappe.throw("<br>".join(errors))
-		self.serve_command = serve.command
+		self.serve_command = engine.command
 
 	@property
 	def gpu_vram_gb(self):
@@ -132,7 +154,7 @@ class Pod(Document):
 			"grove.cloud_provider.provisioner.spawn_pod_doc",
 			queue="long", timeout=1800, pod_name=self.name,
 		)
-		frappe.msgprint(f"Spawning pod {self.name} on {self.cloud_provider}.")
+		frappe.msgprint(f"Spawning pod {self.name} on {self.cloud_provider}.", alert=True)
 
 	@frappe.whitelist()
 	def sync(self):
@@ -141,7 +163,7 @@ class Pod(Document):
 		from grove.cloud_provider.provisioner import sync_pod
 
 		res = sync_pod(self.name)
-		frappe.msgprint(f"Synced pod {self.name}: {res['status']}.")
+		frappe.msgprint(f"Synced pod {self.name}: {res['status']}.", alert=True)
 		return res
 
 	@frappe.whitelist()
@@ -151,7 +173,7 @@ class Pod(Document):
 			"grove.cloud_provider.provisioner.stop_pod",
 			queue="short", timeout=600, pod_name=self.name,
 		)
-		frappe.msgprint(f"Stopping pod {self.name} — volume kept, GPU released.")
+		frappe.msgprint(f"Stopping pod {self.name} — volume kept, GPU released.", alert=True)
 
 	@frappe.whitelist()
 	def start(self):
@@ -160,7 +182,7 @@ class Pod(Document):
 			"grove.cloud_provider.provisioner.start_pod",
 			queue="long", timeout=1800, pod_name=self.name,
 		)
-		frappe.msgprint(f"Starting pod {self.name} — ports will change, then sync.")
+		frappe.msgprint(f"Starting pod {self.name} — ports will change, then sync.", alert=True)
 
 	@frappe.whitelist()
 	def restart(self):
@@ -176,7 +198,7 @@ class Pod(Document):
 			"grove.cloud_provider.provisioner.restart_pod",
 			queue="long", timeout=1800, pod_name=self.name,
 		)
-		frappe.msgprint(f"Restarting pod {self.name} to apply config, then sync.")
+		frappe.msgprint(f"Restarting pod {self.name} to apply config, then sync.", alert=True)
 
 	@frappe.whitelist()
 	def stream_logs(self):
@@ -209,4 +231,4 @@ class Pod(Document):
 			"grove.cloud_provider.provisioner.terminate_pod_doc",
 			queue="long", timeout=600, pod_name=self.name,
 		)
-		frappe.msgprint(f"Terminating pod {self.name}.")
+		frappe.msgprint(f"Terminating pod {self.name}.", alert=True)

@@ -5,9 +5,8 @@ import frappe
 from frappe.model.document import Document
 
 from grove import failure
-from grove import agent_sync
-from grove.cloud_provider.route53 import Route53Error
-from grove.fleet import GATEWAY_AGENT_VERSION, FleetHost
+from grove.cloud_provider.dns import Route53Error
+from grove.fleet import FleetHost, gateway_agent_version
 from grove.grove.doctype.network.network import sync_fleet_ingress
 from grove.naming import GeneratedName
 
@@ -73,16 +72,6 @@ class IngressServer(GeneratedName, FleetHost, Document):
 			)
 
 	def on_update(self):
-		# A newly-Active ingress has an empty replica table until something fills it, and the
-		# scheduled run only ticks when a deployment moved.
-		if self.has_value_changed("status") and self.status == "Active" and self.admin_url:
-			frappe.enqueue(
-				"grove.agent_sync.full_sync",
-				queue="short",
-				proxies=[],
-				ingresses=[self.name],
-				trigger="Ingress Activated",
-			)
 		if self.has_value_changed("status") and self.status == "Terminated":
 			self.remove_dns_records()
 		# An inference box only opens its front to addresses in the fleet, and this ingress's
@@ -135,23 +124,23 @@ class IngressServer(GeneratedName, FleetHost, Document):
 		"""Button: push this ingress's replica table now — every Active replica it owns, dialled
 		privately.
 
-		Through full_sync rather than straight at the agent, so the push lands on a Agent Sync
+		Through full_sync rather than straight at the agent, so the push lands on a Pathway Sync
 		doc like every other. A button that reports "queued" and then leaves no record of whether
 		it worked is the one you end up debugging by ssh."""
 		frappe.enqueue(
-			"grove.agent_sync.full_sync",
+			"grove.pathway_sync.full_sync",
 			queue="short",
 			proxies=[],
 			ingresses=[self.name],
 			trigger="Manual",
 		)
-		frappe.msgprint(f"Replica table queued for {self.name} — watch its Agent Sync.")
+		frappe.msgprint(f"Replica table queued for {self.name} — watch its Pathway Sync.", alert=True)
 
 	@frappe.whitelist()
 	def setup(self):
 		"""Provision this ingress (OpenResty + Redis + the agent) via ingress.yml."""
 		frappe.enqueue_doc(self.doctype, self.name, "provision", queue="long", timeout=1800)
-		frappe.msgprint(f"Provisioning {self.name} — watch its Ansible Plays.")
+		frappe.msgprint(f"Provisioning {self.name} — watch its Ansible Plays.", alert=True)
 
 	@failure.reports_failure(mark_broken=True)
 	def provision(self):
@@ -175,13 +164,12 @@ class IngressServer(GeneratedName, FleetHost, Document):
 		frappe.db.commit()
 
 		if rc == 0:
-			# DNS before the table: the push goes to admin_url, which is this box's own name the
-			# moment a zone is set, and nothing resolves it until this runs.
+			# Its own name has to resolve before the tick pushes to admin_url, which is that name
+			# the moment a zone is set.
 			self.sync_dns_records()
-			# provision writes status through db.set_value, so on_update never fires here — these
-			# two are what let a new ingress reach an engine and be let through to one.
+			# provision writes status through db.set_value, so on_update never fires here — this
+			# is what lets a new ingress be let through to an engine.
 			sync_fleet_ingress()
-			agent_sync.full_sync(proxies=[], ingresses=[self.name], trigger="Provision")
 		return play_name, rc
 
 	def provision_variables(self, settings):
@@ -190,7 +178,7 @@ class IngressServer(GeneratedName, FleetHost, Document):
 		return {
 			"admin_token": self.get_password("admin_token"),
 			"data_token": self.get_password("data_token"),
-			"agent_version": GATEWAY_AGENT_VERSION,
+			"agent_version": gateway_agent_version(),
 			"ingress_id": self.name,
 			"ingress_hostname": self.hostname,
 			# nginx.conf declares a metrics server on :443 — grove_https puts the certificate and
@@ -206,7 +194,10 @@ class IngressServer(GeneratedName, FleetHost, Document):
 		"""Button: install the pinned agent release and deploy just it (copy + service restart) to
 		this already-provisioned ingress."""
 		frappe.enqueue_doc(self.doctype, self.name, "_deploy_agent", queue="long", timeout=1200)
-		frappe.msgprint(f"Deploying agent {GATEWAY_AGENT_VERSION} to {self.name} — watch its Ansible Plays.")
+		frappe.msgprint(
+			f"Deploying agent {gateway_agent_version()} to {self.name} — watch its Ansible Plays.",
+			alert=True,
+		)
 
 	@failure.reports_failure(mark_broken=False)
 	def _deploy_agent(self):
@@ -221,7 +212,7 @@ class IngressServer(GeneratedName, FleetHost, Document):
 		play_name, rc = self.run_playbook(
 			"deploy_agent.yml",
 			extravars={
-				"agent_version": GATEWAY_AGENT_VERSION,
+				"agent_version": gateway_agent_version(),
 				"admin_token": self.get_password("admin_token"),
 				"data_token": self.get_password("data_token"),
 				"ingress_id": self.name,

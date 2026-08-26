@@ -23,9 +23,15 @@ class TestTheIdIsAlwaysPrefixed(IntegrationTestCase):
 	IntegrationTestCase, not unittest.TestCase — it wraps each test in a transaction and rolls back,
 	which is what keeps these probes out of the site."""
 
-	def model(self, display_name, provider=None):
+	def model(self, model_id, provider=None):
 		doc = frappe.get_doc(
-			{"doctype": "Model", "display_name": display_name, "modality": "text", "provider": provider}
+			{
+				"doctype": "Model",
+				"model_id": model_id,
+				"hf_repo": "probe/Repo",
+				"modality": "text",
+				"provider": provider,
+			}
 		)
 		doc.insert()
 		return doc
@@ -49,23 +55,32 @@ class TestTheIdIsAlwaysPrefixed(IntegrationTestCase):
 		doc = self.model("No Provider Named", provider="")
 		self.assertTrue(doc.name.startswith(f"{DEFAULT_PROVIDER}/"))
 
-	def test_renaming_is_not_what_display_name_does(self):
-		# The id is a client-facing contract: editing the label afterwards must not move it.
+	def test_the_id_cannot_be_edited_afterwards(self):
+		# The id is a client-facing contract — `set_only_once` is what refuses the edit, rather
+		# than accepting it silently and leaving the doc named one thing and labelled another.
 		doc = self.model("Before Rename 7B")
-		original = doc.name
-		doc.display_name = "After Rename 7B"
-		doc.save()
-		self.assertEqual(original, doc.name)
+		doc.model_id = "after-rename-7b"
+		with self.assertRaises(frappe.CannotChangeConstantError):
+			doc.save()
 
 	def test_a_name_with_nothing_sluggable_is_refused(self):
 		with self.assertRaises(frappe.ValidationError):
 			self.model("   ")
 
-	def test_a_slash_in_the_display_name_is_refused(self):
+	def test_a_slash_in_the_id_is_refused(self):
 		# slugify passes a slash through, and the slash is the provider separator — `Meta/Llama 3`
 		# would otherwise name `frappe/meta/llama-3` and read as a provider nobody registered.
 		with self.assertRaises(frappe.ValidationError):
 			self.model("Meta/Llama 3")
+
+
+class TestAModelSaysWhereItsWeightsCome(IntegrationTestCase):
+	def test_a_model_with_no_repo_is_refused(self):
+		# Every serving path reads the repo — the S3 mirror is filled from it too — so a Model
+		# without one is a route that cannot start an engine.
+		doc = frappe.get_doc({"doctype": "Model", "model_id": "no-repo-7b", "modality": "text"})
+		with self.assertRaises(frappe.MandatoryError):
+			doc.insert()
 
 
 class TestProviderNames(IntegrationTestCase):

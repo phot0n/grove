@@ -1,0 +1,26 @@
+#!/bin/sh
+{#
+  Boot-time oneshot (grove-instance-store.service). The instance store is blank after every
+  stop/start, so this reformats and remounts on each boot; the weight pre-download re-hydrates
+  the cache on the next deploy. Only the HF cache lives here — never images or Docker.
+#}
+set -eu
+
+MOUNT={{ gpu_instance_store_mount }}
+
+mkdir -p "$MOUNT"
+if findmnt -no SOURCE "$MOUNT" >/dev/null 2>&1; then
+  mkdir -p "$MOUNT/hf"
+  exit 0
+fi
+
+# ponytail: first instance-store disk only; mdadm RAID0 when a model outgrows one disk.
+DEVICE=$(lsblk -dno PATH,MODEL | grep -F "{{ gpu_ephemeral_disk_models | first }}" | awk '{print $1}' | head -n 1)
+if [ -z "$DEVICE" ]; then
+  echo "no instance-store disk on this box" >&2
+  exit 1
+fi
+
+blkid -s TYPE -o value "$DEVICE" >/dev/null 2>&1 || mkfs.ext4 -F "$DEVICE"
+mount "$DEVICE" "$MOUNT"
+mkdir -p "$MOUNT/hf"

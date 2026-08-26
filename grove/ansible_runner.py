@@ -22,6 +22,7 @@ from ansible.plugins.loader import init_plugin_loader
 from ansible.vars.manager import VariableManager
 
 import frappe
+from frappe.database.utils import dangerously_reconnect_on_connection_abort
 
 from grove.utils import shared_roles_dir
 
@@ -102,15 +103,26 @@ class AnsibleCallback(CallbackBase):
 		self.runner.update_play({"status": "Running", "started": frappe.utils.now()})
 
 	def v2_playbook_on_task_start(self, task, is_conditional):
-		self._stop_if_asked()
-		self.current_task = self.runner.add_task(task.get_name())
+		self._begin_task(task)
 
 	# Handlers are where a deploy actually restarts things, so they are where it fails. Without this
 	# the row is never created and the failure reaches the control plane as a bare "[failed] <name>"
 	# in the play output, with the module's message — the only thing that says why — dropped.
 	def v2_playbook_on_handler_task_start(self, task):
+		self._begin_task(task)
+
+	def _begin_task(self, task):
 		self._stop_if_asked()
+		self._close_orphan("ok")
 		self.current_task = self.runner.add_task(task.get_name())
+
+	def _close_orphan(self, status):
+		"""A `meta:` task (flush_handlers) is run by the strategy, not a task worker, so no
+		runner result ever comes back for it and its row would sit at Running forever.
+		Whoever comes next — the following task, or the play's own end — closes it."""
+		if self.current_task:
+			self.runner.finish_task(self.current_task, status, {})
+			self.current_task = None
 
 	# Fires on every attempt of a task with `until`/`retries` — the health gate is one task
 	# that can hold the play for 15 minutes, so this is where a stop lands for most of a
@@ -146,6 +158,9 @@ class AnsibleCallback(CallbackBase):
 			self.thread_db = frappe.db
 
 	def v2_playbook_on_stats(self, stats):
+		# A play whose last task was a meta one, or that was terminated mid-task, still has a
+		# row open here. Stopped means the task did not finish, so it is not a success.
+		self._close_orphan("skipped" if self.stopped else "ok")
 		hosts = sorted(stats.processed.keys())
 		failed = any(
 			stats.summarize(h).get("failures", 0) or stats.summarize(h).get("unreachable", 0)
@@ -211,6 +226,7 @@ class Ansible:
 		self.callback = AnsibleCallback(self)
 		self.executor = None
 
+	@dangerously_reconnect_on_connection_abort
 	def _create_play(self):
 		doc = frappe.get_doc({
 			"doctype": "Ansible Play",
@@ -225,6 +241,7 @@ class Ansible:
 		return doc.name
 
 	# --- called from the callback ---
+	@dangerously_reconnect_on_connection_abort
 	def update_play(self, values):
 		doc = frappe.get_doc("Ansible Play", self.play_name)
 		if values.get("ended") and doc.started:
@@ -233,6 +250,7 @@ class Ansible:
 		doc.save(ignore_permissions=True)
 		frappe.db.commit()
 
+	@dangerously_reconnect_on_connection_abort
 	def add_task(self, task_name):
 		"""The doc for a task Ansible has just started — Running until it reports back, so a
 		play being watched live shows where it actually is."""
@@ -246,6 +264,7 @@ class Ansible:
 		frappe.db.commit()
 		return doc.name
 
+	@dangerously_reconnect_on_connection_abort
 	def finish_task(self, task_doc_name, status, result):
 		doc = frappe.get_doc("Ansible Task", task_doc_name)
 		doc.status = TASK_STATUS.get(status, "Failure")
@@ -264,6 +283,9 @@ class Ansible:
 			self.executor._tqm.terminate()
 
 	def run(self):
+		"""(the Ansible Play doc, Ansible's own rc). The rc is Ansible's, not the doc's: a play
+		whose result could not be written is still a play that ran, and reading the status back
+		turned a lost write into a failed deploy."""
 		self.executor = PlaybookExecutor(
 			playbooks=[self.playbook_path],
 			inventory=self.inventory,
@@ -273,12 +295,16 @@ class Ansible:
 		)
 		self.executor._tqm._stdout_callback = self.callback
 		try:
-			self.executor.run()
+			rc = self.executor.run()
 		finally:
 			if self.callback.thread_db:
 				self.callback.thread_db.close()
 			frappe.db.commit()
-		return frappe.get_doc("Ansible Play", self.play_name)
+		# A stopped play unwinds through the strategy with whatever rc its tasks earned, usually 0.
+		# The operator asked for it not to finish, so it is never a success.
+		if self.callback.stopped and not rc:
+			rc = 1
+		return frappe.get_doc("Ansible Play", self.play_name), rc
 
 
 def run_play(playbook, server_type, server_name, machine_name, project_dir, extravars=None, tags=None, skip_tags=None, reference_doctype=None, reference_docname=None):
@@ -311,5 +337,5 @@ def run_play(playbook, server_type, server_name, machine_name, project_dir, extr
 		reference_doctype=reference_doctype,
 		reference_docname=reference_docname,
 	)
-	play = ansible.run()
-	return play.name, (0 if play.status == "Success" else 1)
+	play, rc = ansible.run()
+	return play.name, rc

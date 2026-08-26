@@ -76,6 +76,12 @@ BASE = {
 	"vllm_cuda_visible_devices": "0,1",
 	"vllm_env": {"HF_TOKEN": "hf_secret", "ODD": "a b;c"},
 	"vllm_effective_api_key": "deadbeef",
+	"vllm_api_key": "deadbeef",
+	"vllm_engine_kind": "vllm",
+	"vllm_health_path": "/health",
+	# Role defaults: the play pre-downloads the whole repo, so nothing is a GGUF file glob.
+	"vllm_predownload_model": True,
+	"vllm_download_glob": "",
 }
 # The unpinned single-GPU box with no operator env and a caller-supplied key.
 BARE = {**BASE, "vllm_cuda_visible_devices": "", "vllm_env": {}, "vllm_effective_api_key": ""}
@@ -93,6 +99,35 @@ class TestContainerRunScript(unittest.TestCase):
 				self.assertNotIn("\\\n\n", script, "blank line after a line continuation")
 				check = subprocess.run(["sh", "-n"], input=script, text=True, capture_output=True)
 				self.assertEqual(check.returncode, 0, check.stderr)
+
+	def test_the_image_is_invoked_exactly_as_the_fleet_already_invokes_it(self):
+		# The byte-identity guard for the engine-class split. Every running deployment holds this
+		# line in /opt/vllm/containers/vllm-<slug>.sh; re-rendering it differently — a changed
+		# quoting style, a moved argument — notifies `recreate vllm container` and replaces every
+		# engine in the fleet. The positional is unquoted and every flag is single-quoted, which is
+		# also what stops an operator's argument reaching the shell.
+		self.assertIn(
+			"  vllm/vllm-openai:latest Qwen/Qwen3-35B '--port' '8081' '--tensor-parallel-size' '2'",
+			render("vllm-container-run.sh.j2", BASE),
+		)
+
+	def test_a_custom_image_runs_its_own_entrypoint(self):
+		# No positional and no flags of ours: the line ends at the image, and what the container
+		# does next is the image's business. Still has to parse as shell.
+		custom = {**BASE, "vllm_model": "", "vllm_serve_args": []}
+		script = render("vllm-container-run.sh.j2", custom)
+		self.assertIn("  vllm/vllm-openai:latest\n", script)
+		check = subprocess.run(["sh", "-n"], input=script, text=True, capture_output=True)
+		self.assertEqual(check.returncode, 0, check.stderr)
+
+	def test_a_custom_startup_command_rides_the_entrypoint(self):
+		# Each argument single-quoted, which is also what stops an operator's Startup Command
+		# reaching the shell that runs this script.
+		custom = {**BASE, "vllm_model": "", "vllm_serve_args": ["--http-port", "9000", "a b;c"]}
+		self.assertIn(
+			"  vllm/vllm-openai:latest '--http-port' '9000' 'a b;c'",
+			render("vllm-container-run.sh.j2", custom),
+		)
 
 	def test_docker_owns_the_restart(self):
 		script = render("vllm-container-run.sh.j2", BASE)
@@ -112,14 +147,58 @@ class TestContainerRunScript(unittest.TestCase):
 		self.assertNotIn("deadbeef", script)
 		self.assertIn("--env-file /opt/vllm/containers/vllm-md-00007.env", script)
 
+	def test_the_compile_cache_survives_a_container_replace(self):
+		# Without this mount every replace re-runs torch.compile (~1 min of Loading).
+		script = render("vllm-container-run.sh.j2", BASE)
+		self.assertIn("-v /opt/vllm/cache:/root/.cache/vllm", script)
+
+
+CACHE_LINES = [
+	"TRITON_CACHE_DIR=/root/.cache/vllm/triton",
+	"TORCHINDUCTOR_CACHE_DIR=/root/.cache/vllm/torchinductor",
+]
+FIXED_LINES = CACHE_LINES + ["HF_HUB_OFFLINE=1"]
+
 
 class TestContainerEnvFile(unittest.TestCase):
 	def test_one_key_value_per_line(self):
 		lines = render("vllm-container.env.j2", BASE).splitlines()
-		self.assertEqual(lines, ["HF_TOKEN=hf_secret", "ODD=a b;c", "VLLM_API_KEY=deadbeef"])
+		self.assertEqual(
+			lines, FIXED_LINES + ["HF_TOKEN=hf_secret", "ODD=a b;c", "VLLM_API_KEY=deadbeef"]
+		)
+
+	def test_a_deployment_env_row_overrides_the_cache_defaults(self):
+		# docker --env-file: the last occurrence of a key wins, so ours must come first.
+		override = {**BASE, "vllm_env": {"TRITON_CACHE_DIR": "/elsewhere"}}
+		lines = render("vllm-container.env.j2", override).splitlines()
+		self.assertLess(lines.index(CACHE_LINES[0]), lines.index("TRITON_CACHE_DIR=/elsewhere"))
 
 	def test_no_api_key_line_when_none_resolved(self):
-		self.assertEqual(render("vllm-container.env.j2", BARE), "")
+		self.assertEqual(render("vllm-container.env.j2", BARE).splitlines(), FIXED_LINES)
+
+
+class TestTheEngineDoesNotFetchWeightsItself(unittest.TestCase):
+	"""The pre-download task owns the weights. Left online, the engine resolves `main` and
+	pulls a new upstream revision inline — a deploy that changed nothing then serves
+	different weights, or OOMs loading them."""
+
+	def env(self, **overrides):
+		return render("vllm-container.env.j2", {**BASE, **overrides}).splitlines()
+
+	def test_a_predownloaded_repo_runs_offline(self):
+		self.assertIn("HF_HUB_OFFLINE=1", self.env())
+
+	def test_a_gguf_ref_stays_online(self):
+		# Its download is one file; the config and tokenizer beside it are fetched at boot.
+		self.assertNotIn("HF_HUB_OFFLINE=1", self.env(vllm_download_glob="*Q4_K_M.gguf"))
+
+	def test_a_streaming_placement_stays_online(self):
+		# Weights come from S3, but the tokenizer is still the hub's.
+		self.assertNotIn("HF_HUB_OFFLINE=1", self.env(vllm_predownload_model=False))
+
+	def test_it_can_be_overridden_per_deployment(self):
+		lines = self.env(vllm_env={"HF_HUB_OFFLINE": "0"})
+		self.assertLess(lines.index("HF_HUB_OFFLINE=1"), lines.index("HF_HUB_OFFLINE=0"))
 
 
 class TestEngineProxyLocation(unittest.TestCase):
@@ -137,6 +216,26 @@ class TestEngineProxyLocation(unittest.TestCase):
 		# The trailing slash is the whole mechanism: without it nginx forwards
 		# /e/md-00007/v1/chat/completions verbatim and vLLM 404s every request.
 		self.assertIn("proxy_pass http://127.0.0.1:8081/;", self.fragment)
+
+	def test_a_vllm_engine_is_not_gated_at_the_proxy(self):
+		# vLLM enforces VLLM_API_KEY itself, so a second check here would be a second place to
+		# get wrong — and this file would then have to carry the key for every deployment.
+		self.assertNotIn("$http_authorization", self.fragment)
+		self.assertNotIn("deadbeef", self.fragment)
+
+	def test_a_custom_engine_is_gated_at_the_proxy(self):
+		# The bug this exists for: an image that serves itself enforces nothing, and this proxy is
+		# the only thing between it and the box's 443. Without this the engine answers anyone who
+		# can reach the box.
+		fragment = render("engine-location.conf.j2", {**BASE, "vllm_engine_kind": "custom"})
+		self.assertIn('if ($http_authorization != "Bearer deadbeef") { return 401; }', fragment)
+
+	def test_a_custom_engine_with_no_key_refuses_everything(self):
+		# Fails closed: a blank key must not render a check that anything satisfies.
+		fragment = render(
+			"engine-location.conf.j2", {**BASE, "vllm_engine_kind": "custom", "vllm_api_key": ""}
+		)
+		self.assertIn('if ($http_authorization != "Bearer ") { return 401; }', fragment)
 
 	def test_streaming_survives_the_extra_hop(self):
 		# Buffered, an SSE response arrives in one blob at the end — a failure that passes every
@@ -219,6 +318,146 @@ class TestReconfigureRunsTheConfigTasksOnly(unittest.TestCase):
 		)
 
 
+class TestCompileCachePrewarmHooks(unittest.TestCase):
+	"""With a weights bucket configured, the run script pulls the compile cache before the
+	container and pushes it (backgrounded, after /health) once compiled. No bucket → the
+	script renders exactly as before."""
+
+	WITH_BUCKET = {
+		**BASE,
+		"vllm_cache_bucket": "s3://grove-weights",
+		"vllm_cache_sync_script": "/opt/vllm/containers/vllm-md-00007-cache-sync.sh",
+		"vllm_cache_sync_env": {"AWS_ACCESS_KEY_ID": "AKIA", "AWS_SECRET_ACCESS_KEY": "s3secret"},
+		"vllm_tensor_parallel_size": 2,
+		"vllm_model_slug": "Qwen--Qwen3-35B",
+	}
+
+	def test_no_bucket_renders_no_hooks(self):
+		script = render("vllm-container-run.sh.j2", BASE)
+		self.assertNotIn("cache-sync", script)
+
+	def test_hooks_wrap_the_container(self):
+		script = render("vllm-container-run.sh.j2", self.WITH_BUCKET)
+		self.assertLess(script.index("cache-sync.sh pull"), script.index("docker run"))
+		self.assertIn("nohup /opt/vllm/containers/vllm-md-00007-cache-sync.sh push", script)
+		check = subprocess.run(["sh", "-n"], input=script, text=True, capture_output=True)
+		self.assertEqual(check.returncode, 0, check.stderr)
+
+	def test_sync_script_is_valid_shell_and_keys_on_every_invalidation_axis(self):
+		sync = render("vllm-cache-sync.sh.j2", self.WITH_BUCKET)
+		check = subprocess.run(["sh", "-n"], input=sync, text=True, capture_output=True)
+		self.assertEqual(check.returncode, 0, check.stderr)
+		# digest (torch/vLLM), GPU from nvidia-smi, TP, model — a :latest tag pins nothing.
+		self.assertIn("RepoDigests", sync)
+		self.assertIn("nvidia-smi", sync)
+		self.assertIn("tp2/Qwen--Qwen3-35B", sync)
+
+	def test_bucket_credentials_stay_in_the_sync_script(self):
+		self.assertIn(
+			"export AWS_SECRET_ACCESS_KEY='s3secret'",
+			render("vllm-cache-sync.sh.j2", self.WITH_BUCKET),
+		)
+		self.assertNotIn("s3secret", render("vllm-container-run.sh.j2", self.WITH_BUCKET))
+
+
+class TestPullAndDownloadOverlap(unittest.TestCase):
+	"""A fresh box pays max(pull, weights), not the sum: the pull fires with poll: 0, the weight
+	download runs while it streams, and an async_status collects it — carrying the recreate
+	notify, since a poll: 0 register is only a job handle."""
+
+	@classmethod
+	def setUpClass(cls):
+		cls.tasks = yaml.safe_load((INFERENCE_ROLES / "vllm/tasks/main.yml").read_text())
+
+	def index_of(self, marker):
+		return next(i for i, task in enumerate(self.tasks) if marker in str(task))
+
+	def test_the_pull_is_fired_and_forgotten(self):
+		pull = self.tasks[self.index_of("docker pull")]
+		self.assertEqual(pull["poll"], 0)
+		self.assertNotIn("notify", pull)
+
+	def test_the_download_runs_between_fire_and_collect(self):
+		pull, download = self.index_of("docker pull"), self.index_of("hf download")
+		collect = self.index_of("ansible.builtin.async_status")
+		self.assertLess(pull, download)
+		self.assertLess(download, collect)
+
+	def test_the_collect_owns_the_recreate(self):
+		collect = self.tasks[self.index_of("ansible.builtin.async_status")]
+		self.assertEqual(collect["notify"], "recreate vllm container")
+		self.assertIn("Image is up to date", collect["changed_when"])
+
+
+class TestTheHostVenvHasWhatItNeedsToExist(unittest.TestCase):
+	"""Ubuntu ships ensurepip in python3-venv, so `python3 -m venv` on a box carrying only the base
+	python3 fails the play at the host venv — which is every box provisioned before it went in."""
+
+	def order(self, path):
+		"""(where python3-venv is installed, where the venv is created) in that file's task list."""
+		tasks = yaml.safe_load(path.read_text())
+		if isinstance(tasks[0], dict) and "tasks" in tasks[0]:
+			tasks = tasks[0]["tasks"]
+		return (
+			next(i for i, task in enumerate(tasks) if "python3-venv" in str(task)),
+			next(i for i, task in enumerate(tasks) if "python3 -m venv" in str(task)),
+		)
+
+	def test_the_serve_role_installs_it_before_using_it(self):
+		apt, venv = self.order(INFERENCE_ROLES / "vllm/tasks/main.yml")
+		self.assertLess(apt, venv)
+
+	def test_so_does_the_mirror_play(self):
+		# It builds the same venv and can be the first thing to want it on a box.
+		apt, venv = self.order(PLAYBOOKS / "inference_server/mirror_weights.yml")
+		self.assertLess(apt, venv)
+
+
+class TestWeightsOffTheDataVolume(unittest.TestCase):
+	"""vllm_hf_home outside vllm_home — the instance-store opt-in. The weights then stop
+	counting against the data volume, and their own mount is checked instead."""
+
+	@classmethod
+	def setUpClass(cls):
+		cls.tasks = yaml.safe_load((INFERENCE_ROLES / "vllm/tasks/main.yml").read_text())
+
+	def task(self, name):
+		return next(t for t in self.tasks if t.get("name") == name)
+
+	def on_data(self, vllm_home, vllm_hf_home):
+		expression = self.task("Note whether the weights share the data volume")[
+			"ansible.builtin.set_fact"
+		]["vllm_weights_on_data"]
+		rendered = Environment().from_string(expression).render(
+			vllm_home=vllm_home, vllm_hf_home=vllm_hf_home
+		)
+		return rendered == "True"
+
+	def test_the_default_layout_shares_the_volume(self):
+		self.assertTrue(self.on_data("/opt/vllm", "/opt/vllm/hf"))
+
+	def test_the_instance_store_layout_does_not(self):
+		self.assertFalse(self.on_data("/opt/vllm", "/mnt/instance/hf"))
+		# /opt/vllm-other must not read as "under /opt/vllm".
+		self.assertFalse(self.on_data("/opt/vllm", "/opt/vllm-other/hf"))
+
+	def test_off_volume_weights_leave_the_data_path_check(self):
+		check = self.task("Check the data path can hold what is still to be downloaded")
+		self.assertIn("vllm_weights_on_data", check["vars"]["weights_gb"])
+
+	def test_the_separate_mount_check_only_runs_off_volume(self):
+		# And never for a streaming deploy, which downloads nothing into the HF cache.
+		block = self.task("Check the separate weights mount")
+		self.assertEqual(
+			block["when"], "(vllm_predownload_model | bool) and not (vllm_weights_on_data | bool)"
+		)
+		self.assertTrue(any("findmnt" in str(t) for t in block["block"]))
+
+	def test_a_streaming_deploy_counts_no_weights_against_the_disk(self):
+		check = self.task("Check the data path can hold what is still to be downloaded")
+		self.assertIn("vllm_predownload_model", check["vars"]["weights_gb"])
+
+
 class TestCertificateLifetime(unittest.TestCase):
 	def test_a_box_certificate_is_short_lived(self):
 		# Nothing renews it and nothing verifies it, so this number is only ever read by a human
@@ -261,7 +500,7 @@ class TestOneWebServerForTheFleet(unittest.TestCase):
 		self.assertIn("provision.yml", plays)
 
 	def test_no_front_box_installs_it_any_more(self):
-		# grove-gateway owns :80 and :443 on a Gateway or Ingress Server. A play that reinstalled
+		# pathway owns :80 and :443 on a Gateway or Ingress Server. A play that reinstalled
 		# OpenResty there would take the ports back from it on the next provision.
 		plays = self.plays_using("openresty")
 		self.assertNotIn("gateway.yml", plays)
@@ -281,3 +520,53 @@ class TestOneWebServerForTheFleet(unittest.TestCase):
 
 if __name__ == "__main__":
 	unittest.main()
+
+
+class TestWarmupGate(unittest.TestCase):
+	"""A 200 from the health path means the container bound its port, nothing more. The warmup task is
+	the first thing that asks the GPU for a forward pass, so it is what stands between a kernel
+	that cannot run on this card and a gateway route pointing at it."""
+
+	@classmethod
+	def setUpClass(cls):
+		cls.tasks = yaml.safe_load((INFERENCE_ROLES / "vllm/tasks/config.yml").read_text())
+		cls.defaults = role_defaults(INFERENCE_ROLES / "vllm")
+
+	def index_of(self, marker):
+		return next(i for i, task in enumerate(self.tasks) if marker in str(task))
+
+	def warmup(self):
+		return self.tasks[self.index_of("vllm_warmup_request.path")]
+
+	def test_it_runs_after_the_health_gate(self):
+		# Before it, the engine has not bound its port and every attempt is a connection refused.
+		self.assertLess(self.index_of("vllm_health_path"), self.index_of("vllm_warmup_request.path"))
+
+	def test_it_carries_the_bearer(self):
+		# The engine runs with VLLM_API_KEY set, so an unauthenticated POST is a 401 on a healthy
+		# engine — a warmup that fails every deploy for the wrong reason.
+		headers = self.warmup()["ansible.builtin.uri"]["headers"]
+		self.assertEqual(headers["Authorization"], "Bearer {{ vllm_effective_api_key }}")
+
+	def test_it_asks_the_engine_not_the_proxy(self):
+		# Box-local plain HTTP. The nginx front carries a self-signed cert, and the assertion is
+		# about the engine rather than the proxy in front of it.
+		self.assertIn("http://127.0.0.1:{{ vllm_port }}", self.warmup()["ansible.builtin.uri"]["url"])
+
+	def test_a_failed_warmup_fails_the_play(self):
+		# rc != 0 is the whole mechanism: it leaves the deployment Broken and unpublished. Suppress
+		# the failure and the route goes live on an engine that cannot serve a request.
+		warmup = self.warmup()
+		self.assertEqual(warmup["ansible.builtin.uri"]["status_code"], 200)
+		for suppressor in ("failed_when", "ignore_errors"):
+			self.assertNotIn(suppressor, warmup, suppressor)
+
+	def test_it_is_on_by_default_and_switchable(self):
+		self.assertIs(self.defaults["vllm_warmup"], True)
+		self.assertEqual(self.defaults["vllm_warmup_request"], {})
+		self.assertIn("vllm_warmup", self.warmup()["when"])
+
+	def test_a_modality_with_nothing_to_prove_skips_it(self):
+		# The Engine hands back {} for audio, and for a custom image that names no warmup path;
+		# the same guard covers a role run that sets nothing.
+		self.assertIn("vllm_warmup_request | length > 0", self.warmup()["when"])

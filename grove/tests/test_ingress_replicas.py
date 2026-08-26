@@ -111,7 +111,7 @@ DEPLOYMENTS = [
 
 class TestReplicasForIngress(unittest.TestCase):
 	def routes(self, ingress="ING-1"):
-		from grove import agent_sync
+		from grove import pathway_sync
 
 		query = FakeQuery(SERVERS, MACHINES, DEPLOYMENTS, MODELS)
 		with (
@@ -121,7 +121,7 @@ class TestReplicasForIngress(unittest.TestCase):
 				side_effect=lambda *a, **k: frappe._dict(get_password=lambda *a, **k: "internal"),
 			),
 		):
-			return agent_sync._replicas_for_ingress(ingress)
+			return pathway_sync._replicas_for_ingress(ingress)
 
 	def test_a_local_replica_is_dialled_privately(self):
 		[route] = self.routes()["qwen3-35b"]
@@ -158,8 +158,8 @@ class TestReplicasForIngress(unittest.TestCase):
 		self.assertFalse([u for u in urls if "203.0.113.9" in u], urls)
 
 	def test_a_model_with_nothing_local_is_not_sent_at_all(self):
-		# Not named, rather than named with an empty list. Retiring it is the prune flag's job —
-		# see test_the_push_is_marked_complete, which is what makes omitting it safe.
+		# Not named, rather than named with an empty list. The push is the whole table and
+		# absence prunes (see TestIngressSnapshot), which is what makes omitting it safe.
 		self.assertNotIn("llama-70b", self.routes())
 
 	def test_only_active_deployments_are_routed(self):
@@ -181,75 +181,29 @@ if __name__ == "__main__":
 	unittest.main()
 
 
-class TestThePushIsMarkedComplete(unittest.TestCase):
-	"""Omitting a model is only safe because the push says it is the WHOLE table.
+class TestIngressSnapshot(unittest.TestCase):
+	"""Omitting a model is only safe because the push is the WHOLE table: the agent deletes any
+	deploy:<model> the routes section does not name, so a model whose replicas all moved to
+	another ingress cannot keep a key here pointing at a box this one cannot reach.
 
-	Without prune the agent upserts what it is given and keeps the rest, so a model whose replicas
-	all moved to another ingress would keep a key here pointing at a box this one cannot reach —
-	and /pick would hand it out."""
+	An ingress's snapshot is its replica table and nothing else — there is no keys, users or
+	groups section on that plane, so the control plane can never leak tenant state to it."""
 
-	def test_sync_replicas_sets_prune(self):
-		from grove import agent_sync
+	def snapshot(self, table):
+		from grove import pathway_sync
 
-		sent = {}
-		with (
-			patch.object(agent_sync, "_replicas_for_ingress", return_value={"m": []}),
-			patch.object(agent_sync, "_conn", return_value=(None, "http://x", "t")),
-			patch.object(
-				agent_sync, "_post",
-				side_effect=lambda url, token, path, payload: sent.update(payload) or {"models": 1},
-			),
-		):
-			agent_sync.sync_replicas("ING-1")
-		self.assertIs(sent.get("prune"), True)
+		with patch.object(pathway_sync, "_replicas_for_ingress", return_value=table):
+			return pathway_sync.ingress_snapshot("ING-1")
 
+	def test_it_is_the_routes_section_and_nothing_else(self):
+		self.assertEqual(list(self.snapshot({"m": []})), ["routes"])
 
-class TestWhichIngressesAPushReaches(unittest.TestCase):
-	"""A deployment change moves exactly one ingress's table: the one that OWNS its box.
+	def test_the_table_travels_whole_with_its_hash(self):
+		section = self.snapshot({"m": []})["routes"]
+		self.assertEqual(section["table"], {"m": []})
+		self.assertIn("hash", section)
 
-	Not every ingress, and not every ingress in the Network either — a second Mumbai ingress
-	fronting different boxes holds a table this change did not touch, and pushing to it is a
-	round trip that rewrites the same bytes.
-	"""
-
-	def owners(self, servers, ingresses):
-		from grove import agent_sync
-
-		def get_all(doctype, filters=None, pluck=None, **kwargs):
-			filters = dict(filters or {})
-			if doctype == "Inference Server":
-				wanted = list(filters["name"][1])
-				return [s["ingress"] for s in servers if s["name"] in wanted and s.get("ingress")]
-			wanted = list(filters["name"][1])
-			return [
-				i["name"]
-				for i in ingresses
-				if i["name"] in wanted and i["status"] == "Active" and i.get("network")
-			]
-
-		with patch.object(frappe, "get_all", side_effect=get_all):
-			return agent_sync.owning_ingresses([s["name"] for s in servers])
-
-	def test_only_the_owner_is_pushed_to(self):
-		owners = self.owners(
-			[{"name": "INF-a", "ingress": "ing-1"}],
-			[{"name": "ing-1", "status": "Active", "network": "Mumbai"},
-			 {"name": "ing-2", "status": "Active", "network": "Mumbai"}],
-		)
-		self.assertEqual(owners, ["ing-1"])
-
-	def test_a_box_with_no_ingress_moves_nothing(self):
-		owners = self.owners(
-			[{"name": "INF-direct", "ingress": None}],
-			[{"name": "ing-1", "status": "Active", "network": "Mumbai"}],
-		)
-		self.assertEqual(owners, [])
-
-	def test_an_ingress_that_cannot_take_a_push_is_skipped(self):
-		# Broken, or configured without a Network — a scheduled run must not die over one box.
-		owners = self.owners(
-			[{"name": "INF-a", "ingress": "ing-broken"}, {"name": "INF-b", "ingress": "ing-nonet"}],
-			[{"name": "ing-broken", "status": "Broken", "network": "Mumbai"},
-			 {"name": "ing-nonet", "status": "Active", "network": None}],
-		)
-		self.assertEqual(owners, [])
+	def test_the_hash_moves_when_the_table_does(self):
+		one = self.snapshot({"m": []})["routes"]["hash"]
+		two = self.snapshot({"m": [], "n": []})["routes"]["hash"]
+		self.assertNotEqual(one, two)

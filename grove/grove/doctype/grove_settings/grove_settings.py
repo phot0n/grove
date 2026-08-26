@@ -40,14 +40,23 @@ class GroveSettings(Document):
 		fleet_tls_cert: DF.SmallText | None
 		fleet_tls_expires_on: DF.Datetime | None
 		fleet_tls_key: DF.Password | None
+		fleet_tls_last_output: DF.Code | None
+		fleet_tls_last_run: DF.Datetime | None
+		fleet_zone: DF.Data | None
+		gateway_agent_version: DF.Data | None
 		gateway_host: DF.Data | None
 		metrics_remote_write_url: DF.Data | None
 		monitoring_extra_labels: DF.SmallText | None
-		fleet_zone: DF.Data | None
 		scrape_password: DF.Password | None
 		scrape_password_hash: DF.Data | None
 		sd_token: DF.Password | None
 		synthetic_session_ttl: DF.Data | None
+		weights_bucket: DF.Data | None
+		weights_s3_access_key_id: DF.Data | None
+		weights_s3_region: DF.Data | None
+		weights_s3_secret_access_key: DF.Password | None
+		weights_s3_write_access_key_id: DF.Data | None
+		weights_s3_write_secret_access_key: DF.Password | None
 	# end: auto-generated types
 
 	def validate(self):
@@ -159,6 +168,32 @@ class GroveSettings(Document):
 		return {"synthetic_session_ttl": self.synthetic_session_ttl or "0"}
 
 	@property
+	def weights_s3_engine_environment(self):
+		"""Env for an engine that touches the weights bucket: read-only keys plus the streamer
+		tuning AWS benchmarks best (4 GB chunks). Empty when the bucket isn't configured."""
+		if not (self.weights_bucket and self.weights_s3_access_key_id):
+			return {}
+		return {
+			"AWS_ACCESS_KEY_ID": self.weights_s3_access_key_id,
+			"AWS_SECRET_ACCESS_KEY": self.get_password("weights_s3_secret_access_key", raise_exception=False) or "",
+			"AWS_DEFAULT_REGION": self.weights_s3_region or "",
+			"RUNAI_STREAMER_CHUNK_BYTESIZE": "4294967296",
+			"RUNAI_STREAMER_S3_REQUEST_TIMEOUT_MS": "3000",
+			"RUNAI_STREAMER_S3_LOW_SPEED_LIMIT": "1048576",
+		}
+
+	@property
+	def weights_s3_write_environment(self):
+		"""Env for the mirror job only — the pair that may write under models/*."""
+		if not (self.weights_bucket and self.weights_s3_write_access_key_id):
+			return {}
+		return {
+			"AWS_ACCESS_KEY_ID": self.weights_s3_write_access_key_id,
+			"AWS_SECRET_ACCESS_KEY": self.get_password("weights_s3_write_secret_access_key", raise_exception=False) or "",
+			"AWS_DEFAULT_REGION": self.weights_s3_region or "",
+		}
+
+	@property
 	def scrape_auth_variables(self):
 		"""Ansible vars every BOX needs to put its exporters behind basic auth. The hash, never
 		the password: a box verifies a credential, it never presents one.
@@ -191,10 +226,4 @@ class GroveSettings(Document):
 		"""Button: get the wildcard for the proxy zone from Let's Encrypt over DNS-01 and store
 		it here. Does not ship it — provision and the daily renewal do that."""
 		frappe.enqueue("grove.tls.issue_fleet_certificate", queue="long", timeout=900)
-		frappe.msgprint(f"Requesting a certificate for *.{self.fleet_zone} — this takes a minute.")
-
-	@frappe.whitelist()
-	def full_sync_all(self):
-		"""Button: push the COMPLETE state to every Active proxy."""
-		frappe.enqueue("grove.agent_sync.full_sync", queue="short", trigger="Manual")
-		frappe.msgprint("Full sync queued for all Active proxies.")
+		frappe.msgprint(f"Requesting a certificate for *.{self.fleet_zone} — this takes a minute.", alert=True)

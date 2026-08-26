@@ -15,6 +15,7 @@
   "monitoring_agent",
   "admin_url",
   "agent_version",
+  "last_synced_at",
   "admin_token",
   "data_token"
  ],
@@ -84,11 +85,18 @@
    "read_only": 1
   },
   {
-   "description": "The grove-gateway release this box last installed successfully. Written by the deploy, not typed \u2014 it is what makes a fleet running mixed versions visible.",
+   "description": "The pathway release this box last installed successfully. Written by the deploy, not typed \u2014 it is what makes a fleet running mixed versions visible.",
    "fieldname": "agent_version",
    "fieldtype": "Data",
    "label": "Agent Version",
    "read_only": 1
+  },
+  {
+   "fieldname": "last_synced_at",
+   "fieldtype": "Datetime",
+   "label": "Last Synced At",
+   "read_only": 1,
+   "description": "When a Projection run last confirmed this box holds the desired state \u2014 stamped on every in-sync check and every successful push, never on failure. Goes stale = the box is unreachable or rejecting pushes; the failed Pathway Sync rows say why."
   },
   {
    "description": "Generated on insert. Authenticates every control-plane push, and the agent refuses to start without it.",

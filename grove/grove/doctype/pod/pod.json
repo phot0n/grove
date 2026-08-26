@@ -293,9 +293,9 @@
    "options": "auto\nFLASH_ATTN\nXFORMERS\nFLASHINFER"
   },
   {
-   "description": "\u2192 --max-model-len. Per-box cap for the KV cache; \u2264 the model's native context. Blank = 8192.",
+   "description": "\u2192 --max-model-len. Per-box cap for the KV cache; \u2264 the model's native context. Blank = 8192. Takes a suffix \u2014 32k, 128k, 1m \u2014 or a plain token count.",
    "fieldname": "max_model_len",
-   "fieldtype": "Int",
+   "fieldtype": "Data",
    "label": "Max Model Len"
   },
   {

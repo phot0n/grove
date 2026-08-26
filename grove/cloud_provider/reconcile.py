@@ -21,27 +21,18 @@ def sync_all():
 
 
 def sync_pods():
-	"""Pods with a provider pod behind them. The route table is projected once, and only when a
-	status actually moved — an unchanged fleet must not queue a gateway run every five minutes."""
-	moved = False
-	for pod in frappe.get_all(
+	"""Pods with a provider pod behind them. Each in isolation — one unreachable pod must not stop
+	the rest of the fleet. The routes a status change moves are projected by the scheduled tick."""
+	for name in frappe.get_all(
 		"Pod",
 		filters={"pod_id": ("!=", ""), "status": ("!=", "Terminated")},
-		fields=["name", "status"],
+		pluck="name",
 	):
 		try:
-			# push_gateway=False: the published flag still updates per pod, the projection is
-			# batched below.
-			PodProvisioner(frappe.get_doc("Pod", pod.name)).sync(push_gateway=False)
+			PodProvisioner(frappe.get_doc("Pod", name)).sync()
 		except Exception:
 			frappe.db.rollback()
-			frappe.log_error(title=f"Scheduled pod sync failed: {pod.name}")
-			continue
-		moved = moved or frappe.db.get_value("Pod", pod.name, "status") != pod.status
-	if moved:
-		from grove import agent_sync
-
-		agent_sync.full_sync(trigger="Provision")
+			frappe.log_error(title=f"Scheduled pod sync failed: {name}")
 
 
 def sync_machines():

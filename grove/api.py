@@ -5,15 +5,16 @@ API key, and return a ready-to-use inference endpoint. Cold path (Frappe).
 
 Every endpoint here is for the control client and calls frappe.only_for(CONTROL_ROLE) —
 @frappe.whitelist() alone lets ANY logged-in user in, role or not. The Grove Control role
-carries no doctype permissions (Grove's doctypes grant System Manager only), so it reaches
-these methods and nothing else. enroll_control_client is the one exception: it runs before
-the client has a session and is gated by the shared bootstrap secret instead."""
+holds read on Model and Usage Record, read/write/create on Grove User and read/create on Grove
+API Key — what these endpoints touch and nothing else — so every read and write below is checked
+rather than bypassed. enroll_control_client is the one exception: it runs before the client has a
+session and is gated by the shared bootstrap secret instead."""
 
 import hmac
 
 import frappe
 
-from grove.grove.doctype.grove_user.grove_user import for_email
+from grove.grove.doctype.grove_user.grove_user import for_email, register_user
 from grove.grove.doctype.usage_record.usage_record import billable
 
 CONTROL_ROLE = "Grove Control"
@@ -25,23 +26,14 @@ def provision_key(name: str, email: str, token_limit: int=None, allowed_models: 
 	endpoint. Control client only — it mints credentials (§7)."""
 	frappe.only_for(ALLOWED_ROLES)
 
-	# 1. Resolve / register the user (idempotent on email).
-	if not frappe.db.exists("User", email):
-		user = frappe.new_doc("User")
-		user.email = email
-		user.first_name = name
-		user.enabled = 1
-		user.send_welcome_email = 0
-		user.user_type = "Website User"
-		user.insert()
+	# 1. Access and budget are per-user now, so both land on the Grove User rather than the
+	# key — and registering the login is part of writing it, so nothing here handles Users.
+	# The budget is SHARED by every key this user holds — minting a second key does not hand
+	# out a second allowance. Written unconditionally: the key links to this doc, and a blank
+	# one is the correct fail-closed default (no group, no allow).
+	grove_user = _set_policy(email, name, allowed_models, token_limit)
 
-	# 2. Access and budget are per-user now, so both land on the Grove User rather than
-	# the key. The budget is SHARED by every key this user holds — minting a second key
-	# does not hand out a second allowance. Written unconditionally: the key links to this
-	# doc, and a blank one is the correct fail-closed default (no group, no allow).
-	grove_user = _set_policy(email, allowed_models, token_limit)
-
-	# 3. Mint the key (controller generates secret + hash, pushes to gateways).
+	# 2. Mint the key (controller generates secret + hash, pushes to gateways).
 	key = frappe.new_doc("Grove API Key")
 	key.user = grove_user
 	key.status = "active"
@@ -62,8 +54,8 @@ def provision_key(name: str, email: str, token_limit: int=None, allowed_models: 
 @frappe.whitelist()
 def revoke_key(api_key: str):
 	"""Revoke by the full key (not the doc name): hash it → find by key_hash → flip to revoked.
-	The row stays as the record it existed; a Gateway Deletion is written alongside and the next
-	sync drops the record from every proxy, so the key stops working within a tick."""
+	The row stays as the record it existed; a revoked key is no longer projected, so the next
+	sync prunes it from every proxy and it stops working within a tick."""
 	frappe.only_for(ALLOWED_ROLES)
 	from grove.grove.doctype.grove_api_key.grove_api_key import hash_secret
 
@@ -119,12 +111,12 @@ def usage(users: list[str] | str, month: str = None):
 	if isinstance(users, str):
 		users = [users]
 
-	_fields = ("prompt_tokens", "completion_tokens", "cached_tokens", "total_tokens", "request_count")
+	_fields = ("prompt_tokens", "completion_tokens", "cached_tokens")
 	# In and out by email; the records themselves are keyed by Grove User.
 	emails = dict(
-		frappe.get_all("Grove User", {"user": ("in", users)}, ["name", "user"], as_list=True)
+		frappe.get_list("Grove User", {"user": ("in", users)}, ["name", "user"], as_list=True)
 	)
-	records = frappe.get_all(
+	records = frappe.get_list(
 		"Usage Record",
 		filters={"user": ["in", list(emails)], "month": month},
 		fields=["name", "user", *_fields],
@@ -137,17 +129,14 @@ def usage(users: list[str] | str, month: str = None):
 		totals = usage.setdefault(emails[r.user], {"billable_tokens": 0, **dict.fromkeys(_fields, 0)})
 		for f in _fields:
 			totals[f] += r.get(f) or 0
-		# Accumulated per record, not derived from the running totals: billable has a floor, and
-		# applying it once at the end would let one malformed record cancel another key's usage.
-		totals["billable_tokens"] += billable(r.get("total_tokens"), r.get("cached_tokens"))
 
-	# Same tokens, split by which model spent them. The gateway meters per model
-	# (m:<metric>:<model>), so every record carries the breakdown as child rows.
+	# model wise usage summary
 	names = [r.name for r in records]
-	model_rows = frappe.get_all(
+	model_rows = frappe.get_list(
 		"Usage Model Row",
 		filters={"parenttype": "Usage Record", "parent": ("in", names)},
 		fields=["model", *_fields],
+		parent_doctype="Usage Record",
 	) if names else []
 	model_summary = _totals_by_model(model_rows, _fields)
 	return {"users": users, "month": month, "model_summary": model_summary, **usage}
@@ -158,10 +147,10 @@ def available_models():
 	"""Every model with a live route. A catalogue, not an entitlement list — the gateway is
 	what enforces which of these a given API key may actually call."""
 	frappe.only_for(ALLOWED_ROLES)
-	return frappe.get_all(
+	return frappe.get_list(
 		"Model",
 		{"published": 1},
-		["name", "display_name", "modality"],
+		["name", "model_id", "modality"],
 	)
 
 
@@ -180,20 +169,21 @@ def _create_control_user(email):
 	return doc
 
 
-def _set_policy(email, models, token_limit):
+def _set_policy(email, full_name, models, token_limit):
 	"""Write the user's Grove User policy and return its name — the id every key, usage
 	record and access lookup carries. `models` is exactly what they may call; `token_limit`
-	is their shared monthly budget."""
+	is their shared monthly budget. `full_name` names the login when this is the insert that
+	creates it."""
 	name = for_email(email)
 	doc = frappe.get_doc("Grove User", name) if name else frappe.new_doc("Grove User")
-	doc.user = email
+	doc.user = register_user(email, full_name)
 	if models:
 		doc.allow = []
 		for model in models:
 			doc.append("allow", {"model": model})
 	if token_limit:
 		doc.max_tokens = token_limit
-	doc.save(ignore_permissions=True)
+	doc.save()
 	return doc.name
 
 
@@ -204,11 +194,9 @@ def _totals_by_model(rows, fields):
 	per_model = {}
 	for row in rows:
 		totals = per_model.setdefault(
-			row["model"], {"model": row["model"], "billable_tokens": 0, **dict.fromkeys(fields, 0)}
+			row["model"], {"model": row["model"], **dict.fromkeys(fields, 0)}
 		)
 		for f in fields:
 			totals[f] += row.get(f) or 0
-		# Per row, for the same reason as above and so this agrees with usage_record.billable_tokens.
-		totals["billable_tokens"] += billable(row.get("total_tokens"), row.get("cached_tokens"))
 
-	return sorted(per_model.values(), key=lambda t: t["total_tokens"], reverse=True)
+	return per_model.values() if per_model else []

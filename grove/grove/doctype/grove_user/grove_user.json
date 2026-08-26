@@ -10,7 +10,6 @@
   "user_group",
   "column_break_head",
   "rate_limited",
-  "dirty",
   "section_allow",
   "allow",
   "section_deny",
@@ -18,6 +17,7 @@
  ],
  "fields": [
   {
+   "description": "The login this policy belongs to. One policy per user \u2014 a second one for the same login is what let a budget be doubled by re-provisioning.",
    "fieldname": "user",
    "fieldtype": "Link",
    "in_list_view": 1,
@@ -27,7 +27,7 @@
    "unique": 1
   },
   {
-   "description": "Group this user belongs to. Everything the group grants, this user reaches — on top of their own Allow below.",
+   "description": "Group this user belongs to. Everything the group grants, this user reaches \u2014 on top of their own Allow below.",
    "fieldname": "user_group",
    "fieldtype": "Link",
    "in_list_view": 1,
@@ -49,15 +49,8 @@
    "description": "System-set: this user hit their monthly token budget, so every key they hold is rejected with 429 (pushed once, as limited on their own gateway record). Cleared by the daily grove.usage_pull.reactivate_rate_limited once current-month usage is back under budget (month rollover / raised budget); stays blocked for the rest of the month otherwise.",
    "fieldname": "rate_limited",
    "fieldtype": "Check",
+   "in_list_view": 1,
    "label": "Rate Limited",
-   "read_only": 1
-  },
-  {
-   "default": "0",
-   "description": "Set on change; cleared once a sync run has pushed this user's access and budget flag to every Active proxy.",
-   "fieldname": "dirty",
-   "fieldtype": "Check",
-   "label": "Pending Sync",
    "read_only": 1
   },
   {
@@ -73,6 +66,7 @@
    "options": "Grove Model Row"
   },
   {
+   "depends_on": "eval: doc.user_group",
    "description": "Models this user may never call. Deny wins over everything \u2014 a group grant and a Public release both lose to it.",
    "fieldname": "section_deny",
    "fieldtype": "Section Break",
@@ -97,7 +91,7 @@
    "link_fieldname": "user"
   }
  ],
- "modified": "2026-07-29 03:46:09.548744",
+ "modified": "2026-08-21 12:46:25.293134",
  "modified_by": "Administrator",
  "module": "Grove",
  "name": "Grove User",
@@ -113,6 +107,12 @@
    "report": 1,
    "role": "System Manager",
    "share": 1,
+   "write": 1
+  },
+  {
+   "create": 1,
+   "read": 1,
+   "role": "Grove Control",
    "write": 1
   }
  ],

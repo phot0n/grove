@@ -141,7 +141,7 @@ class Network(Document):
 			"route_table_id": network["route_table_id"],
 			"availability_zone": network["availability_zone"],
 		})
-		frappe.msgprint(f"VPC and subnet created for {self.name}.")
+		frappe.msgprint(f"VPC and subnet created for {self.name}.", alert=True)
 		self.create_security_groups()
 
 	@frappe.whitelist()
@@ -171,7 +171,7 @@ class Network(Document):
 			self.cloud_client.authorize_ingress(inference_sg_id, INFERENCE_BASE_INGRESS_RULES)
 			self.db_set("inference_security_group_ids", inference_sg_id)
 
-		frappe.msgprint(f"Security groups created for {self.name}.")
+		frappe.msgprint(f"Security groups created for {self.name}.", alert=True)
 		# Straight after creation, so a new group is never briefly open to the world on 443.
 		self.sync_inference_ingress()
 

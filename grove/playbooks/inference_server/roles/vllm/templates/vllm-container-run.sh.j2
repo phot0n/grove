@@ -12,13 +12,18 @@
   --ipc=host is mandatory for tensor-parallel > 1 (torch needs host shared memory).
   The port is the same inside and out — the serve args already set --port, and engine_url
   is derived from the host port. HF_HOME stays the image default, which the mount fills.
+  The cache mount keeps torch.compile/Triton artifacts across container replaces — the
+  env file points TRITON_CACHE_DIR/TORCHINDUCTOR_CACHE_DIR inside it.
 #}
 set -eu
 
 docker stop {{ vllm_unit }} >/dev/null 2>&1 || true
 docker rm -f {{ vllm_unit }} >/dev/null 2>&1 || true
 
-exec docker run --detach --restart unless-stopped --name {{ vllm_unit }} \
+{% if vllm_cache_bucket %}
+{{ vllm_cache_sync_script }} pull || true
+{% endif %}
+docker run --detach --restart unless-stopped --name {{ vllm_unit }} \
 {% if vllm_cuda_visible_devices | length > 0 %}
   --gpus '"device={{ vllm_cuda_visible_devices }}"' \
 {% else %}
@@ -27,6 +32,11 @@ exec docker run --detach --restart unless-stopped --name {{ vllm_unit }} \
   --ipc=host \
   -p {{ vllm_port }}:{{ vllm_port }} \
   -v {{ vllm_hf_home }}:/root/.cache/huggingface \
+  -v {{ vllm_cache_dir }}:/root/.cache/vllm \
   --env-file {{ vllm_container_env_file }} \
   --log-opt max-size=100m --log-opt max-file=5 \
-  {{ vllm_image }} {{ vllm_model }} {{ vllm_serve_args | join(' ') }}
+  {{ vllm_image }}{% if vllm_model %} {{ vllm_model }}{% endif %}{% for arg in vllm_serve_args %} '{{ arg }}'{% endfor %}
+
+{% if vllm_cache_bucket %}
+nohup {{ vllm_cache_sync_script }} push >/dev/null 2>&1 &
+{% endif %}

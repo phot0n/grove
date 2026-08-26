@@ -51,12 +51,14 @@ These rules are mandatory for agents changing this repo:
 
 ## Working Rules
 
-- Read `SPEC.md` before starting changes.
 - Do not touch unrelated dirty files.
 - Do not delete data directories.
 - Use `apply_patch` for manual edits.
 - Run targeted tests for narrow behavior changes and `uv run pytest` before committing broad refactors.
 - For bug fixes, identify the root cause before attempting a fix.
+- Use `@faliure.reports_failure` decorator wherever things are async and a faliure reporting is necessary (check some existing examples to get a feel).
+- Don't ignore_permissions, `frappe.get_all` in a whitelisted (`@frappe.whitelist`) function.
+- Update the relevant `Readme.md` when changing the relevant code behaviour.
 
 ## Docs
 

@@ -38,7 +38,7 @@ class AnsiblePlay(Document):
 		if self.status not in ("Pending", "Running"):
 			frappe.throw(f"This play is {self.status} — there is nothing to stop.")
 		frappe.db.set_value("Ansible Play", self.name, "status", "Stopping")
-		frappe.msgprint("Stopping — the play ends once the task it is in reports back.")
+		frappe.msgprint("Stopping — the play ends once the task it is in reports back.", alert=True)
 
 	@frappe.whitelist()
 	def cleanup(self):

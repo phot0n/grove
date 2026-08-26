@@ -12,6 +12,7 @@ import requests
 from grove.cloud_provider.provisioner import PodProvisioner
 from grove.grove.doctype.pod.pod import Pod
 from grove.cloud_provider.runpod import RunPodClient, RunPodError, pod_status
+from grove.serving.base import build_engine
 
 
 class FakeClient(RunPodClient):
@@ -227,8 +228,13 @@ def serving_pod(
 	public_ip="1.2.3.4",
 	external_port=41234,
 	health_path=None,
-	is_custom_engine=False,
+	engine_kind="vllm",
+	streaming=False,
+	max_model_len=None,
 ):
+	model = {"hf_repo": "Qwen/Qwen3-35B", "modality": "text"}
+	if streaming:
+		model["weights_s3_uri"] = "s3://grove-weights/models/Qwen--Qwen3-35B"
 	return SimpleNamespace(
 		name="POD-1",
 		pod_id=pod_id,
@@ -236,12 +242,61 @@ def serving_pod(
 		public_ip=public_ip,
 		model="Qwen/Qwen3-35B",
 		health_path=health_path,
-		is_custom_engine=is_custom_engine,
+		max_model_len=max_model_len,
+		# The real class, not a stub: an Engine takes a plain mapping and no site, so the pod
+		# simply carries the one its doctype property would have built.
+		engine=build_engine(engine_kind, "qwen3-35b", model, port=8080, max_model_len=max_model_len),
 		ports=[
 			SimpleNamespace(internal_port=22, protocol="tcp", external_port=22001),
 			SimpleNamespace(internal_port=8080, protocol=protocol, external_port=external_port),
 		],
 	)
+
+
+class TestPodEnv(unittest.TestCase):
+	"""Container env: weights and compile caches live on the persistent volume, so a restart
+	skips both the re-download and torch.compile."""
+
+	def env(self, engine_kind="vllm", rows=(), streaming=False):
+		pod = serving_pod(engine_kind=engine_kind, streaming=streaming)
+		pod.volume_mount_path = "/data"
+		pod.allow_long_max_model_len = 0
+		pod.get_password = lambda *args, **kwargs: None
+		pod.env = [SimpleNamespace(key=k, value=v) for k, v in rows]
+		from grove.cloud_provider import provisioner
+		settings = SimpleNamespace(weights_s3_engine_environment={"AWS_ACCESS_KEY_ID": "AKIA"})
+		with (
+			patch.object(provisioner.frappe, "conf", {}),
+			patch.object(provisioner.frappe, "get_single", return_value=settings),
+		):
+			return PodProvisioner(pod).env
+
+	def test_a_vllm_pod_caches_on_the_volume(self):
+		env = self.env()
+		self.assertEqual(env["HF_HOME"], "/data/hf")
+		self.assertEqual(env["HF_XET_HIGH_PERFORMANCE"], "1")
+		self.assertEqual(env["VLLM_CACHE_ROOT"], "/data/vllm-cache")
+		self.assertEqual(env["TRITON_CACHE_DIR"], "/data/vllm-cache/triton")
+		self.assertEqual(env["TORCHINDUCTOR_CACHE_DIR"], "/data/vllm-cache/torchinductor")
+
+	def test_a_custom_image_gets_none_of_the_vllm_vars(self):
+		# hf_transfer may not be installed there; its env var would crash huggingface_hub.
+		# Telemetry is the exception: a plain env lookup, safe on any huggingface_hub.
+		env = self.env(engine_kind="custom")
+		self.assertEqual(set(env), {"HF_HOME", "HF_HUB_DISABLE_TELEMETRY"})
+
+	def test_a_pod_env_row_wins(self):
+		env = self.env(rows=[("VLLM_CACHE_ROOT", "/elsewhere")])
+		self.assertEqual(env["VLLM_CACHE_ROOT"], "/elsewhere")
+
+	def test_a_streaming_pod_gets_the_bucket_env(self):
+		# Decided by the Model carrying a mirror, not by matching "runai_streamer" in the stored
+		# serve command — which an operator could also type into extra_serve_args.
+		env = self.env(streaming=True)
+		self.assertEqual(env["AWS_ACCESS_KEY_ID"], "AKIA")
+
+	def test_a_plain_pod_gets_no_bucket_env(self):
+		self.assertNotIn("AWS_ACCESS_KEY_ID", self.env())
 
 
 class TestEngineEndpoint(unittest.TestCase):
@@ -292,17 +347,42 @@ class TestHealthPath(unittest.TestCase):
 	def test_a_custom_image_gates_on_the_path_it_names(self):
 		# The bug this exists for: an ASR container read Running the moment RunPod said the
 		# container was up, minutes before anything answered on the port.
-		pod = serving_pod(is_custom_engine=True, health_path="/v1/health/ready")
+		pod = serving_pod(engine_kind="custom", health_path="/v1/health/ready")
 		self.assertEqual(PodProvisioner(pod).health_path, "/v1/health/ready")
 
 	def test_a_custom_image_that_names_none_is_not_gated(self):
 		# vLLM's /health must not be assumed onto an image that has never heard of it — that
 		# would leave the pod Loading forever.
-		self.assertEqual(PodProvisioner(serving_pod(is_custom_engine=True)).health_path, "")
+		self.assertEqual(PodProvisioner(serving_pod(engine_kind="custom")).health_path, "")
 
 	def test_a_vllm_pod_may_override_the_path(self):
 		pod = serving_pod(health_path="/v1/models")
 		self.assertEqual(PodProvisioner(pod).health_path, "/v1/models")
+
+
+class TestGatedStatus(unittest.TestCase):
+	"""What a gated pod's status is allowed to say, given the provider's own state."""
+
+	def gated(self, state, serving, **pod_kwargs):
+		from grove.cloud_provider import provisioner
+
+		with patch.object(provisioner, "_is_engine_serving", return_value=serving):
+			return PodProvisioner(serving_pod(**pod_kwargs)).gated_status(state)
+
+	def test_the_gate_alone_may_write_running(self):
+		self.assertEqual(self.gated("Running", serving=True), ("Running", "https://abc123-8080.proxy.runpod.net"))
+
+	def test_a_container_the_provider_calls_running_is_loading_until_it_answers(self):
+		# The bug this exists for: RunPod reports RUNNING as soon as the container starts, so a
+		# pod still pulling the image read Running with a blank route target.
+		self.assertEqual(self.gated("Running", serving=False), ("Loading", ""))
+
+	def test_a_pod_with_no_published_endpoint_is_loading(self):
+		self.assertEqual(self.gated("Running", serving=True, pod_id=""), ("Loading", ""))
+
+	def test_every_other_provider_state_passes_through(self):
+		for state in ("Provisioning", "Stopped", "Terminated"):
+			self.assertEqual(self.gated(state, serving=True), (state, ""))
 
 
 class TestPodStatus(unittest.TestCase):
@@ -354,19 +434,158 @@ class TestServePortIsOpened(unittest.TestCase):
 		# The bug this exists for: an ASR pod served on 8000 while its Serve Port stayed at the
 		# 8080 default. engine_endpoint found no row for 8080, so the health gate had nothing to
 		# poll and the pod sat Loading forever with a live container behind it.
-		unopened = serving_pod(is_custom_engine=True)
+		unopened = serving_pod(engine_kind="custom")
 		unopened.serve_port = 8000
 		with patch("grove.grove.doctype.pod.pod.frappe.throw") as throw:
 			Pod.validate(unopened)
 		self.assertIn("8000", throw.call_args.args[0])
 
 	def test_a_serve_port_in_the_ports_table_passes(self):
-		custom = serving_pod(is_custom_engine=True)
+		custom = serving_pod(engine_kind="custom")
 		with patch("grove.grove.doctype.pod.pod.frappe.throw") as throw:
 			Pod.validate(custom)
 		throw.assert_not_called()
 		self.assertEqual(custom.serve_command, "")
 
 
+class TestContextLengthIsStored(unittest.TestCase):
+	"""A suffix is how it was typed, not what is kept. What the field holds after a save is the
+	number the engine was started with, so nothing downstream has to parse it again."""
+
+	def validated(self, max_model_len):
+		pod = serving_pod(engine_kind="custom", max_model_len=max_model_len)
+		with patch("grove.grove.doctype.pod.pod.frappe.throw") as throw:
+			Pod.validate(pod)
+		throw.assert_not_called()
+		return pod.max_model_len
+
+	def test_a_suffix_is_normalised_to_tokens(self):
+		self.assertEqual(self.validated("128k"), "131072")
+
+	def test_a_number_already_in_tokens_is_left_alone(self):
+		self.assertEqual(self.validated("131072"), "131072")
+
+	def test_blank_stays_blank(self):
+		# Writing the engine default back would make "use whatever the engine picks" unsayable.
+		self.assertIsNone(self.validated(None))
+
+
 if __name__ == "__main__":
 	unittest.main()
+
+
+class TestPodWarmup(unittest.TestCase):
+	"""One real request before the gateway route goes live. A 200 from /health proves a socket is
+	open; this proves the engine can run a forward pass under the name the gateway routes on."""
+
+	def provisioner(self, api_key="engine-key", **pod_kwargs):
+		pod = serving_pod(**pod_kwargs)
+		pod.get_password = lambda field, raise_exception=True: api_key
+		return PodProvisioner(pod)
+
+	def post(self, response=None, error=None, **kwargs):
+		"""Run get_warmup_error against a stubbed POST; returns (reason, captured call)."""
+		with patch("grove.cloud_provider.provisioner.requests.post") as posted:
+			posted.side_effect = error
+			posted.return_value = response
+			return self.provisioner(**kwargs).get_warmup_error(), posted
+
+	def test_it_posts_the_payload_at_the_endpoint_the_gateway_gets(self):
+		# Same address engine_url carries, so a warmup that passes proves the route's own target.
+		_, posted = self.post(SimpleNamespace(status_code=200, text="{}"))
+		url, = posted.call_args.args
+		self.assertEqual(url, "https://abc123-8080.proxy.runpod.net/v1/completions")
+		self.assertEqual(posted.call_args.kwargs["json"]["max_tokens"], 1)
+
+	def test_it_sends_the_bearer_health_never_needed(self):
+		# /health is open, but the engine runs with VLLM_API_KEY set — an unauthenticated POST is
+		# a 401 on a pod that serves perfectly well.
+		_, posted = self.post(SimpleNamespace(status_code=200, text="{}"))
+		self.assertEqual(posted.call_args.kwargs["headers"], {"Authorization": "Bearer engine-key"})
+
+	def test_a_pod_without_a_key_sends_no_header(self):
+		_, posted = self.post(SimpleNamespace(status_code=200, text="{}"), api_key=None)
+		self.assertEqual(posted.call_args.kwargs["headers"], {})
+
+	def test_a_serving_engine_gives_no_reason(self):
+		reason, _ = self.post(SimpleNamespace(status_code=200, text="{}"))
+		self.assertEqual(reason, "")
+
+	def test_a_refusal_is_reported_with_its_status(self):
+		reason, _ = self.post(SimpleNamespace(status_code=500, text="CUDA error: no kernel image"))
+		self.assertIn("500", reason)
+		self.assertIn("no kernel image", reason)
+
+	def test_an_unreachable_engine_is_reported_not_raised(self):
+		reason, _ = self.post(error=requests.ConnectionError("connection refused"))
+		self.assertIn("connection refused", reason)
+
+	def test_a_custom_engine_has_no_payload_to_prove(self):
+		with patch("grove.cloud_provider.provisioner.PodProvisioner.current_status", "Running"):
+			self.assertFalse(self.provisioner(engine_kind="custom").is_warmup_due)
+			self.assertTrue(self.provisioner().is_warmup_due)
+
+	def test_a_pod_that_never_served_is_not_warmed(self):
+		# await_engine timed out — there is no engine to prove, and the failure would be noise.
+		with patch("grove.cloud_provider.provisioner.PodProvisioner.current_status", "Loading"):
+			self.assertFalse(self.provisioner().is_warmup_due)
+
+
+class TestWarmupWithholdsTheRoute(unittest.TestCase):
+	"""What a failed warmup does to a bring-up: no route, a Failure someone sees, and the pod left
+	Loading rather than Running-but-broken."""
+
+	def await_ready(self, reason):
+		provisioner = PodProvisioner(serving_pod())
+		provisioner._client = SimpleNamespace(poll_pod_ready=lambda pod_id: {"id": "pod1"})
+		calls = {}
+		with patch.multiple(
+			PodProvisioner,
+			apply_provider_state=lambda self, ready, running: None,
+			await_engine=lambda self, ready: None,
+			is_warmup_due=True,
+			get_warmup_error=lambda self: reason,
+			set_state=lambda self, values: calls.setdefault("state", values),
+			sync_model_published=lambda self: calls.setdefault("synced", True),
+		):
+			with patch("grove.cloud_provider.provisioner.failure.report") as reported:
+				provisioner.await_ready()
+		return calls, reported
+
+	def test_a_failed_warmup_takes_the_pod_out_of_the_route_table(self):
+		# Loading with no engine_url is a Pod's Broken — the route table needs Running AND a url.
+		calls, reported = self.await_ready("500 CUDA error")
+		self.assertEqual(calls["state"], {"status": "Loading", "engine_url": ""})
+		self.assertIn("500 CUDA error", reported.call_args.args)
+
+	def test_the_published_flag_is_still_recomputed(self):
+		# A pod that failed warmup must stop counting as a live deployment for its Model.
+		calls, _ = self.await_ready("500 CUDA error")
+		self.assertTrue(calls["synced"])
+
+	def test_a_serving_engine_is_left_alone(self):
+		calls, reported = self.await_ready("")
+		self.assertNotIn("state", calls)
+		self.assertTrue(calls["synced"])
+		reported.assert_not_called()
+
+
+class TestSyncOfAPodGoneFromTheProvider(unittest.TestCase):
+	"""A pod the provider 404s is Terminated by sync(), and its Model's published flag is
+	recomputed so it stops advertising a pod that no longer exists."""
+
+	def test_a_vanished_pod_is_terminated_and_unpublished(self):
+		provisioner = PodProvisioner(serving_pod())
+
+		def gone(pod_id):
+			raise RunPodError("404 pod not found")
+
+		provisioner._client = SimpleNamespace(get_pod=gone)
+		synced = []
+		with patch.multiple(
+			PodProvisioner,
+			set_state=lambda self, values: None,
+			sync_model_published=lambda self: synced.append(True),
+		):
+			self.assertEqual(provisioner.sync(), {"status": "Terminated"})
+		self.assertEqual(synced, [True])

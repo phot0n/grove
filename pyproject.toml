@@ -10,7 +10,7 @@ dynamic = ["version"]
 dependencies = [
     # "frappe~=16.0.0" # Installed and managed by bench.
     "ansible-core~=2.18.0",
-    "boto3",
+    "boto3~=1.43.0",
 ]
 
 [build-system]

@@ -4,14 +4,26 @@
  "doctype": "DocType",
  "engine": "InnoDB",
  "field_order": [
+  "gateway_tab",
   "section_gateway",
   "gateway_host",
+  "gateway_agent_version",
   "fleet_zone",
   "synthetic_session_ttl",
   "column_break_tls",
   "dns_provider",
   "acme_email",
   "acme_staging",
+  "weights_bucket_tab",
+  "section_weights_bucket",
+  "weights_bucket",
+  "weights_s3_region",
+  "column_break_weights",
+  "weights_s3_access_key_id",
+  "weights_s3_secret_access_key",
+  "weights_s3_write_access_key_id",
+  "weights_s3_write_secret_access_key",
+  "monitoring_tab",
   "section_monitoring",
   "metrics_remote_write_url",
   "monitoring_extra_labels",
@@ -40,6 +52,13 @@
    "label": "Gateway Host"
   },
   {
+   "default": "v0.0.1",
+   "description": "pathway release every box in the fleet installs, as a tag in the agent's own repo. Read at the start of each play, so pinning or rolling back is this field plus a Deploy Agent on each box \u2014 not a control-plane deploy. Each box records what it actually took in its own Agent Version.",
+   "fieldname": "gateway_agent_version",
+   "fieldtype": "Data",
+   "label": "Gateway Agent Version"
+  },
+  {
    "description": "Public DNS zone the proxies live in, e.g. grove.example.com. Every proxy is reachable at its own name inside the zone (proxy-name dot zone) and serves one wildcard certificate for the whole zone, which is what lets them all answer for the same Gateway Host behind GeoDNS. Blank = no TLS: boxes keep serving /v1 and /grove-admin in the clear on port 80.",
    "fieldname": "fleet_zone",
    "fieldtype": "Data",
@@ -47,7 +66,7 @@
   },
   {
    "default": "0",
-   "description": "How long a client that names no session of its own stays pinned to one engine. 0 balances every such request across the engines serving a model, which is the point of running two. A duration (30m, 2m) trades that for a warm prefix cache per API key — 30m is what every gateway did before this field existed. A client that sends X-Grove-Session or a `user` field is always pinned and is not affected either way. Reaches a box on Deploy Agent.",
+   "description": "How long a client that names no session of its own stays pinned to one engine. 0 balances every such request across the engines serving a model, which is the point of running two. A duration (30m, 2m) trades that for a warm prefix cache per API key \u2014 30m is what every gateway did before this field existed. A client that sends X-Grove-Session or a `user` field is always pinned and is not affected either way. Reaches a box on Deploy Agent.",
    "fieldname": "synthetic_session_ttl",
    "fieldtype": "Data",
    "label": "Synthetic Session TTL"
@@ -110,7 +129,7 @@
    "read_only": 1
   },
   {
-   "description": "What that run printed, successful or not. A renewal that was not yet due says so here and changes nothing else — which is the normal nightly result.",
+   "description": "What that run printed, successful or not. A renewal that was not yet due says so here and changes nothing else \u2014 which is the normal nightly result.",
    "fieldname": "fleet_tls_last_output",
    "fieldtype": "Code",
    "label": "Last certbot Output",
@@ -161,11 +180,68 @@
    "fieldname": "fleet_certificate_tab",
    "fieldtype": "Tab Break",
    "label": "Fleet Certificate"
+  },
+  {
+   "fieldname": "gateway_tab",
+   "fieldtype": "Tab Break",
+   "label": "Gateway"
+  },
+  {
+   "fieldname": "weights_bucket_tab",
+   "fieldtype": "Tab Break",
+   "label": "Object Storage"
+  },
+  {
+   "fieldname": "section_weights_bucket",
+   "fieldtype": "Section Break",
+   "label": "Weights Bucket"
+  },
+  {
+   "description": "s3://bucket, no trailing slash. Mirrored weights live under models/, the compile-cache pre-warm under compile-cache/. Blank turns both off.",
+   "fieldname": "weights_bucket",
+   "fieldtype": "Data",
+   "label": "Weights Bucket"
+  },
+  {
+   "fieldname": "weights_s3_region",
+   "fieldtype": "Data",
+   "label": "Region"
+  },
+  {
+   "fieldname": "column_break_weights",
+   "fieldtype": "Column Break"
+  },
+  {
+   "description": "Engine credentials, handed to every streaming engine: GetObject on models/*, Get+PutObject on compile-cache/*. Never the write pair below.",
+   "fieldname": "weights_s3_access_key_id",
+   "fieldtype": "Data",
+   "label": "Engine Access Key ID"
+  },
+  {
+   "fieldname": "weights_s3_secret_access_key",
+   "fieldtype": "Password",
+   "label": "Engine Secret Access Key"
+  },
+  {
+   "description": "Control-plane-only credentials: PutObject on models/* (Mirror Weights To S3) + List/Get/DeleteObject on compile-cache/* (the Compile Cache registry's sync and delete). Never handed to a box.",
+   "fieldname": "weights_s3_write_access_key_id",
+   "fieldtype": "Data",
+   "label": "Mirror Access Key ID"
+  },
+  {
+   "fieldname": "weights_s3_write_secret_access_key",
+   "fieldtype": "Password",
+   "label": "Mirror Secret Access Key"
+  },
+  {
+   "fieldname": "monitoring_tab",
+   "fieldtype": "Tab Break",
+   "label": "Monitoring"
   }
  ],
  "issingle": 1,
  "links": [],
- "modified": "2026-08-07 13:48:54.608302",
+ "modified": "2026-08-17 00:41:45.339773",
  "modified_by": "Administrator",
  "module": "Grove",
  "name": "Grove Settings",

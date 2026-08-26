@@ -5,8 +5,39 @@
  "creation": "2026-08-12 00:00:00",
  "doctype": "DocType",
  "engine": "InnoDB",
- "field_order": [],
- "fields": [],
+ "field_order": [
+  "base_url",
+  "api_version",
+  "column_break_cred",
+  "api_key"
+ ],
+ "fields": [
+  {
+   "description": "Where this vendor's API lives (https://api.anthropic.com). Blank means we serve it ourselves \u2014 that is what makes a provider third-party, so there is no separate type to keep in step with it.",
+   "fieldname": "base_url",
+   "fieldtype": "Data",
+   "label": "Base URL",
+   "options": "URL"
+  },
+  {
+   "depends_on": "base_url",
+   "description": "Sent as the vendor's version header on every request. Anthropic's is 2023-06-01.",
+   "fieldname": "api_version",
+   "fieldtype": "Data",
+   "label": "API Version"
+  },
+  {
+   "fieldname": "column_break_cred",
+   "fieldtype": "Column Break"
+  },
+  {
+   "depends_on": "base_url",
+   "description": "The credential we hold with this vendor. Pushed to every gateway as the route's own key; a customer's key never leaves us.",
+   "fieldname": "api_key",
+   "fieldtype": "Password",
+   "label": "API Key"
+  }
+ ],
  "links": [],
  "modified": "2026-08-12 00:00:00",
  "modified_by": "Administrator",
@@ -14,7 +45,17 @@
  "name": "Model Provider",
  "owner": "Administrator",
  "permissions": [
-  {"create": 1, "delete": 1, "email": 1, "print": 1, "read": 1, "report": 1, "role": "System Manager", "share": 1, "write": 1}
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "System Manager",
+   "share": 1,
+   "write": 1
+  }
  ],
  "sort_field": "modified",
  "sort_order": "DESC",

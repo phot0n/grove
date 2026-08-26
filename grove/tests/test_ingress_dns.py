@@ -9,17 +9,12 @@ resolves as a group is a way to be wrong for free.
 """
 
 import unittest
-from unittest.mock import patch
 
-from grove.cloud_provider.route53 import Route53Client
-from grove.tests.test_gateway_dns import ZONE, FakeRoute53, records
+from grove.tests.test_gateway_dns import ZONE, FakeRoute53, client, rows
 
 HOSTNAME = f"aps1-i1.{ZONE}"
-
-
-def client(fake):
-	with patch("boto3.client", return_value=fake):
-		return Route53Client("key", "secret")
+# rows() keys on (name, set identifier), and an ingress row has none — which is the assertion.
+KEY = (HOSTNAME, None)
 
 
 class TestIngressRecords(unittest.TestCase):
@@ -31,14 +26,14 @@ class TestIngressRecords(unittest.TestCase):
 	def test_an_ingress_gets_exactly_one_record(self):
 		self.client.upsert_ingress_records(*self.arguments)
 		[batch] = self.fake.batches
-		self.assertEqual(set(records(batch)), {HOSTNAME})
+		self.assertEqual(set(rows(batch)), {KEY})
 
 	def test_it_names_this_box_and_routes_no_further(self):
 		# A gateway reaches this ingress by this exact name out of its route table, and the
 		# control plane pushes a replica table to the same one. Any routing policy here would
 		# make a second ingress overwrite this row instead of standing beside it.
 		self.client.upsert_ingress_records(*self.arguments)
-		own = records(self.fake.batches[0])[HOSTNAME]["ResourceRecordSet"]
+		own = rows(self.fake.batches[0])[KEY]["ResourceRecordSet"]
 		self.assertEqual(own["ResourceRecords"], [{"Value": "203.0.113.9"}])
 		for policy in ("SetIdentifier", "MultiValueAnswer", "HealthCheckId", "Region"):
 			with self.subTest(policy):
@@ -48,12 +43,12 @@ class TestIngressRecords(unittest.TestCase):
 		# Route53 matches a DELETE on the whole record — routing policy and health check included.
 		self.client.upsert_ingress_records(*self.arguments)
 		self.client.delete_ingress_records(*self.arguments)
-		created, deleted = (records(batch) for batch in self.fake.batches)
-		for name in created:
-			with self.subTest(name):
-				self.assertEqual(created[name]["Action"], "UPSERT")
-				self.assertEqual(deleted[name]["Action"], "DELETE")
-				self.assertEqual(created[name]["ResourceRecordSet"], deleted[name]["ResourceRecordSet"])
+		created, deleted = (rows(batch) for batch in self.fake.batches)
+		for key in created:
+			with self.subTest(key):
+				self.assertEqual(created[key]["Action"], "UPSERT")
+				self.assertEqual(deleted[key]["Action"], "DELETE")
+				self.assertEqual(created[key]["ResourceRecordSet"], deleted[key]["ResourceRecordSet"])
 
 
 if __name__ == "__main__":

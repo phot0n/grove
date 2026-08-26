@@ -4,8 +4,6 @@
 import frappe
 from frappe.model.document import Document
 
-from grove.grove.doctype.gateway_deletion.gateway_deletion import record_deletion
-
 
 class GroveUser(Document):
 	"""Grove's per-user policy: their group, which models they may call, and how many tokens
@@ -14,7 +12,8 @@ class GroveUser(Document):
 	and no allow, so the user reaches no models at all.
 
 	The gateway holds it the same way: one user:<name> record that every key of theirs points at,
-	so an access or budget change is a single write however many keys they hold."""
+	so an access or budget change is a single write however many keys they hold. No sync hook
+	anywhere here: the next tick's snapshot hash moves on any edit or delete and pushes it."""
 
 	# begin: auto-generated types
 	# This code is auto-generated. Do not modify anything in this block.
@@ -27,7 +26,6 @@ class GroveUser(Document):
 
 		allow: DF.Table[GroveModelRow]
 		deny: DF.Table[GroveModelRow]
-		dirty: DF.Check
 		max_tokens: DF.Int
 		rate_limited: DF.Check
 		user: DF.Link
@@ -41,25 +39,27 @@ class GroveUser(Document):
 		if both:
 			frappe.throw(f"{', '.join(sorted(both))} is in both Allow and Deny")
 
-	def on_update(self):
-		mark_users_dirty([self.name])
 
-	def on_trash(self):
-		# Same reason as on Grove API Key: the push is an UPSERT, so the gateway record survives
-		# this row unless something names it. Frappe blocks the delete while keys still link here,
-		# so by now nothing points at the record either.
-		record_deletion("User", self.name)
+GROVE_USER_ROLE = "Grove User"
 
 
-def mark_users_dirty(grove_users):
-	"""Queue users for the next sync_dirty push. Their keys are NOT dirtied: a key carries only
-	its holder's NAME, which has not changed."""
-	grove_users = list(grove_users)
-	if not grove_users:
-		return
-	frappe.db.set_value(
-		"Grove User", {"name": ("in", grove_users), "dirty": 0}, "dirty", 1, update_modified=False
-	)
+def register_user(email, full_name=None):
+	"""The Website User behind `email`, created if nobody holds it yet, carrying the Grove User
+	role. A policy is provisioned for someone who may never have signed in, and frappe checks the
+	Link before any hook on this doctype runs — so the login is registered a step ahead of it, not
+	from before_insert. The role is an identity marker with no perms; it grants nothing in Grove."""
+	if not frappe.db.exists("User", email):
+		frappe.get_doc(
+			{
+				"doctype": "User",
+				"email": email,
+				"first_name": full_name or email.split("@")[0],
+				"user_type": "Website User",
+				"send_welcome_email": 0,
+				"roles": [{"role": GROVE_USER_ROLE}],
+			}
+		).insert(ignore_permissions=True)
+	return email
 
 
 def for_email(email):
@@ -76,11 +76,11 @@ def monthly_budget(grove_user):
 def set_rate_limited(grove_user, limited):
 	"""Flip the 429 gate for `grove_user`. Held here, not on the keys, because the budget is
 	the person's — storing it per key let a blocked user mint a fresh one and walk past their
-	own cap. Dirties the user so the next sync pushes one record, not one per key they hold.
+	own cap. The next sync pushes one record, not one per key they hold.
 	Returns True when something actually changed."""
 	current = frappe.db.get_value("Grove User", grove_user, "rate_limited")
 	if current is None or current == int(limited):
 		return False
+	# update_modified=False: a system flag flip is not a user edit and must not read as one.
 	frappe.db.set_value("Grove User", grove_user, "rate_limited", int(limited), update_modified=False)
-	mark_users_dirty([grove_user])
 	return True

@@ -67,7 +67,24 @@ class Machine(AnsibleHost, Document):
 			"grove.grove.doctype.machine.machine.scan_machine_gpus",
 			queue="long", timeout=600, machine_name=self.name,
 		)
-		frappe.msgprint(f"Scanning {self.name}'s GPUs — watch its Ansible Plays, then reload.")
+		frappe.msgprint(f"Scanning {self.name}'s GPUs — watch its Ansible Plays, then reload.", alert=True)
+
+	@frappe.whitelist()
+	def gpu_memory(self):
+		"""Button: what each GPU on this box is using right now. Nothing is stored — the
+		numbers are stale the moment they arrive, so they go straight to the dialog."""
+		if not self.public_ip:
+			frappe.throw(f"Machine {self.name} has no public IP — nothing to connect to.")
+		# ponytail: runs Ansible in the request (~10s) because the dialog needs the answer,
+		# not a job id. Move to enqueue + realtime if that wait ever gets noticed.
+		play_name, rc = self.run_playbook("scan_gpus.yml")
+		result = _scan_result(play_name)
+		if rc != 0:
+			frappe.throw(
+				f"Could not read GPU memory on {self.name} (Ansible Play {play_name}). "
+				f"nvidia-smi said: {_scan_message(result)}"
+			)
+		return parse_gpu_memory(result.get("stdout"))
 
 	# ── Cloud provisioning ────────────────────────────────────────────────────
 
@@ -157,7 +174,7 @@ class Machine(AnsibleHost, Document):
 		self.sync_instance_type(client)
 		self.validate_image_architecture(client)
 		frappe.enqueue_doc(self.doctype, self.name, "launch", queue="long", timeout=3000)
-		frappe.msgprint(f"Provisioning {self.name} — reload when it reports Active.")
+		frappe.msgprint(f"Provisioning {self.name} — reload when it reports Active.", alert=True)
 
 	def validate_image_architecture(self, client):
 		"""Refuse an AMI built for a different architecture than the instance type runs. AWS
@@ -348,7 +365,7 @@ class Machine(AnsibleHost, Document):
 		self.cloud_client.stop_instance(self.instance_id)
 		self.db_set({"status": "Draining", "public_ip": self.public_ip if self.is_static_ip else ""})
 		self.sync_dependent_servers()
-		frappe.msgprint(f"Stopping {self.name} — Sync once it settles.")
+		frappe.msgprint(f"Stopping {self.name} — Sync once it settles.", alert=True)
 
 	@frappe.whitelist()
 	def start(self):
@@ -357,7 +374,7 @@ class Machine(AnsibleHost, Document):
 		self.require_instance()
 		self.cloud_client
 		frappe.enqueue_doc(self.doctype, self.name, "resume", queue="long", timeout=3000)
-		frappe.msgprint(f"Starting {self.name} — reload when it reports Active.")
+		frappe.msgprint(f"Starting {self.name} — reload when it reports Active.", alert=True)
 
 	@failure.reports_failure(mark_broken=False)
 	def resume(self):
@@ -387,7 +404,7 @@ class Machine(AnsibleHost, Document):
 		frappe.enqueue_doc(
 			self.doctype, self.name, "grow_root", queue="long", timeout=1800, size_gb=size_gb
 		)
-		frappe.msgprint(f"Growing {self.name}'s root volume to {size_gb} GB — watch its Ansible Plays.")
+		frappe.msgprint(f"Growing {self.name}'s root volume to {size_gb} GB — watch its Ansible Plays.", alert=True)
 
 	@failure.reports_failure(mark_broken=False)
 	def grow_root(self, size_gb):
@@ -416,7 +433,7 @@ class Machine(AnsibleHost, Document):
 		client.terminate_instance(self.instance_id)
 		self.db_set({"status": "Terminated", "instance_id": "", "public_ip": "", "private_ip": ""})
 		self.sync_dependent_servers()
-		frappe.msgprint(f"Terminated {self.name}.")
+		frappe.msgprint(f"Terminated {self.name}.", alert=True)
 
 	def require_instance(self):
 		if not self.instance_id:
@@ -551,3 +568,25 @@ def parse_nvidia_smi(stdout):
 			"gpu_uuid": fields[3] if len(fields) > 3 else "",
 		})
 	return gpus
+
+
+def parse_gpu_memory(stdout):
+	"""The same CSV read for its transient columns — total/used/free MiB per card. A card
+	that reports a non-numeric figure (MIG, a driver that answers [N/A]) is skipped rather
+	than shown as 0, which would read as an idle GPU."""
+	rows = []
+	for line in (stdout or "").splitlines():
+		fields = [field.strip() for field in line.split(",")]
+		if len(fields) < 6 or not fields[0].isdigit():
+			continue
+		total, used, free = fields[2], fields[4], fields[5]
+		if not (total.isdigit() and used.isdigit() and free.isdigit()):
+			continue
+		rows.append({
+			"gpu_index": int(fields[0]),
+			"gpu_model": fields[1],
+			"total_mib": int(total),
+			"used_mib": int(used),
+			"free_mib": int(free),
+		})
+	return rows

@@ -85,14 +85,17 @@ app_license = "mit"
 # Fixtures
 # --------
 # The Grove Control role ships with the app: the control client's User links to it, so it has
-# to exist on every site. It carries NO doctype permissions — every Grove doctype grants
-# System Manager only — so it reaches the whitelisted methods in grove.api and nothing else.
+# to exist on every site. It carries exactly what grove.api touches — read on Model and Usage
+# Record, read/write/create on Grove User, read/create on Grove API Key — so those endpoints run
+# under permission checks instead of around them, and reach nothing else.
+# Grove User is the role every registered login carries: no desk access and no perms, an identity
+# marker to scope self-serve access to later, not a way into anything now.
 # Re-imported on migrate (frappe.utils.fixtures.sync_fixtures), so Grove owns desk_access.
 # `frappe` is the provider our own engines serve under, and every Model defaults to it, so it has to
 # exist before the first Model is inserted. Filtered by name: a site's own third-party providers carry
 # credentials and must never be exported into the app.
 fixtures = [
-	{"dt": "Role", "filters": [["name", "in", ["Grove Control"]]]},
+	{"dt": "Role", "filters": [["name", "in", ["Grove Control", "Grove User"]]]},
 	{"dt": "Model Provider", "filters": [["name", "in", ["frappe"]]]},
 ]
 
@@ -165,24 +168,14 @@ fixtures = [
 
 scheduler_events = {
 	"cron": {
+		# The only automatic projection there is — nothing in a doctype hook, a provision or a pod
+		# lifecycle pushes inline. Hash-gated: each box is pushed only what it does not already
+		# hold, and a box that lost its store lost its hashes with it, so the same tick is also
+		# the full repair. An overrun tick skips on the advisory lock rather than stacking.
+		"*/1 * * * *": ["grove.pathway_sync.sync_projection"],
 		"*/2 * * * *": [
-			"grove.agent_sync.sync_dirty",
-		],
-        "*/5 * * * *": [
 			"grove.usage_pull.pull_all",
-			# The provider owns whether a pod/instance is up; lifecycle jobs only see it while
-			# they run. This closes the drift they leave behind.
 			"grove.cloud_provider.reconcile.sync_all",
-		],
-		# Hourly: re-push every record, changed or not. sync_dirty above clears each dirty flag once
-		# it lands, so a box that loses its store is never told again — routes come back on the next
-		# tick and credentials do not. This is the backstop for that.
-		#
-		# Minute 7, not 0: sync_dirty is */2, so it runs on every EVEN minute and holds the same
-		# Projection lock. Sharing a minute would make the two race every hour, and the one that
-		# loses is this.
-		"7 * * * *": [
-			"grove.agent_sync.resync_all",
 		],
 		# Daily: reactivate rate_limited keys whose current-month usage is back
 		# under budget (month rollover / raised budget). Over-budget keys stay
@@ -279,11 +272,11 @@ export_python_type_annotations = True
 # Require all whitelisted methods to have type annotations
 require_type_annotated_api_methods = True
 
-# Agent Sync is a log: the scheduled run writes one doc every two minutes whether or not
+# Pathway Sync is a log: the scheduled run writes one doc every two minutes whether or not
 # anything moved, each with a row per box and the payload that box was sent. Registering it here
 # is what lets Log Settings clear it, and what puts it in that form for an operator to retune.
 default_log_clearing_doctypes = {
-	"Agent Sync": 60,  # days to retain sync runs
+	"Pathway Sync": 60,  # days to retain sync runs
 }
 
 # Translation

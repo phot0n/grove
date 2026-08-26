@@ -28,8 +28,8 @@ class TestSlugify(unittest.TestCase):
 			"-Leading-": "leading",
 			"": "",  # caller throws on empty
 		}
-		for display_name, want in cases.items():
-			self.assertEqual(slugify(display_name), want, display_name)
+		for typed, want in cases.items():
+			self.assertEqual(slugify(typed), want, typed)
 
 
 class TestIsIdSafe(unittest.TestCase):
@@ -57,7 +57,7 @@ class TestIsIdSafe(unittest.TestCase):
 			self.assertFalse(is_id_safe(name), repr(name))
 
 	def test_a_safe_name_is_recoverable_from_the_id_it_produces(self):
-		# Mirror of CleanIDPart (grove-gateway, internal/domain/requestid.go): keep [A-Za-z0-9_],
+		# Mirror of CleanIDPart (pathway, internal/domain/requestid.go): keep [A-Za-z0-9_],
 		# '-' → '_', drop
 		# the rest. For an id-safe name that is the ONLY transformation, so swapping back
 		# recovers the doc name — which is the whole point of the rule.

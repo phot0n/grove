@@ -1,5 +1,5 @@
 ---
-# Provision a Grove Ingress Server: local Redis + the grove-gateway binary in ingress mode.
+# Provision a Grove Ingress Server: local Redis + the pathway binary in ingress mode.
 # Deliberately close to gateway.yml — same binary, same certificate — minus every tenant-facing
 # piece: no key push, no usage pull, no synthetic-session TTL. What an ingress is GIVEN is what
 # keeps it out of the tenant plane, so nothing here hands it tenant configuration.
@@ -19,6 +19,7 @@
     ingress_hostname: ""
     # No self-signed certificate on a front box — see gateway.yml.
     grove_tls_selfsigned: false
+    monitoring_arch: "{{ 'arm64' if ansible_architecture == 'aarch64' else 'amd64' }}"
 
   pre_tasks:
     - name: refuse to provision without an admin token
@@ -38,6 +39,10 @@
           the Ingress Server's button, or pass the same extra-vars it does.
 
   roles:
+    # node_exporter before the binary: pathway publishes /metrics/node behind the htpasswd
+    # grove_https writes, and a front that proxies to nothing answers 502 to every scrape. A
+    # front box has no cards, so there is no dcgm_exporter here.
+    - node_exporter
     - grove_https
     - fleet_tls
     - install_gateway_agent
@@ -49,6 +54,30 @@
         state: stopped
         enabled: false
       failed_when: false
+
+    # The agent used to be named grove-gateway. A box provisioned before the rename still runs
+    # the old unit on the ports pathway is about to take, so it is retired the same way
+    # openresty is. Logs stay under /var/log/grove-gateway as history; config is re-rendered.
+    - name: retire the old grove-gateway unit (agent renamed to pathway)
+      ansible.builtin.systemd:
+        name: grove-gateway
+        state: stopped
+        enabled: false
+      failed_when: false
+
+    - name: remove the old grove-gateway files
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - /etc/systemd/system/grove-gateway.service
+        - /etc/logrotate.d/grove-gateway
+        - /usr/local/bin/grove-gateway
+        - /etc/grove-gateway
+
+    - name: forget the removed unit
+      ansible.builtin.systemd:
+        daemon_reload: true
 
     # A box provisioned before this carries a self-signed certificate nothing now reads. Removed by
     # file, never by directory: /etc/grove/tls also holds the fleet wildcard this box actually
@@ -67,34 +96,34 @@
         state: present
         update_cache: true
 
-    - name: grove-gateway directories
+    - name: pathway directories
       ansible.builtin.file:
         path: "{{ item }}"
         state: directory
         mode: "0755"
       loop:
-        - /etc/grove-gateway
-        - /var/log/grove-gateway
+        - /etc/pathway
+        - /var/log/pathway
 
     - name: access log rotation
       ansible.builtin.copy:
-        src: "{{ grove_dir }}/logrotate/grove-gateway"
-        dest: /etc/logrotate.d/grove-gateway
+        src: "{{ grove_dir }}/logrotate/pathway"
+        dest: /etc/logrotate.d/pathway
         mode: "0644"
 
     - name: gateway binary
       ansible.builtin.copy:
-        src: /tmp/grove-gateway
-        dest: /usr/local/bin/grove-gateway
+        src: /tmp/pathway
+        dest: /usr/local/bin/pathway
         mode: "0755"
         remote_src: true
-      notify: restart grove-gateway
+      notify: restart pathway
 
     # GROVE_INGRESS_ID is what selects the infra plane, and no tenant variable appears here at all:
     # the binary registers no key-reading handler when it is given this id.
     - name: agent.env
       ansible.builtin.copy:
-        dest: /etc/grove-gateway/agent.env
+        dest: /etc/pathway/agent.env
         content: |
           GROVE_ADMIN_TOKEN={{ admin_token }}
           GROVE_INGRESS_ID={{ ingress_id | default('') }}
@@ -106,29 +135,29 @@
           GROVE_TLS_CERT={{ fleet_tls_cert_path if (fleet_tls_cert | default('')) else '' }}
           GROVE_TLS_KEY={{ fleet_tls_key_path if (fleet_tls_cert | default('')) else '' }}
           GROVE_HTPASSWD={{ grove_metrics_htpasswd }}
-          GROVE_ACCESS_LOG=/var/log/grove-gateway/access.log
-          GROVE_ERROR_LOG=/var/log/grove-gateway/error.log
-          GROVE_CONFIG=/etc/grove-gateway/config.json
-          GROVE_PID_FILE=/run/grove-gateway.pid
+          GROVE_ACCESS_LOG=/var/log/pathway/access.log
+          GROVE_ERROR_LOG=/var/log/pathway/error.log
+          GROVE_CONFIG=/etc/pathway/config.json
+          GROVE_PID_FILE=/run/pathway.pid
         mode: "0600"
       no_log: true
-      notify: restart grove-gateway
+      notify: restart pathway
 
     - name: config.json
       ansible.builtin.template:
         src: "{{ grove_dir }}/config.json.j2"
-        dest: /etc/grove-gateway/config.json
+        dest: /etc/pathway/config.json
         mode: "0644"
-      notify: reload grove-gateway config
+      notify: reload pathway config
 
     - name: systemd unit
       ansible.builtin.copy:
-        src: "{{ grove_dir }}/systemd/grove-gateway.service"
-        dest: /etc/systemd/system/grove-gateway.service
+        src: "{{ grove_dir }}/systemd/pathway.service"
+        dest: /etc/systemd/system/pathway.service
         mode: "0644"
       notify:
         - reload systemd
-        - restart grove-gateway
+        - restart pathway
 
     - name: redis started
       ansible.builtin.systemd:
@@ -136,9 +165,9 @@
         enabled: true
         state: started
 
-    - name: grove-gateway started
+    - name: pathway started
       ansible.builtin.systemd:
-        name: grove-gateway
+        name: pathway
         enabled: true
         state: started
         daemon_reload: true
@@ -148,13 +177,13 @@
       ansible.builtin.systemd:
         daemon_reload: true
 
-    - name: restart grove-gateway
+    - name: restart pathway
       ansible.builtin.systemd:
-        name: grove-gateway
+        name: pathway
         state: restarted
         daemon_reload: true
 
-    - name: reload grove-gateway config
-      ansible.builtin.command: systemctl kill -s SIGUSR1 grove-gateway
+    - name: reload pathway config
+      ansible.builtin.command: systemctl kill -s SIGUSR1 pathway
       changed_when: true
       failed_when: false
