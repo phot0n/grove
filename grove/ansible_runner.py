@@ -22,6 +22,7 @@ from ansible.plugins.loader import init_plugin_loader
 from ansible.vars.manager import VariableManager
 
 import frappe
+from frappe.database.utils import dangerously_reconnect_on_connection_abort
 
 from grove.utils import shared_roles_dir
 
@@ -225,6 +226,7 @@ class Ansible:
 		self.callback = AnsibleCallback(self)
 		self.executor = None
 
+	@dangerously_reconnect_on_connection_abort
 	def _create_play(self):
 		doc = frappe.get_doc({
 			"doctype": "Ansible Play",
@@ -239,6 +241,7 @@ class Ansible:
 		return doc.name
 
 	# --- called from the callback ---
+	@dangerously_reconnect_on_connection_abort
 	def update_play(self, values):
 		doc = frappe.get_doc("Ansible Play", self.play_name)
 		if values.get("ended") and doc.started:
@@ -247,6 +250,7 @@ class Ansible:
 		doc.save(ignore_permissions=True)
 		frappe.db.commit()
 
+	@dangerously_reconnect_on_connection_abort
 	def add_task(self, task_name):
 		"""The doc for a task Ansible has just started — Running until it reports back, so a
 		play being watched live shows where it actually is."""
@@ -260,6 +264,7 @@ class Ansible:
 		frappe.db.commit()
 		return doc.name
 
+	@dangerously_reconnect_on_connection_abort
 	def finish_task(self, task_doc_name, status, result):
 		doc = frappe.get_doc("Ansible Task", task_doc_name)
 		doc.status = TASK_STATUS.get(status, "Failure")
@@ -278,6 +283,9 @@ class Ansible:
 			self.executor._tqm.terminate()
 
 	def run(self):
+		"""(the Ansible Play doc, Ansible's own rc). The rc is Ansible's, not the doc's: a play
+		whose result could not be written is still a play that ran, and reading the status back
+		turned a lost write into a failed deploy."""
 		self.executor = PlaybookExecutor(
 			playbooks=[self.playbook_path],
 			inventory=self.inventory,
@@ -287,12 +295,16 @@ class Ansible:
 		)
 		self.executor._tqm._stdout_callback = self.callback
 		try:
-			self.executor.run()
+			rc = self.executor.run()
 		finally:
 			if self.callback.thread_db:
 				self.callback.thread_db.close()
 			frappe.db.commit()
-		return frappe.get_doc("Ansible Play", self.play_name)
+		# A stopped play unwinds through the strategy with whatever rc its tasks earned, usually 0.
+		# The operator asked for it not to finish, so it is never a success.
+		if self.callback.stopped and not rc:
+			rc = 1
+		return frappe.get_doc("Ansible Play", self.play_name), rc
 
 
 def run_play(playbook, server_type, server_name, machine_name, project_dir, extravars=None, tags=None, skip_tags=None, reference_doctype=None, reference_docname=None):
@@ -325,5 +337,5 @@ def run_play(playbook, server_type, server_name, machine_name, project_dir, extr
 		reference_doctype=reference_doctype,
 		reference_docname=reference_docname,
 	)
-	play = ansible.run()
-	return play.name, (0 if play.status == "Success" else 1)
+	play, rc = ansible.run()
+	return play.name, rc

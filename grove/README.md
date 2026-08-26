@@ -139,6 +139,11 @@ means the box is unreachable or rejecting pushes — and the Failed Pathway Sync
   `__Auth`. Test through `get_password`, never `if not self.field`.
 - **`db_set` skips `validate` and fires no `on_update`**, which is why status writes use it — and why
   a path that writes status must then do by hand whatever `on_update` would have done.
+- **Ansible swallows whatever a callback raises**, logging `Failure using method (…)` and running
+  on. So a play's own docs are written best-effort: each write carries Frappe's
+  `dangerously_reconnect_on_connection_abort` (Ansible forks a worker per task, and a child closing
+  the inherited socket takes this process's connection with it), and the rc a caller acts on is
+  Ansible's, never the doc's status.
 - **Deploy the agent before the state that needs it.** An older binary reading a newer projection
   fails in whichever direction that field's blank means: `models` fails *closed* (403 everyone), an
   unknown route `kind` fails *open* (wrong dial).

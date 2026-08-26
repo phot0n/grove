@@ -10,6 +10,8 @@ from types import SimpleNamespace
 
 import yaml
 
+import frappe
+
 from grove import ansible
 from grove.ansible import AnsibleHost
 
@@ -186,6 +188,94 @@ class TestNoTaskIsLeftRunning(unittest.TestCase):
 		callback.v2_runner_on_failed(self.result())
 		self.start(callback, "next")
 		self.assertEqual(runner.tasks["t0"]["status"], "failed")
+
+
+class FakeExecutor:
+	"""Stands in for PlaybookExecutor: run() hands back the rc Ansible would."""
+
+	def __init__(self, rc):
+		self.rc = rc
+		self._tqm = SimpleNamespace(_stdout_callback=None)
+
+	def run(self):
+		return self.rc
+
+
+class TestTheRunCodeComesFromAnsible(unittest.TestCase):
+	"""It used to be read back off the Ansible Play doc. Ansible swallows whatever a callback
+	raises, so a play that lost its DB connection wrote no result — and a finished play whose row
+	still said Running was reported as a failed deploy."""
+
+	def rc_of(self, rc, stopped=False, play_status="Running"):
+		from grove.ansible_runner import Ansible
+
+		run = Ansible.__new__(Ansible)
+		run.playbook_path = "/nowhere/serve.yml"
+		run.inventory = run.variable_manager = run.loader = None
+		run.play_name = "PLAY-1"
+		run.callback = SimpleNamespace(thread_db=None, stopped=stopped)
+		play = SimpleNamespace(name="PLAY-1", status=play_status)
+		with (
+			unittest.mock.patch("grove.ansible_runner.PlaybookExecutor", lambda **kw: FakeExecutor(rc)),
+			unittest.mock.patch("frappe.get_doc", lambda *args, **kwargs: play),
+		):
+			return run.run()[1]
+
+	def test_a_play_that_could_not_write_its_result_still_succeeded(self):
+		self.assertEqual(self.rc_of(0, play_status="Running"), 0)
+
+	def test_ansibles_own_failure_codes_come_through(self):
+		self.assertEqual(self.rc_of(2), 2)  # RUN_FAILED_HOSTS
+		self.assertEqual(self.rc_of(4), 4)  # RUN_UNREACHABLE_HOSTS
+
+	def test_a_stopped_play_is_never_a_success(self):
+		# The strategy unwinds with whatever rc its tasks earned, usually 0 — but the operator
+		# asked for it not to finish.
+		self.assertEqual(self.rc_of(0, stopped=True), 1)
+
+
+class TestALostConnectionDoesNotLoseTheWrite(unittest.TestCase):
+	"""Ansible forks a worker process per task, and a child closing the inherited socket takes this
+	process's connection with it — so the write recording a play's result is the one most likely to
+	find the connection gone. Frappe's own decorator does the retry; this is that it is applied."""
+
+	def update_play(self, error=None):
+		"""Run Ansible.update_play with the doc read raising `error` once. Returns its attempts."""
+		from grove.ansible_runner import Ansible
+
+		runner = Ansible.__new__(Ansible)
+		runner.play_name = "PLAY-1"
+		doc = SimpleNamespace(started=None, update=lambda values: None, save=lambda **kwargs: None)
+		attempts = []
+
+		def get_doc(*args, **kwargs):
+			attempts.append(1)
+			if error and len(attempts) == 1:
+				raise error
+			return doc
+
+		with (
+			unittest.mock.patch("frappe.get_doc", get_doc),
+			unittest.mock.patch.object(frappe.local.db, "connect") as connect,
+		):
+			runner.update_play({"status": "Success"})
+		return attempts, connect
+
+	def test_the_result_is_written_again_over_a_fresh_connection(self):
+		lost = frappe.db.OperationalError(2013, "Lost connection to server during query")
+		attempts, connect = self.update_play(lost)
+		self.assertEqual(len(attempts), 2)
+		connect.assert_called_once()
+
+	def test_a_write_that_worked_is_not_repeated(self):
+		attempts, connect = self.update_play()
+		self.assertEqual(len(attempts), 1)
+		connect.assert_not_called()
+
+	def test_any_other_failure_is_raised_where_it_happened(self):
+		# Retrying a validation error would only raise it twice and report the second.
+		with self.assertRaises(frappe.ValidationError):
+			self.update_play(frappe.ValidationError("nope"))
 
 
 if __name__ == "__main__":
