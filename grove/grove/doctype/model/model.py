@@ -30,19 +30,34 @@ class Model(Document):
 		attention_heads: DF.Int
 		enable_auto_tool_choice: DF.Check
 		enable_prefix_caching: DF.Check
-		hf_repo: DF.Data
+		hf_repo: DF.Data | None
 		hidden_layers: DF.Int
 		modality: DF.Literal["text", "multimodal", "embedding", "audio"]
 		model_id: DF.Data
+		provider: DF.Link | None
+		provider_base_url: DF.Data | None
 		published: DF.Check
 		reasoning_parser: DF.Data | None
 		thinking: DF.Check
 		tool_call_parser: DF.Data | None
+		upstream_model_id: DF.Data | None
 		weights_gb: DF.Float
 		weights_s3_uri: DF.Data | None
 	# end: auto-generated types
 
 	def validate(self):
+		# mandatory_depends_on on the field is client-side only, so this is the gate that holds
+		# for an insert over the API.
+		if not self.hf_repo and not self.vendor_base_url:
+			frappe.throw(
+				f"{self.model_id} needs an HF Repo: nothing else says where its weights come from, "
+				"and its provider serves nothing of its own.",
+				frappe.MandatoryError,
+			)
+
+		self.validate_weights_source()
+
+	def validate_weights_source(self):
 		"""The streamer reads safetensors out of a bucket — a GGUF ref names a single file it
 		cannot stream."""
 		if not self.weights_s3_uri:
@@ -74,7 +89,7 @@ class Model(Document):
 		# `published` means "reachable" — it tracks whether a live route exists, and is
 		# never a manual claim. It is not an access gate: access is granted per user, via
 		# Grove User Group or Grove User.
-		if self.published and not has_active_deployment(self.name):
+		if self.published and not is_reachable(self.name, provider=self.provider):
 			self.published = 0
 
 	@property
@@ -89,10 +104,24 @@ class Model(Document):
 		"""The quantization named after the colon, blank for a safetensors repo."""
 		return (self.hf_repo or "").partition(":")[2]
 
+	@property
+	def vendor_base_url(self):
+		"""Where a third party serves this model, or "" when we serve it ourselves. Read off the
+		provider rather than stored, so the two can never disagree."""
+		return vendor_base_url(self.name, self.provider)
+
+	def reject_if_vendor_served(self, what):
+		"""Refuse a self-hosting operation on a model we do not host. The form hides these, but a
+		whitelisted method is reachable without the button, and the errors underneath are about a
+		missing repo or a missing deployment — true, and no help at all."""
+		if self.vendor_base_url:
+			frappe.throw(f"{self.name} is served by {self.provider}. {what}, and there is none.")
+
 	@frappe.whitelist()
 	def fetch_architecture(self):
 		"""Button: read the head and layer counts off the repo's config.json, so the
 		parallelism checks have real numbers instead of hand-typed ones."""
+		self.reject_if_vendor_served("Architecture is read off an HF repo")
 		if not self.hf_repo:
 			frappe.throw("Set the HF Repo first — that's what's read.")
 		config = self.get_hf_config()
@@ -117,6 +146,7 @@ class Model(Document):
 	def mirror_weights(self):
 		"""Button: copy the safetensors off a box that serves this model into the weights
 		bucket, then set Weights S3 URI so the next deploy streams them from S3."""
+		self.reject_if_vendor_served("Weights are mirrored off a box that serves the model")
 		settings = frappe.get_single("Grove Settings")
 		if not settings.weights_s3_write_environment:
 			frappe.throw("Set Weights Bucket and the Mirror keys in Grove Settings first.")
@@ -227,16 +257,37 @@ def mirror_weights_to_s3(model):
 	return play_name, rc
 
 
-def has_active_deployment(model, exclude=None):
-	"""True if `model` has a live deployment: >=1 Active Model Deployment (on-prem) OR a
-	Running standalone Pod (cloud). `exclude` drops one deployment name (used from Model
-	Deployment.on_trash, where the row still exists in the DB during delete)."""
+def is_reachable(model, exclude=None, provider=None):
+	"""True if a request for `model` has somewhere to go: >=1 Active Model Deployment (on-prem), a
+	Running standalone Pod (cloud), or a third-party provider we hold an endpoint and a key for.
+	`exclude` drops one deployment name (used from Model Deployment.on_trash, where the row still
+	exists in the DB during delete). `provider` is for a caller mid-insert — see vendor_base_url."""
 	filters = {"model": model, "status": "Active"}
 	if exclude:
 		filters["name"] = ("!=", exclude)
 	if frappe.db.get_all("Model Deployment", filters=filters, limit=1):
 		return True
-	return bool(frappe.db.get_all("Pod", filters={"model": model, "status": "Running"}, limit=1))
+	if frappe.db.get_all("Pod", filters={"model": model, "status": "Running"}, limit=1):
+		return True
+	# There is no engine to stand up, so nothing else would ever flip it published: a vendor model
+	# is reachable from the moment it exists. The key is not checked here because a provider cannot
+	# hold an address without one — validate refuses that. Whether a route is actually pushed is
+	# pathway_sync's call, and it does check.
+	# ponytail: clearing a provider's Base URL leaves its models published until something touches
+	# them. They emit no route, so they 404 rather than mis-route; re-sync on provider change if
+	# that ever shows up in practice.
+	return bool(vendor_base_url(model, provider))
+
+
+def vendor_base_url(model, provider=None):
+	"""Where a third party serves `model`, or "" when we serve it ourselves.
+
+	`provider` is passed by a doc that is still being inserted: its own row is not in the database
+	yet, so reading the link back off the name would find nothing and call a vendor model dark."""
+	provider = provider or frappe.db.get_value("Model", model, "provider")
+	if not provider:
+		return ""
+	return frappe.get_cached_doc("Model Provider", provider).base_url or ""
 
 
 # The fields an engine derives its launch arguments from — read live off the Model, never mirrored
@@ -265,6 +316,6 @@ def sync_published(model, exclude=None):
 	skips validate (no recursion) and is cheap."""
 	if not model or not frappe.db.exists("Model", model):
 		return
-	want = 1 if has_active_deployment(model, exclude=exclude) else 0
+	want = 1 if is_reachable(model, exclude=exclude) else 0
 	if frappe.db.get_value("Model", model, "published") != want:
 		frappe.db.set_value("Model", model, "published", want)

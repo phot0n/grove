@@ -284,9 +284,13 @@ def _gateway_routes():
 	# Which endpoints the model answers on. Stamped per row because deploy:<model> is the only
 	# thing pushed per model — a separate record would be a new namespace and a new push for one
 	# short string. Blank means unrestricted, which is what a Model predating the field reads as.
-	modality = {
-		m.name: m.modality or "" for m in frappe.get_all("Model", fields=["name", "modality"])
-	}
+	models = frappe.get_all(
+		"Model", fields=["name", "modality", "model_id", "upstream_model_id", "provider", "published"]
+	)
+	modality = {m.name: m.modality or "" for m in models}
+	# Resolved once, not per model: there are a handful of providers and thousands of models.
+	vendors = _vendor_endpoints()
+	upstream = {m.name: _upstream_model(m, m.provider in vendors) for m in models}
 	routes = {}
 	targets = _ingress_targets()
 	# One row per (model, ingress), so several deployments behind one ingress fold together
@@ -319,9 +323,16 @@ def _gateway_routes():
 			"server": d.inference_server or d.name,  # which box it is on
 			"kind": "direct",
 			"modality": modality.get(d.model, ""),
+			"upstream_model": upstream.get(d.model, ""),
 		})
 	for (model, _ingress), row in folded.items():
-		routes.setdefault(model, []).append({**row, "modality": modality.get(model, "")})
+		routes.setdefault(model, []).append({
+			**row,
+			"modality": modality.get(model, ""),
+			# The rewrite happens here, not on the ingress: the gateway is the last hop that reads
+			# a body, and an ingress is handed the model as a header instead.
+			"upstream_model": upstream.get(model, ""),
+		})
 
 	# Standalone serving Pods (a vLLM image serving the Model directly — no Model Deployment)
 	# register the same way: deploy:<model> → engine. Only Running pods with a derived
@@ -351,10 +362,64 @@ def _gateway_routes():
 			# ingress. Provider TLS already covers the hop.
 			"kind": "direct",
 			"modality": modality.get(p.model, ""),
+			# The one case a local route carries this: a custom image advertises its own model
+			# name, and asking it for the Grove id is a 400.
+			"upstream_model": upstream.get(p.model, ""),
 		})
+	_add_vendor_routes(routes, models, vendors, modality, upstream)
 	for rows in routes.values():
 		rows.sort(key=lambda r: r["deployment"])  # stable hash whatever the query order
 	return routes
+
+
+def _upstream_model(model, is_vendor):
+	"""What the upstream is asked for, or "" to send the id the caller used.
+
+	An override wins wherever it is set — that is the one thing that reaches a container image
+	advertising its own name. Otherwise a vendor gets the bare id, since our namespace is not its,
+	and everything we run ourselves gets "", because an engine is started under the full Grove id
+	and rewriting it would ask for a name no engine answers to."""
+	if model.upstream_model_id:
+		return model.upstream_model_id
+	return model.model_id if is_vendor else ""
+
+
+def _vendor_endpoints():
+	"""{provider: (base_url, api_key, api_version)} for every third party we can actually dial.
+	A provider is only dialable as a whole — an address without a key is not a route."""
+	out = {}
+	for name in frappe.get_all("Model Provider", pluck="name"):
+		provider = frappe.get_cached_doc("Model Provider", name)
+		if not provider.base_url:
+			continue
+		# get_password, not the field: a saved Password column reads back as asterisks and would
+		# pass any truthiness check while carrying nothing.
+		api_key = provider.get_password("api_key", raise_exception=False)
+		if api_key:
+			out[name] = (provider.base_url, api_key, provider.api_version or "")
+	return out
+
+
+def _add_vendor_routes(routes, models, vendors, modality, upstream):
+	"""One row per published Model a third party serves. No engine, no placement, no capacity of
+	ours to divide — the vendor's own 429 is the only cap there is, so capacity stays 0 and the
+	provider names itself as the deployment that served the request."""
+	for model in models:
+		if not model.published or model.provider not in vendors:
+			continue
+		base_url, api_key, api_version = vendors[model.provider]
+		routes.setdefault(model.name, []).append({
+			"engine_url": base_url,
+			"internal_key": api_key,
+			"healthy": True,
+			"capacity": 0,
+			"deployment": model.provider,
+			"server": model.provider,
+			"kind": "provider",
+			"modality": modality.get(model.name, ""),
+			"upstream_model": upstream.get(model.name, ""),
+			"api_version": api_version,
+		})
 
 
 def _owned_boxes(ingress_name):

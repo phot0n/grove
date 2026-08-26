@@ -109,6 +109,20 @@ the bare form was deliberately broken, because routing keys on `deploy:<id>` whi
 against the string the caller *sent*, so a route key with no matching grant is a 403 before routing
 is ever consulted.
 
+The provider is not only a prefix. Give a `Model Provider` a Base URL and a key and its published
+models route straight to that vendor — a `kind: "provider"` row naming the provider as the placement,
+with no deployment, no pod and no capacity of ours to divide. What the vendor is *asked* for is the
+route's `upstream_model`, which the control plane computes in one place (`_upstream_model`):
+
+| | sent upstream |
+|---|---|
+| `Upstream Model ID` set on the Model | that string, whatever the route kind — the only thing that reaches a container image advertising its own name |
+| a vendor, no override | the bare id (`claude-4-5`) — our namespace is not theirs |
+| anything we run | **nothing** — blank, because the engine's `--served-model-name` IS the full Grove id |
+
+Access, routing, metering and `/v1/models` all key on the id the caller sent, so the rewrite never
+desyncs a grant from a route, and usage lands against the Grove model whatever the vendor calls it.
+
 ## Scheduled jobs (`hooks.py`)
 
 | When | Job | Note |

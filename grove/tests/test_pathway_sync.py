@@ -50,7 +50,8 @@ class TestGatewayRoutes(unittest.TestCase):
 				return [frappe._dict(name=m, modality="text") for m in models]
 			if doctype == "Pod":
 				return list(pods)
-			if doctype in ("Ingress Server", "Inference Server"):
+			if doctype in ("Ingress Server", "Inference Server", "Model Provider"):
+				# No third party in this suite: every model here is one we run ourselves.
 				return []
 			if doctype == "Engine Image":
 				# No rows, so every placement's kind resolves to vllm — the default a placement
@@ -674,7 +675,6 @@ class TestSyncProjection(unittest.TestCase):
 		):
 			pathway_sync.sync_projection(proxies=[], ingresses=["ing1"])
 		self.assertEqual([(a[0], a[1]) for a in seen], [("Ingress Server", "ing1")])
-
 
 
 class TestTheTickIsTheOnlyAutomaticPush(unittest.TestCase):
