@@ -3,7 +3,7 @@
 An Inference Platform.
 
 Grove is the **control plane**: it provisions boxes and projects state onto them. The **data plane** is
-a Go agent, `grove-gateway`, which lives in its own repo — this app never sits on a request path.
+a Go agent, `pathway`, which lives in its own repo — this app never sits on a request path.
 
 ### Where things are
 
