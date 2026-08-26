@@ -17,6 +17,7 @@ from grove.grove.doctype.model_deployment.model_deployment import (
 	_vllm_extravars,
 	reconfigure_deployment,
 )
+from grove.serving.base import DEFAULT_MAX_MODEL_LEN, parse_context_length
 from grove.serving.custom import CustomEngine
 
 MODULE = "grove.grove.doctype.model_deployment.model_deployment"
@@ -176,8 +177,11 @@ class TestGpuInventory(unittest.TestCase):
 	"""Pinned GPUs are checked and their display columns filled from the Inference Server's
 	inventory — a deployment never reads a Machine itself."""
 
-	def fill(self, gpu_index, on_box):
+	def fill(self, gpu_index, on_box, max_model_len=None):
 		"""The deployment's GPU row after validation against the box's cards."""
+		return self.validated(gpu_index, on_box, max_model_len).gpus[0]
+
+	def validated(self, gpu_index, on_box, max_model_len=None):
 		row = SimpleNamespace(gpu_index=gpu_index, gpu_model=None, vram_gb=None)
 		doc = SimpleNamespace(
 			inference_server="box",
@@ -186,11 +190,24 @@ class TestGpuInventory(unittest.TestCase):
 			reject_claimed_gpus=lambda: None,
 			tensor_parallel_size=0,
 			serve_command="",
-			engine=SimpleNamespace(placement_errors=[], tensor_parallel_size=1, command="serve …"),
+			max_model_len=max_model_len,
+			engine=SimpleNamespace(
+				placement_errors=[],
+				tensor_parallel_size=1,
+				command="serve …",
+				max_model_len=parse_context_length(max_model_len) or DEFAULT_MAX_MODEL_LEN,
+			),
 		)
 		with patch.object(frappe, "throw", side_effect=frappe.ValidationError):
 			ModelDeployment._validate_gpus(doc)
-		return row
+		return doc
+
+	def test_a_context_length_suffix_is_stored_as_tokens(self):
+		# Same rule the Pod side keeps: what the field holds after a save is what the engine ran
+		# with, so nothing downstream parses it a second time.
+		card = SimpleNamespace(gpu_index=0, gpu_model="H100", vram_gb=80)
+		self.assertEqual(self.validated(0, [card], "128k").max_model_len, "131072")
+		self.assertIsNone(self.validated(0, [card]).max_model_len)
 
 	def test_display_columns_come_from_the_box(self):
 		card = SimpleNamespace(gpu_index=1, gpu_model="H100", vram_gb=80)

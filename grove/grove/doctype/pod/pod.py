@@ -43,7 +43,7 @@ class Pod(Document):
 		gpu_type_id: DF.Data | None
 		health_path: DF.Data | None
 		kv_cache_dtype: DF.Literal["auto", "fp8"]
-		max_model_len: DF.Int
+		max_model_len: DF.Data | None
 		max_num_seqs: DF.Int
 		model: DF.Link
 		monitoring_agent: DF.Link | None
@@ -120,6 +120,11 @@ class Pod(Document):
 		# asked for it.
 		if engine.has_api_key and not self.api_key:
 			self.api_key = secrets.token_hex(24)  # vLLM --api-key via VLLM_API_KEY env
+		# Store what actually reaches --max-model-len. The suffix is input sugar, so a doc that
+		# kept '128k' would leave the real number derivable only by re-parsing it. Blank stays
+		# blank — that is how a placement asks for the engine default.
+		if self.max_model_len:
+			self.max_model_len = str(engine.max_model_len)
 		if errors := engine.placement_errors:
 			frappe.throw("<br>".join(errors))
 		self.serve_command = engine.command

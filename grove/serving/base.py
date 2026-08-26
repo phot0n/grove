@@ -25,6 +25,34 @@ class EngineError(Exception):
 	implements. Raised, never thrown: the doctype layer turns it into frappe.throw."""
 
 
+# Suffixes an operator actually types. A context length is a power of two — 128k is 131072, not
+# 128000 — which is the number the repo's config.json declares and the only one vLLM accepts
+# without the long-context override.
+_CONTEXT_MULTIPLIERS = {"k": 1024, "m": 1024 * 1024}
+
+
+def parse_context_length(value):
+	"""A context length as typed → tokens. `32k` → 32768, `128k` → 131072, `1m` → 1048576; a bare
+	number is already tokens. Blank is 0, so the caller picks its own default."""
+	text = str(value or "").strip().lower()
+	if not text:
+		return 0
+	multiplier = _CONTEXT_MULTIPLIERS.get(text[-1], 1)
+	tokens = _to_int(text[:-1] if multiplier > 1 else text, value) * multiplier
+	if tokens <= 0:
+		raise EngineError(f"Context length '{value}' has to be positive.")
+	return tokens
+
+
+def _to_int(text, typed):
+	try:
+		return int(text)
+	except ValueError:
+		raise EngineError(
+			f"'{typed}' is not a context length. Give tokens (131072) or a suffix (32k, 128k, 1m)."
+		) from None
+
+
 class Engine(ABC):
 	"""One placement of one Model: what starts it, what environment it needs, what proves it
 	serves, and what the routing side may hold it to.
@@ -68,7 +96,7 @@ class Engine(ABC):
 		self.gpu_vram_gb = gpu_vram_gb
 		self.kv_cache_dtype = kv_cache_dtype or "auto"
 		self.gpu_memory_utilization = gpu_memory_utilization or DEFAULT_GPU_MEMORY_UTILIZATION
-		self.max_model_len = int(max_model_len or DEFAULT_MAX_MODEL_LEN)
+		self.max_model_len = parse_context_length(max_model_len) or DEFAULT_MAX_MODEL_LEN
 		# 0 = leave it to vLLM, which sizes it off the model and the KV cache it ends up with.
 		# Deliberately not defaulted like max_num_seqs: the right number depends on chunked
 		# prefill and the model kind, and nothing reads it back the way the gateway reads the

@@ -176,9 +176,9 @@
    "options": "auto\nFLASH_ATTN\nXFORMERS\nFLASHINFER"
   },
   {
-   "description": "\u2192 --max-model-len. Cap for the KV cache; \u2264 the model's native context unless the override below is ticked. Blank = 8192. Depends on this box's VRAM headroom.",
+   "description": "\u2192 --max-model-len. Cap for the KV cache; \u2264 the model's native context unless the override below is ticked. Blank = 8192. Depends on this box's VRAM headroom. Takes a suffix \u2014 32k, 128k, 1m \u2014 or a plain token count.",
    "fieldname": "max_model_len",
-   "fieldtype": "Int",
+   "fieldtype": "Data",
    "label": "Max Model Len"
   },
   {

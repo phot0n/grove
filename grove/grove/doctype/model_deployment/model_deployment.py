@@ -52,7 +52,7 @@ class ModelDeployment(Document):
 		internal_api_key: DF.Password | None
 		kv_cache_dtype: DF.Literal["auto", "fp8"]
 		log_lines: DF.Int
-		max_model_len: DF.Int
+		max_model_len: DF.Data | None
 		max_num_batched_tokens: DF.Int
 		max_num_seqs: DF.Int
 		model: DF.Link
@@ -182,6 +182,11 @@ class ModelDeployment(Document):
 		engine = self.engine
 		if errors := engine.placement_errors:
 			frappe.throw("<br>".join(errors))
+		# Store what actually reaches --max-model-len. The suffix is input sugar, so a doc that
+		# kept '128k' would leave the real number derivable only by re-parsing it. Blank stays
+		# blank — that is how a placement asks for the engine default.
+		if self.max_model_len:
+			self.max_model_len = str(engine.max_model_len)
 		self.tensor_parallel_size = engine.tensor_parallel_size
 		# The preview, from the same builder the deploy uses — so what is shown is what runs.
 		self.serve_command = engine.command

@@ -230,6 +230,7 @@ def serving_pod(
 	health_path=None,
 	engine_kind="vllm",
 	streaming=False,
+	max_model_len=None,
 ):
 	model = {"hf_repo": "Qwen/Qwen3-35B", "modality": "text"}
 	if streaming:
@@ -241,9 +242,10 @@ def serving_pod(
 		public_ip=public_ip,
 		model="Qwen/Qwen3-35B",
 		health_path=health_path,
+		max_model_len=max_model_len,
 		# The real class, not a stub: an Engine takes a plain mapping and no site, so the pod
 		# simply carries the one its doctype property would have built.
-		engine=build_engine(engine_kind, "qwen3-35b", model, port=8080),
+		engine=build_engine(engine_kind, "qwen3-35b", model, port=8080, max_model_len=max_model_len),
 		ports=[
 			SimpleNamespace(internal_port=22, protocol="tcp", external_port=22001),
 			SimpleNamespace(internal_port=8080, protocol=protocol, external_port=external_port),
@@ -444,6 +446,28 @@ class TestServePortIsOpened(unittest.TestCase):
 			Pod.validate(custom)
 		throw.assert_not_called()
 		self.assertEqual(custom.serve_command, "")
+
+
+class TestContextLengthIsStored(unittest.TestCase):
+	"""A suffix is how it was typed, not what is kept. What the field holds after a save is the
+	number the engine was started with, so nothing downstream has to parse it again."""
+
+	def validated(self, max_model_len):
+		pod = serving_pod(engine_kind="custom", max_model_len=max_model_len)
+		with patch("grove.grove.doctype.pod.pod.frappe.throw") as throw:
+			Pod.validate(pod)
+		throw.assert_not_called()
+		return pod.max_model_len
+
+	def test_a_suffix_is_normalised_to_tokens(self):
+		self.assertEqual(self.validated("128k"), "131072")
+
+	def test_a_number_already_in_tokens_is_left_alone(self):
+		self.assertEqual(self.validated("131072"), "131072")
+
+	def test_blank_stays_blank(self):
+		# Writing the engine default back would make "use whatever the engine picks" unsayable.
+		self.assertIsNone(self.validated(None))
 
 
 if __name__ == "__main__":

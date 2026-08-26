@@ -5,7 +5,14 @@ what a custom image answers. Pure — an engine takes a plain mapping, so no sit
 
 import unittest
 
-from grove.serving.base import Engine, EngineError, build_engine, engine_class
+from grove.serving.base import (
+	DEFAULT_MAX_MODEL_LEN,
+	Engine,
+	EngineError,
+	build_engine,
+	engine_class,
+	parse_context_length,
+)
 from grove.serving.custom import CustomEngine
 from grove.serving.vllm import VllmEngine
 
@@ -59,6 +66,46 @@ class TestEngineDispatch(unittest.TestCase):
 		# contract itself must be impossible.
 		with self.assertRaises(TypeError):
 			Engine("qwen3-35b", {}, port=8080)
+
+
+class TestContextLength(unittest.TestCase):
+	"""What an operator types in Max Model Len. The point is not having to look up that 128k is
+	131072 — a context length is a power of two, so the suffix is 1024, never 1000."""
+
+	def test_a_suffix_is_a_power_of_two(self):
+		self.assertEqual(parse_context_length("32k"), 32768)
+		self.assertEqual(parse_context_length("64k"), 65536)
+		self.assertEqual(parse_context_length("128k"), 131072)
+		self.assertEqual(parse_context_length("256k"), 262144)
+		self.assertEqual(parse_context_length("1m"), 1048576)
+
+	def test_case_and_spacing_are_not_the_operators_problem(self):
+		self.assertEqual(parse_context_length(" 128K "), 131072)
+
+	def test_a_bare_number_is_already_tokens(self):
+		# Every placement saved before the suffix existed holds one of these.
+		self.assertEqual(parse_context_length(131072), 131072)
+		self.assertEqual(parse_context_length("131072"), 131072)
+
+	def test_blank_defers_to_the_caller(self):
+		self.assertEqual(parse_context_length(""), 0)
+		self.assertEqual(parse_context_length(None), 0)
+
+	def test_nonsense_fails_here_rather_than_on_the_box(self):
+		# vLLM would take the flag, refuse to start, and the failure would land minutes later
+		# inside a play with nothing naming the cause.
+		for typed in ("128kb", "lots", "12x", "-1", "0", "1.5k"):
+			with self.subTest(typed), self.assertRaises(EngineError):
+				parse_context_length(typed)
+
+	def test_the_engine_serves_what_was_typed(self):
+		engine = build_engine("vllm", "qwen3-35b", dict(CHAT_MODEL), port=8080, max_model_len="128k")
+		self.assertEqual(engine.max_model_len, 131072)
+		self.assertEqual(engine.args[engine.args.index("--max-model-len") + 1], "131072")
+
+	def test_blank_still_lands_on_the_engine_default(self):
+		engine = build_engine("vllm", "qwen3-35b", dict(CHAT_MODEL), port=8080)
+		self.assertEqual(engine.max_model_len, DEFAULT_MAX_MODEL_LEN)
 
 
 class TestCustomEngine(unittest.TestCase):

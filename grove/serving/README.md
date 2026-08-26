@@ -42,6 +42,20 @@ proof.
 *separate* slots: the positional unquoted, every flag quoted. That quoting is also what stops an
 operator's Startup Command reaching the shell, so the two must not be collapsed into one string.
 
+## Context length is typed, not looked up
+
+`Max Model Len` on a Pod or a Model Deployment is a `Data` field, and `parse_context_length` in
+`base.py` turns what was typed into tokens: `32k` → 32768, `128k` → 131072, `1m` → 1048576. The
+multiplier is 1024 and never 1000 — that is the number a repo's `config.json` declares, and the
+only one vLLM accepts without `VLLM_ALLOW_LONG_MAX_MODEL_LEN`. A bare number is already tokens, so
+every placement saved before the suffix existed reads back unchanged.
+
+Parsed once, in `Engine.__init__`, so both placements get it from the one builder they already
+share, and each `validate` writes the parsed number back onto the field — what is stored is
+what reaches `--max-model-len`, and the suffix is only how it was typed. Blank stays blank:
+that is how a placement asks for the engine default. Anything that is not a context length raises `EngineError` while the doc is being saved,
+rather than being handed to `--max-model-len` and failing minutes later inside a play.
+
 ## Order is load-bearing in `env()`
 
 `docker --env-file` is line-ordered and the on-prem template iterates `.items()`, so reordering the
