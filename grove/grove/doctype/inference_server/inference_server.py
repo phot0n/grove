@@ -7,6 +7,7 @@ from frappe.model.document import Document
 
 from grove import failure
 from grove.ansible import AnsibleHost
+from grove.grove.doctype.model_deployment.model_deployment import GPU_CLAIMING_STATUSES
 from grove.monitoring import run_exporters_play
 from grove.naming import GeneratedName
 from grove.utils import validate_id_safe_name
@@ -122,8 +123,10 @@ class InferenceServer(GeneratedName, AnsibleHost, Document):
 	@frappe.whitelist()
 	def get_gpu_allocation(self):
 		"""The box's GPUs and which deployments hold them, computed live: the cards come
-		from the Machine, the claims from every Active Model Deployment on this server.
-		Nothing is stored, so it can't drift out of step with what's actually running.
+		from the Machine, the claims from every Model Deployment on this server whose status
+		still owns its cards. Nothing is stored, so it can't drift out of step with what's
+		really there — and the statuses come from the deployment module rather than a second
+		list here, so this panel and the check that refuses a clash can never disagree.
 
 		Two deployments naming the same CUDA index is not prevented anywhere — the row
 		reports every claimant so the clash is visible rather than silently halving VRAM."""
@@ -131,7 +134,7 @@ class InferenceServer(GeneratedName, AnsibleHost, Document):
 		claims = {}
 		for deployment in frappe.get_list(
 			"Model Deployment",
-			filters={"inference_server": self.name, "status": "Active"},
+			filters={"inference_server": self.name, "status": ["in", GPU_CLAIMING_STATUSES]},
 			fields=["name", "model"],
 		):
 			for row in frappe.get_list(

@@ -16,13 +16,16 @@ from grove.utils import is_env_key, is_env_value
 
 
 ENGINE_PORT_BASE = 8080
-# Only teardown takes the container off the box, so only Terminated releases what it held.
-# Everything else — Inactive included, since Start expects the same port and GPUs back —
-# keeps its claim on the box.
+# Only teardown takes the container off the box, so only Terminated releases the port. Inactive
+# keeps its: Start expects the same one back, and an unused port costs the box nothing.
 _PORT_FREE_STATUSES = ("Terminated",)
-# Statuses whose deployment still owns its GPUs: one is serving on them, the other is a stop
-# that intends to come back.
-_GPU_CLAIMING_STATUSES = ("Active", "Inactive")
+# Statuses whose deployment still owns its GPUs. Provisioning is one of them: deploy_model
+# checks the claim BEFORE it flips the status, so a second deploy started during the first
+# one's play would find the cards free and land on them too. Broken is another —
+# --restart unless-stopped means a crash-looping engine keeps coming back onto its cards.
+# Inactive is not: VRAM is not a reservation and a stopped container holds none of it, so its
+# cards are offered to siblings and Start re-checks before it puts an engine back on them.
+GPU_CLAIMING_STATUSES = ("Provisioning", "Active", "Broken")
 
 
 class ModelDeployment(Document):
@@ -195,10 +198,10 @@ class ModelDeployment(Document):
 		"""A GPU backs one engine at a time — two vLLMs on one card split its VRAM and both
 		then OOM at a size each thought it had. Read live off the other deployments holding
 		GPUs on this box rather than a stored flag, so it always matches what is really there.
-		A stopped one counts: its VRAM is free right now, but Start puts an engine back on
-		those cards. Called on save for early feedback, and again at deploy time because a
-		sibling can go Active in between (status moves via db.set_value, which skips
-		validate)."""
+		A stopped one does not count — its VRAM is genuinely free — so its cards are offered
+		to siblings and Start is what re-takes them. Called on save for early feedback, again
+		at deploy time and again on Start, because a sibling can move in between any two of
+		them (status moves via db.set_value, which skips validate)."""
 		declared = {int(r.gpu_index) for r in self.gpus or []}
 		if not (declared and self.inference_server):
 			return
@@ -207,7 +210,7 @@ class ModelDeployment(Document):
 			filters={
 				"inference_server": self.inference_server,
 				"name": ["!=", self.name or ""],
-				"status": ["in", _GPU_CLAIMING_STATUSES],
+				"status": ["in", GPU_CLAIMING_STATUSES],
 			},
 			pluck="name",
 		)
@@ -335,29 +338,33 @@ class ModelDeployment(Document):
 
 	@frappe.whitelist()
 	def start(self):
-		"""Button: start the container Stop left on the box. → Active."""
+		"""Button: start the container Stop left on the box. → Active.
+
+		The GPU claim is re-checked first: Inactive released these cards, so a sibling may have
+		been placed on them while this was stopped. Nothing about `docker start` would notice —
+		two engines on one card split its VRAM and both OOM later, at a size each thought it
+		had — so this refuses on the button instead."""
+		self.reject_claimed_gpus()
 		self.set_container_running(True)
 
 	def set_container_running(self, running):
-		"""Run docker start/stop and set the status from what the container actually does
-		afterwards — run_command reports output, not an exit code, so the state is read back
-		rather than assumed."""
-		server = self.server
-		action = "start" if running else "stop"
-		# `docker stop` waits out the engine's SIGTERM grace before it kills it.
-		output = server.run_command(["docker", action, self.container_name], timeout=120)
-		state = server.run_command(
-			["docker", "inspect", "--format", "{{.State.Running}}", self.container_name]
+		"""Queue the container-state play. Played rather than run inline: this changes the box,
+		which is a role's job and not run_command's, and a lifecycle action that leaves no
+		Ansible Play is one nobody can read back afterwards. Enqueued for the same reason
+		Teardown is — `docker stop` waits out the engine's SIGTERM grace."""
+		self.server  # resolved here so a missing box fails on the button, not in a worker
+		frappe.enqueue(
+			"grove.grove.doctype.model_deployment.model_deployment.set_container_state",
+			queue="long",
+			timeout=600,
+			model_deployment=self.name,
+			running=running,
 		)
-		if state != str(running).lower():
-			frappe.throw(
-				f"{self.container_name} on {server.name} did not {action} — docker said "
-				f"'{output or state}'. Deploy to recreate it if it is gone."
-			)
-		self.db_set("status", "Active" if running else "Inactive")
-		from grove.grove.doctype.model.model import sync_published
-
-		sync_published(self.model)
+		frappe.msgprint(
+			f"{'Starting' if running else 'Stopping'} this instance on "
+			f"{self.inference_server} — watch its Ansible Plays.",
+			alert=True,
+		)
 
 	@frappe.whitelist()
 	def teardown(self):
@@ -648,6 +655,40 @@ def _post_play_state(md, rc):
 	if rc != 0:
 		return {"status": "Broken"}
 	return {"status": "Active", "engine_url": md.derived_engine_url}
+
+
+@failure.reports_failure(mark_broken=False, doctype="Model Deployment")
+def set_container_state(model_deployment, running):
+	"""Job: start or stop ONE deployment's container, leaving everything else it holds on the
+	box. Not mark_broken: a stop that failed is an engine still serving, which is the state the
+	doc already claims — Broken would take it out of the route table over a button that did
+	nothing.
+
+	The play proves the container reached the state, so only rc 0 moves the status. That
+	ordering is the point: `status` is what _gateway_routes routes on, so writing it ahead of
+	the play would publish a stopped engine, or dark a running one."""
+	md = frappe.get_doc("Model Deployment", model_deployment)
+	inf = md.server
+
+	play_name, rc = inf.run_playbook(
+		"container_state.yml",
+		extravars={
+			"vllm_instance": _instance_slug(md.name),
+			"vllm_container_running": bool(running),
+		},
+		reference_doctype="Model Deployment",
+		reference_docname=md.name,
+	)
+
+	if rc == 0:
+		frappe.db.set_value(
+			"Model Deployment", md.name, "status", "Active" if running else "Inactive"
+		)
+		from grove.grove.doctype.model.model import sync_published
+
+		sync_published(md.model)
+		frappe.db.commit()
+	return play_name, rc
 
 
 @failure.reports_failure(mark_broken=False, doctype="Model Deployment")

@@ -35,15 +35,6 @@
     - "{{ vllm_home }}/keys"
     - "{{ vllm_container_dir }}"
 
-# A GGUF repo publishes a dozen quantizations of one model, so vLLM takes `repo:QUANT` and
-# serves a single file out of it. `hf download` has no such ref — it wants the repo, and left
-# alone would pull every quantization. Split the suffix back off and pass it as the file glob.
-# Set here rather than beside the download because the space check below needs the repo too.
-- name: Split a GGUF quantization off the model ref
-  ansible.builtin.set_fact:
-    vllm_download_repo: "{{ vllm_model.split(':')[0] }}"
-    vllm_download_glob: "{{ '*' + vllm_model.split(':')[1] + '.gguf' if ':' in vllm_model else '' }}"
-
 # Where the weights land: on the data volume by default, on their own mount (the
 # instance-store NVMe) when the control plane pointed vllm_hf_home outside vllm_home.
 - name: Note whether the weights share the data volume

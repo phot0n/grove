@@ -7,6 +7,10 @@ const LOG_PING_INTERVAL = 15000;
 
 frappe.ui.form.on('Model Deployment', {
 	fetch_engine_logs(frm) {
+		// A running stream is stopped, not left to append onto the tail this is about to fetch:
+		// it owns the same pane, and it holds a background worker, an SSH connection and a
+		// `docker logs -f` on the box for as long as it runs.
+		stop_log_stream(frm);
 		// Both readers write the same pane, so each starts from an empty one — otherwise a fetch
 		// after a stream (or the other way round) reads as one log with a jump in the middle.
 		clear_logs(frm);
@@ -19,9 +23,7 @@ frappe.ui.form.on('Model Deployment', {
 
 	toggle_log_stream(frm) {
 		if (frm.log_streaming) {
-			// The job takes a moment to notice Stop; flip the button now so it doesn't look stuck.
-			frm.call('stop_engine_logs');
-			set_log_button(frm, false);
+			stop_log_stream(frm);
 		} else {
 			clear_logs(frm);
 			frm.call('stream_engine_logs').then(() => set_log_button(frm, true));
@@ -93,12 +95,24 @@ function setup_log_view(frm) {
 
 	frappe.realtime.off('grove_log');
 	frappe.realtime.on('grove_log', ({ lines, done }) => {
-		// The job takes a moment to notice Stop — drop what it publishes in the meantime.
-		if (!frm.log_streaming && !done) return;
-		frm.log_lines = frm.log_lines.concat(lines || []).slice(-LOG_LINE_LIMIT);
-		render_logs(frm);
+		// The job takes a moment to notice Stop, and its last batch rides the 'done' event —
+		// drop both once we are no longer streaming. The pane belongs to the fetch by then, and
+		// appending to it is the jump-in-the-middle that clearing was meant to prevent. The
+		// button still follows 'done', which is the one thing worth hearing after a stop.
+		if (frm.log_streaming) {
+			frm.log_lines = frm.log_lines.concat(lines || []).slice(-LOG_LINE_LIMIT);
+			render_logs(frm);
+		}
 		if (done) set_log_button(frm, false);
 	});
+}
+
+// The job takes a moment to notice Stop; flip the button now so it doesn't look stuck. Safe to
+// call when nothing is streaming, which is what lets Fetch call it unconditionally.
+function stop_log_stream(frm) {
+	if (!frm.log_streaming) return;
+	frm.call('stop_engine_logs');
+	set_log_button(frm, false);
 }
 
 function clear_logs(frm) {
