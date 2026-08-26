@@ -31,6 +31,13 @@ vLLM's rules — attention heads dividing by tensor-parallel size, the whole mod
 assume an engine that shards and loads the way vLLM does. A "neutral" shared implementation would
 start failing containers that have been serving fine.
 
+`warmup_request` is the one thing a custom image is asked to state rather than answer with an
+absence, and it is stated on the **Engine Image** (`warmup_path`, `warmup_body`) — which request
+proves an engine serves is a fact about the image, not about where it is placed, so a Pod and a
+Model Deployment of the same image warm up the same way. `VllmEngine` derives its own and ignores
+both fields; a custom image that names no path has no warmup, and the health gate is the whole
+proof.
+
 `args` and `repo` are both on the contract because the on-prem run script renders them into
 *separate* slots: the positional unquoted, every flag quoted. That quoting is also what stops an
 operator's Startup Command reaching the shell, so the two must not be collapsed into one string.

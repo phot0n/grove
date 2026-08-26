@@ -567,5 +567,6 @@ class TestWarmupGate(unittest.TestCase):
 		self.assertIn("vllm_warmup", self.warmup()["when"])
 
 	def test_a_modality_with_nothing_to_prove_skips_it(self):
-		# ServeCommand hands back {} for audio; the same guard covers a role run that sets nothing.
+		# The Engine hands back {} for audio, and for a custom image that names no warmup path;
+		# the same guard covers a role run that sets nothing.
 		self.assertIn("vllm_warmup_request | length > 0", self.warmup()["when"])

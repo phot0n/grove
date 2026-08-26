@@ -11,6 +11,7 @@ and asserted on without a site.
 What is concrete is placement arithmetic and Model facts, not engine policy: how many GPUs are left
 for tensor parallelism, and which weights these are, are the same answers whatever serves them."""
 
+import json
 import shlex
 from abc import ABC, abstractmethod
 
@@ -55,6 +56,8 @@ class Engine(ABC):
 		aliases=None,
 		extra_serve_args=None,
 		startup_command=None,
+		warmup_path=None,
+		warmup_body=None,
 		host="0.0.0.0",
 	):
 		self.model_name = model_name
@@ -81,6 +84,10 @@ class Engine(ABC):
 		# What a custom image is invoked with. Split here rather than at the placement so both
 		# planes hand the engine the same raw string the operator typed.
 		self.startup_command = shlex.split(startup_command or "")
+		# Off the Engine Image, not the placement: which request proves the engine serves is a fact
+		# about the image. Parsed here so both planes hand the engine the raw JSON as typed.
+		self.warmup_path = warmup_path or ""
+		self.warmup_body = json.loads(warmup_body) if warmup_body else {}
 		self.host = host
 
 	# --- Placement arithmetic and Model facts -----------------------------------
@@ -156,7 +163,10 @@ class Engine(ABC):
 		"""The smallest real inference this engine can serve → {"path": ..., "body": {...}}, or {}
 		when nothing is cheap enough to be worth proving. Proof of a forward pass under the name the
 		gateway routes on, which a 200 from a health path does not give. Empty turns the step off on
-		both planes — the Pod posts it in Python, the box posts it from the play."""
+		both planes — the Pod posts it in Python, the box posts it from the play.
+
+		Derived by an engine that knows the surface it serves; read off warmup_path/warmup_body by
+		one that does not."""
 
 	@property
 	@abstractmethod
@@ -181,6 +191,6 @@ def engine_class(engine_kind):
 
 
 def build_engine(engine_kind, model_name, model, **tuning):
-	"""One placement's Engine. `tuning` is the placement doc's own knobs — an unknown one is a
-	TypeError here rather than a flag that silently never applied."""
+	"""One placement's Engine. `tuning` is the placement doc's own knobs plus the Engine Image's —
+	an unknown one is a TypeError here rather than a flag that silently never applied."""
 	return engine_class(engine_kind)(model_name, model, **tuning)

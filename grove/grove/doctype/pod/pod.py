@@ -7,6 +7,7 @@ import secrets
 import frappe
 from frappe.model.document import Document
 
+from grove.grove.doctype.engine_image.engine_image import engine_tuning
 from grove.grove.doctype.model.model import launch_config
 from grove.serving.base import build_engine
 
@@ -73,14 +74,9 @@ class Pod(Document):
 
 	@property
 	def engine(self):
-		"""The Engine this pod's image serves with: the kind off its Engine Image, the Model's
-		launch config read live, and this pod's own tuning. A blank Engine Image reads as vllm, so
-		validate can reach here before the mandatory check has run."""
-		kind = (
-			frappe.get_cached_value("Engine Image", self.engine_image, "engine_kind")
-			if self.engine_image
-			else "vllm"
-		)
+		"""The Engine this pod's image serves with: the kind and the warmup off its Engine Image,
+		the Model's launch config read live, and this pod's own tuning."""
+		kind, image_tuning = engine_tuning(self.engine_image)
 		return build_engine(
 			kind,
 			self.model,
@@ -98,6 +94,7 @@ class Pod(Document):
 			aliases=self.aliases,
 			extra_serve_args=self.extra_serve_args,
 			startup_command=self.startup_command,
+			**image_tuning,
 		)
 
 	def before_insert(self):

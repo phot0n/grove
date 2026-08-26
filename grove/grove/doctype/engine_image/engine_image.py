@@ -1,6 +1,7 @@
 # Copyright (c) 2026, Grove and contributors
 # For license information, please see license.txt
 
+import json
 import re
 
 import requests
@@ -24,12 +25,43 @@ MANIFEST_TYPES = (
 
 
 class EngineImage(Document):
+	# begin: auto-generated types
+	# This code is auto-generated. Do not modify anything in this block.
+
+	from typing import TYPE_CHECKING
+
+	if TYPE_CHECKING:
+		from frappe.types import DF
+
+		cpu_architecture: DF.Literal["amd64", "arm64"]
+		engine_kind: DF.Literal["vllm", "custom"]
+		full_image: DF.Data | None
+		image_path: DF.Data
+		image_provider: DF.Link
+		size_gb: DF.Float
+		warmup_body: DF.Code | None
+		warmup_path: DF.Data | None
+	# end: auto-generated types
+
 	"""A container image an engine (e.g. vLLM) is spawned from. The registry host and the
 	pull credentials come from the linked Engine Image Provider, so they stay shared across
 	every image in that registry."""
 
 	def validate(self):
 		self.full_image = self.get_full_image()
+		self.validate_warmup_body()
+
+	def validate_warmup_body(self):
+		"""A body that does not parse here would parse at deploy time instead, on the box, minutes
+		in — and an array or a string is not a request body any of our callers can send."""
+		if not self.warmup_body:
+			return
+		try:
+			body = json.loads(self.warmup_body)
+		except ValueError as error:
+			frappe.throw(f"Warmup Body is not valid JSON: {error}")
+		if not isinstance(body, dict):
+			frappe.throw("Warmup Body must be a JSON object, e.g. {\"model\": \"…\", \"input\": \"ping\"}.")
 
 	def get_full_image(self):
 		"""'<registry host>/<image path>' — the ref handed to the cloud provider. A path that
@@ -155,6 +187,18 @@ class EngineImage(Document):
 		body = registry_json(response, f"{registry}'s token endpoint")
 		token = body.get("token") or body.get("access_token")
 		return {"Authorization": f"Bearer {token}"} if token else {}
+
+
+def engine_tuning(engine_image):
+	"""(engine_kind, the knobs the IMAGE contributes) for a placement's Engine — the warmup request,
+	whose shape only the image knows. A blank image reads as vllm, so a placement can build an
+	engine before its own mandatory check has run."""
+	if not engine_image:
+		return "vllm", {}
+	kind, path, body = frappe.get_cached_value(
+		"Engine Image", engine_image, ["engine_kind", "warmup_path", "warmup_body"]
+	)
+	return kind, {"warmup_path": path, "warmup_body": body}
 
 
 def registry_json(response, what):

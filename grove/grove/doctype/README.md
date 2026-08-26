@@ -28,7 +28,7 @@ one own**, because Grove's rule is that state has exactly one owner and everythi
 | `Model Deployment GPU` | Which GPUs that placement takes (child). |
 | `Pod` | A standalone RunPod vLLM instance. Fully self-contained — its own spawn/sync/restart/terminate, and it registers its own endpoint. Sends its **stored** `serve_command`, so it must be saved before it is re-spawned. |
 | `Pod Env` / `Pod Port` | That pod's environment and its port pool (children). |
-| `Engine Image` | The container image an engine is spawned from. |
+| `Engine Image` | The container image an engine is spawned from, and what only the image knows: its `engine_kind`, and for a `custom` one the warmup request (path + body) that proves it serves. Both placements read them, so the same image warms up the same way wherever it runs. |
 | `Engine Image Provider` | A registry and the credentials to pull from it. One record per registry. |
 
 ## Tenancy — who may call what, and what it cost

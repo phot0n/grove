@@ -11,66 +11,88 @@
   "engine_kind",
   "cpu_architecture",
   "full_image",
-  "size_gb"
+  "size_gb",
+  "column_break_wpdj",
+  "warmup_path",
+  "warmup_body"
  ],
  "fields": [
   {
+   "description": "Registry this image is pulled from; supplies the host prefix and the pull credentials.",
    "fieldname": "image_provider",
    "fieldtype": "Link",
+   "in_list_view": 1,
    "label": "Image Provider",
    "options": "Engine Image Provider",
-   "reqd": 1,
-   "in_list_view": 1,
-   "description": "Registry this image is pulled from; supplies the host prefix and the pull credentials."
+   "reqd": 1
   },
   {
+   "description": "Repository path and tag within the registry, e.g. 'vllm/vllm-openai:v0.11.0'. The registry host is prefixed automatically.",
    "fieldname": "image_path",
    "fieldtype": "Data",
-   "label": "Image Path",
-   "reqd": 1,
    "in_list_view": 1,
-   "description": "Repository path and tag within the registry, e.g. 'vllm/vllm-openai:v0.11.0'. The registry host is prefixed automatically."
+   "label": "Image Path",
+   "reqd": 1
   },
   {
+   "default": "vllm",
+   "description": "What is inside the image. 'vllm' \u2014 the entrypoint takes `vllm serve` arguments, so a placement derives them from the Model. 'custom' \u2014 the image serves on its own (an ASR container, say); no serve arguments are derived and the placement runs the image's own entrypoint plus whatever Startup Command is set.",
    "fieldname": "engine_kind",
    "fieldtype": "Select",
+   "in_list_view": 1,
    "label": "Engine Kind",
    "options": "vllm\ncustom",
-   "default": "vllm",
-   "reqd": 1,
-   "in_list_view": 1,
-   "description": "What is inside the image. 'vllm' — the entrypoint takes `vllm serve` arguments, so a placement derives them from the Model. 'custom' — the image serves on its own (an ASR container, say); no serve arguments are derived and the placement runs the image's own entrypoint plus whatever Startup Command is set."
+   "reqd": 1
   },
   {
+   "depends_on": "eval:doc.engine_kind == 'custom'",
+   "description": "Path POSTed once after the health gate to prove the engine runs a forward pass, e.g. '/v1/audio/transcriptions'. Only this image knows the surface it serves, so it is named here rather than per placement. Blank skips the step \u2014 the health gate is then the whole proof. Set the placement's Health Path alongside it: with no gate the warmup fires the moment the container starts, before anything is listening. A vllm image derives its own and ignores this.",
+   "fieldname": "warmup_path",
+   "fieldtype": "Data",
+   "label": "Warmup Path"
+  },
+  {
+   "depends_on": "eval:doc.engine_kind == 'custom'",
+   "description": "JSON object sent as that request's body \u2014 the smallest input the image accepts. Blank posts {}. Must parse to an object: a failure here fails the deploy, so keep it to something the image answers 200 to in a second or two.",
+   "fieldname": "warmup_body",
+   "fieldtype": "Code",
+   "label": "Warmup Body",
+   "options": "JSON"
+  },
+  {
+   "default": "amd64",
+   "description": "Architecture this image is built for. Matched against the box's at deployment, and used to pick the right entry out of a multi-arch tag when reading the size.",
    "fieldname": "cpu_architecture",
    "fieldtype": "Select",
+   "in_list_view": 1,
    "label": "CPU Architecture",
    "options": "amd64\narm64",
-   "default": "amd64",
-   "reqd": 1,
-   "in_list_view": 1,
-   "description": "Architecture this image is built for. Matched against the box's at deployment, and used to pick the right entry out of a multi-arch tag when reading the size."
+   "reqd": 1
   },
   {
+   "description": "Derived '/<img>' \u2014 the ref passed to the provider.",
    "fieldname": "full_image",
    "fieldtype": "Data",
-   "label": "Full Image",
-   "read_only": 1,
    "in_list_view": 1,
-   "description": "Derived '<registry host>/<image path>' \u2014 the ref passed to the provider."
+   "label": "Full Image",
+   "read_only": 1
   },
   {
+   "description": "Compressed size of this image's layers, summed off the registry's own manifest \u2014 what a first pull downloads. Docker writes it out larger than this: the layers are unpacked onto the box's disk. Press Fetch Size to read it.",
    "fieldname": "size_gb",
    "fieldtype": "Float",
-   "label": "Size (GB)",
-   "read_only": 1,
-   "precision": "2",
    "in_list_view": 1,
-   "description": "Compressed size of this image's layers, summed off the registry's own manifest \u2014 what a first pull downloads. Docker writes it out larger than this: the layers are unpacked onto the box's disk. Press Fetch Size to read it."
+   "label": "Size (GB)",
+   "precision": "2",
+   "read_only": 1
+  },
+  {
+   "fieldname": "column_break_wpdj",
+   "fieldtype": "Column Break"
   }
  ],
  "links": [],
- "modified": "2026-08-05 15:00:00.000000",
+ "modified": "2026-08-26 14:08:50.741921",
  "modified_by": "Administrator",
  "module": "Grove",
  "name": "Engine Image",
@@ -88,6 +110,7 @@
    "write": 1
   }
  ],
+ "row_format": "Dynamic",
  "sort_field": "modified",
  "sort_order": "DESC",
  "states": []

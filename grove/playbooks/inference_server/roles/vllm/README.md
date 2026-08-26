@@ -21,8 +21,8 @@ serving FP8 models. Codifies the runbook in [`../../../README.md`](../../README.
 4. Optionally pre-downloads the model weights, using the image's own `hf` into the
    box-shared cache every instance mounts.
 5. Renders the container's env file and run script, replaces the container when either
-   moved, and waits for `/v1/models` to return `200`.
-6. POSTs `vllm_warmup_request` once. A 200 from `/v1/models` only means the API server bound
+   moved, and waits for `vllm_health_path` to return `200`.
+6. POSTs `vllm_warmup_request` once. A 200 from the health path only means the API server bound
    its port; this is the first thing that asks the GPU to run a forward pass, so a kernel that
    cannot run on this card fails the play here rather than on a customer's request.
 
@@ -65,12 +65,12 @@ See [`defaults/main.yml`](defaults/main.yml) for the full list. Most-used:
 | `vllm_health_path` | `/health` | Polled by the deploy gate and the compile-cache push. Blank = no gate |
 | `vllm_engine_kind` | `vllm` | `custom` makes the engine proxy check the bearer, since the image checks nothing |
 | `vllm_warmup` | `true` | POST one real request after the health gate |
-| `vllm_warmup_request` | `{}` | `{path, body}` from `ServeCommand`; empty skips the step |
+| `vllm_warmup_request` | `{}` | `{path, body}` from the deployment's Engine — vLLM derives its own, a custom image names it on its Engine Image; empty skips the step |
 
 The individual serve flags (`--max-model-len`, `--gpu-memory-utilization`, the tool/reasoning
-parsers, …) are **not** role variables. Grove builds the full list in
-`grove/serve_command.py` (`ServeCommand`) from the Model ⊕ the Model Deployment and passes it
-as `vllm_serve_args`; the Pod path uses the same Engine, so the two can't drift. Running the
+parsers, …) are **not** role variables. Grove builds the full list in `grove/serving/` from the
+Model ⊕ the Model Deployment and passes it as `vllm_serve_args`; the Pod path uses the same
+Engine, so the two can't drift. Running the
 role by hand means passing the flags yourself:
 
 ```yaml
@@ -93,7 +93,7 @@ Grove derives (attention backend, HF token, long-max-len guard).
 
 ## Serving a different / non-Qwen model
 
-From Grove, edit the Model — the parsers are Model fields and `ServeCommand` reads them live.
+From Grove, edit the Model — the parsers are Model fields and `VllmEngine` reads them live.
 Running the role standalone, put them in `vllm_serve_args`:
 
 ```yaml

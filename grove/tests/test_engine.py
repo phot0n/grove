@@ -108,6 +108,30 @@ class TestCustomEngine(unittest.TestCase):
 		self.assertEqual(self.engine().health_path, "")
 		self.assertEqual(self.engine().warmup_request, {})
 
+	def test_the_image_can_name_the_request_that_proves_it_serves(self):
+		# The one thing a custom image is asked to state: nothing here can shape a request for a
+		# surface it does not know, so the Engine Image carries the path and the body.
+		engine = self.engine(
+			warmup_path="/v1/audio/transcriptions",
+			warmup_body='{"model": "nemotron-asr", "language": "en"}',
+		)
+		self.assertEqual(
+			engine.warmup_request,
+			{
+				"path": "/v1/audio/transcriptions",
+				"body": {"model": "nemotron-asr", "language": "en"},
+			},
+		)
+
+	def test_a_path_with_no_body_posts_an_empty_one(self):
+		self.assertEqual(
+			self.engine(warmup_path="/ready").warmup_request, {"path": "/ready", "body": {}}
+		)
+
+	def test_a_body_with_no_path_is_still_no_warmup(self):
+		# Nowhere to post it. Half-configured is off, not a guess at the path.
+		self.assertEqual(self.engine(warmup_body='{"input": "ping"}').warmup_request, {})
+
 	def test_grove_mints_it_no_key(self):
 		# pathway_sync ships the key as the route's internal_key, so minting one would send a
 		# bearer to an image that never asked for it.

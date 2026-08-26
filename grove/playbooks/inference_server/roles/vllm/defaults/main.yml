@@ -30,8 +30,8 @@ vllm_container_script: "{{ vllm_container_dir }}/{{ vllm_unit }}.sh"
 vllm_container_env_file: "{{ vllm_container_dir }}/{{ vllm_unit }}.env"
 
 # ── Serving infrastructure (model + tuning via extra-vars from provision.py) ──
-# vllm_serve_args is the whole `vllm serve` flag list, built by grove.serve_command
-# (ServeCommand). The run script only renders it.
+# vllm_serve_args is the whole flag list, built by the deployment's Engine (grove.serving).
+# The run script only renders it.
 vllm_port: 8080
 vllm_serve_args: []
 # Engine env vars: Grove's own (attention backend, HF token, long-max-len guard) with the

@@ -315,6 +315,12 @@ class TestWarmupRequest(unittest.TestCase):
 		request = serve(aliases="old-name").warmup_request
 		self.assertEqual(request["body"]["model"], "qwen3-35b")
 
+	def test_a_vllm_image_derives_its_own_and_ignores_the_images_warmup(self):
+		# The fields exist for an image whose surface we cannot know. vLLM's is known, and taking a
+		# typed-in path here would let one silently replace a request built from the Model.
+		request = serve(warmup_path="/ready", warmup_body='{"input": "ping"}').warmup_request
+		self.assertEqual(request["path"], "/v1/completions")
+
 	def test_audio_has_nothing_cheap_to_prove(self):
 		# Transcription wants a base64 audio file; an empty request turns the step off on both paths.
 		self.assertEqual(serve(dict(CHAT_MODEL, modality="audio")).warmup_request, {})

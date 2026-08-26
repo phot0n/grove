@@ -10,8 +10,9 @@ from grove.serving.base import Engine
 
 
 class CustomEngine(Engine):
-	"""The image is the whole story. Every answer here is the absence of one, and those absences
-	are the point — they are what the four `is_custom_engine` branches used to say."""
+	"""The image is the whole story. Almost every answer here is the absence of one, and those
+	absences are the point — they are what the four `is_custom_engine` branches used to say. The
+	exception is the warmup, which the Engine Image can state because it is a fact about the image."""
 
 	# What the routing side assumes, unchanged from what a custom placement advertises today. Not
 	# 0 ("no capacity of ours to divide"), which is arguably the honest number but would move the
@@ -58,8 +59,12 @@ class CustomEngine(Engine):
 
 	@property
 	def warmup_request(self):
-		"""No inference we know how to shape. The image's own readiness is the whole signal."""
-		return {}
+		"""What the Engine Image says proves it serves. Nothing here can shape a request for a
+		surface it does not know, so the image names the path and the body or there is no warmup at
+		all and the health gate is the whole proof."""
+		if not self.warmup_path:
+			return {}
+		return {"path": self.warmup_path, "body": self.warmup_body}
 
 	@property
 	def has_api_key(self):

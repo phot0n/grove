@@ -8,6 +8,7 @@ import frappe
 from frappe.model.document import Document
 
 from grove import failure
+from grove.grove.doctype.engine_image.engine_image import engine_tuning
 from grove.grove.doctype.model.model import launch_config
 from grove.naming import next_deployment_name
 from grove.serving.base import build_engine
@@ -68,14 +69,9 @@ class ModelDeployment(Document):
 
 	@property
 	def engine(self):
-		"""The Engine this deployment's image serves with: the kind off its Engine Image, the
-		Model's launch config read live, and this deployment's own tuning. A blank Engine Image
-		reads as vllm, so validate can reach here before the mandatory check has run."""
-		kind = (
-			frappe.get_cached_value("Engine Image", self.engine_image, "engine_kind")
-			if self.engine_image
-			else "vllm"
-		)
+		"""The Engine this deployment's image serves with: the kind and the warmup off its Engine
+		Image, the Model's launch config read live, and this deployment's own tuning."""
+		kind, image_tuning = engine_tuning(self.engine_image)
 		return build_engine(
 			kind,
 			self.model,
@@ -94,6 +90,7 @@ class ModelDeployment(Document):
 			aliases=self.aliases,
 			extra_serve_args=self.extra_serve_args,
 			startup_command=self.startup_command,
+			**image_tuning,
 		)
 
 	def autoname(self):
