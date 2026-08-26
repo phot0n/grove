@@ -33,13 +33,13 @@ IN_PROGRESS = ("Installing", "Provisioning")
 def report(doctype, name, title, detail, *, mark_broken=False):
 	"""Put a failure where someone will see it.
 
-	Three audiences, because they miss each other: the toast reaches whoever is still on the page,
-	the notification reaches them after they have closed it, and the comment is what is still there
-	next week when someone asks what happened to this box.
+	Two audiences, because they miss each other: the toast reaches whoever is still on the page, and
+	the notification reaches them after they have closed it. Neither is durable — what is still
+	there next week is the Error Log and the doc's own Ansible Plays.
 	"""
 	if not doctype or not name:
-		# A play with no reference doc — nothing to comment on and nothing to link a notification
-		# to. The job's Error Log is the record for that one.
+		# A play with no reference doc — nothing to link a notification to. The job's Error Log is
+		# the record for that one.
 		return
 	frappe.local.grove_failure_reported = True
 

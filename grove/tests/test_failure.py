@@ -7,7 +7,7 @@ on a missing password. No Ansible Play was ever created, nothing was written to 
 status stayed Installing forever — the only record was the RQ job's traceback, which someone had to
 know to go looking for.
 
-Pure. `frappe.local` and the four reporting calls are patched, so no site and no worker.
+Pure. `frappe.local` and the three reporting calls are patched, so no site and no worker.
 """
 
 import unittest
@@ -21,11 +21,10 @@ class Recorder:
 	"""Stands in for every side effect `report` has, so a test can assert on what was announced."""
 
 	def __init__(self):
-		self.comments, self.toasts, self.notifications, self.statuses = [], [], [], []
+		self.toasts, self.notifications, self.statuses = [], [], []
 
 	def patches(self):
 		return (
-			patch.object(failure, "_comment", lambda dt, n, m: self.comments.append((dt, n, m))),
 			patch.object(failure, "_toast", lambda dt, n, t, d: self.toasts.append((dt, n, t, d))),
 			patch.object(failure, "_notify", lambda dt, n, t, d: self.notifications.append((dt, n, t, d))),
 			patch.object(failure, "_mark_broken", lambda dt, n: self.statuses.append((dt, n))),
@@ -46,31 +45,30 @@ class Recorder:
 
 
 class TestReportReachesEveryAudience(unittest.TestCase):
-	"""Three channels because they miss each other: the toast reaches whoever is still on the page,
-	the notification reaches them after they close it, and the comment is what is still there next
-	week when someone asks what happened to this box."""
+	"""Two channels because they miss each other: the toast reaches whoever is still on the page,
+	and the notification reaches them after they close it."""
 
-	def test_a_failure_is_announced_three_ways(self):
+	def test_a_failure_is_announced_two_ways(self):
 		with Recorder() as rec:
 			failure.report("Gateway Server", "gw-1", "Provision failed", "no admin token")
-		self.assertEqual(1, len(rec.comments))
 		self.assertEqual(1, len(rec.toasts))
 		self.assertEqual(1, len(rec.notifications))
 
-	def test_the_comment_says_what_went_wrong(self):
+	def test_every_channel_says_what_went_wrong(self):
+		# Both carry title and detail separately, so neither can end up with only half the story.
 		with Recorder() as rec:
 			failure.report("Gateway Server", "gw-1", "Provision failed", "no admin token")
-		_, _, message = rec.comments[0]
-		self.assertIn("Provision failed", message)
-		self.assertIn("no admin token", message)
+		for _, _, title, detail in rec.toasts + rec.notifications:
+			self.assertEqual("Provision failed", title)
+			self.assertEqual("no admin token", detail)
 
 	def test_a_play_with_no_reference_doc_is_skipped(self):
-		# Nothing to comment on and nothing to link a notification to. The Error Log is the record
-		# for that one — announcing it against a blank doc would be worse than not announcing it.
+		# Nothing to link a notification to. The Error Log is the record for that one —
+		# announcing it against a blank doc would be worse than not announcing it.
 		with Recorder() as rec:
 			failure.report(None, None, "Play failed", "detail")
 			failure.report("Gateway Server", None, "Play failed", "detail")
-		self.assertEqual([], rec.comments + rec.toasts + rec.notifications)
+		self.assertEqual([], rec.toasts + rec.notifications)
 
 	def test_reporting_never_marks_broken_unless_asked(self):
 		with Recorder() as rec:
@@ -142,7 +140,7 @@ class TestTheDecoratorReportsAndReraises(unittest.TestCase):
 
 		with Recorder() as rec:
 			self.assertEqual("done", provision(self.failing_doc()))
-		self.assertEqual([], rec.comments + rec.toasts + rec.notifications)
+		self.assertEqual([], rec.toasts + rec.notifications)
 		self.assertEqual([], rec.statuses)
 
 	def test_one_failure_is_announced_once(self):
