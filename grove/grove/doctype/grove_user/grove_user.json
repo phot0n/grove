@@ -49,6 +49,7 @@
    "description": "System-set: this user hit their monthly token budget, so every key they hold is rejected with 429 (pushed once, as limited on their own gateway record). Cleared by the daily grove.usage_pull.reactivate_rate_limited once current-month usage is back under budget (month rollover / raised budget); stays blocked for the rest of the month otherwise.",
    "fieldname": "rate_limited",
    "fieldtype": "Check",
+   "in_list_view": 1,
    "label": "Rate Limited",
    "read_only": 1
   },
@@ -90,7 +91,7 @@
    "link_fieldname": "user"
   }
  ],
- "modified": "2026-08-20 12:35:26.697007",
+ "modified": "2026-08-21 12:46:25.293134",
  "modified_by": "Administrator",
  "module": "Grove",
  "name": "Grove User",

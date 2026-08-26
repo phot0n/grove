@@ -172,7 +172,7 @@ scheduler_events = {
 		# lifecycle pushes inline. Hash-gated: each box is pushed only what it does not already
 		# hold, and a box that lost its store lost its hashes with it, so the same tick is also
 		# the full repair. An overrun tick skips on the advisory lock rather than stacking.
-		"* * * * *": ["grove.pathway_sync.sync_projection"],
+		"*/1 * * * *": ["grove.pathway_sync.sync_projection"],
 		"*/2 * * * *": [
 			"grove.usage_pull.pull_all",
 			"grove.cloud_provider.reconcile.sync_all",

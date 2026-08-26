@@ -4,7 +4,6 @@
  "doctype": "DocType",
  "editable_grid": 1,
  "engine": "InnoDB",
- "istable": 1,
  "field_order": [
   "server_type",
   "server",
@@ -19,89 +18,93 @@
  ],
  "fields": [
   {
+   "columns": 1,
+   "description": "Gateway Server or Ingress Server \u2014 the two planes take different pushes, and a row says which one this was.",
    "fieldname": "server_type",
    "fieldtype": "Link",
    "label": "Server Type",
-   "options": "DocType",
-   "in_list_view": 1,
-   "columns": 1,
-   "description": "Gateway Server or Ingress Server \u2014 the two planes take different pushes, and a row says which one this was."
+   "options": "DocType"
   },
   {
+   "columns": 2,
    "fieldname": "server",
    "fieldtype": "Dynamic Link",
-   "label": "Server",
-   "options": "server_type",
    "in_list_view": 1,
-   "columns": 2
+   "label": "Server",
+   "options": "server_type"
   },
   {
+   "columns": 1,
+   "default": "0",
+   "description": "Whether the proxy's admin API was reachable at all (no connection error / timeout).",
    "fieldname": "reachable",
    "fieldtype": "Check",
-   "label": "Reachable",
    "in_list_view": 1,
-   "columns": 1,
-   "description": "Whether the proxy's admin API was reachable at all (no connection error / timeout)."
+   "label": "Reachable"
   },
   {
+   "columns": 1,
+   "default": "0",
+   "description": "Whether the requested keys and/or routes pushes returned 2xx.",
    "fieldname": "success",
    "fieldtype": "Check",
-   "label": "Success",
    "in_list_view": 1,
-   "columns": 1,
-   "description": "Whether the requested keys and/or routes pushes returned 2xx."
+   "label": "Success"
   },
   {
+   "columns": 1,
+   "default": "0",
+   "description": "Usage pulls: whether this proxy had any staged usage to drain (0 = nothing accrued since last pull).",
    "fieldname": "had_data",
    "fieldtype": "Check",
-   "label": "Had Data",
    "in_list_view": 1,
-   "columns": 1,
-   "description": "Usage pulls: whether this proxy had any staged usage to drain (0 = nothing accrued since last pull)."
+   "label": "Had Data"
   },
   {
+   "columns": 1,
    "fieldname": "http_status",
    "fieldtype": "Int",
-   "label": "HTTP Status",
    "in_list_view": 1,
-   "columns": 1
+   "label": "HTTP Status"
   },
   {
+   "columns": 1,
    "fieldname": "duration_ms",
    "fieldtype": "Int",
-   "label": "Duration (ms)",
    "in_list_view": 1,
-   "columns": 1
+   "label": "Duration (ms)"
   },
   {
+   "columns": 2,
+   "description": "What was pushed, e.g. keys:3 routes:1",
    "fieldname": "detail",
    "fieldtype": "Data",
-   "label": "Detail",
    "in_list_view": 1,
-   "columns": 2,
-   "description": "What was pushed, e.g. keys:3 routes:1"
+   "label": "Detail"
   },
   {
+   "columns": 2,
    "fieldname": "error",
    "fieldtype": "Small Text",
-   "label": "Error",
-   "columns": 2
+   "label": "Error"
   },
   {
+   "description": "Exactly what was sent to this box, secrets redacted. The counts in Detail say how much moved; this says what.",
    "fieldname": "payload",
    "fieldtype": "Long Text",
    "label": "Payload",
-   "read_only": 1,
-   "description": "Exactly what was sent to this box, secrets redacted. The counts in Detail say how much moved; this says what."
+   "read_only": 1
   }
  ],
+ "istable": 1,
  "links": [],
- "modified": "2026-07-02 00:00:00",
+ "modified": "2026-08-21 19:15:16.943509",
  "modified_by": "Administrator",
  "module": "Grove",
  "name": "Pathway Sync Row",
  "owner": "Administrator",
  "permissions": [],
+ "row_format": "Dynamic",
  "sort_field": "modified",
  "sort_order": "DESC",
  "states": []
