@@ -7,7 +7,7 @@ import secrets
 import frappe
 from frappe.model.document import Document
 
-KEY_PREFIX = "gr_sk_"
+KEY_PREFIX = "gr_"
 
 
 def hash_secret(secret: str) -> str:

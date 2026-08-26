@@ -9,6 +9,7 @@ import frappe
 from frappe.tests import IntegrationTestCase
 
 from grove import api
+from grove.grove.doctype.grove_api_key.grove_api_key import KEY_PREFIX
 
 PROBE = "control-probe@example.com"
 WITHHELD = ("Machine", "Inference Server", "Model Deployment", "Monitoring Agent")
@@ -58,7 +59,7 @@ class TestTheControlRoleReachesOnlyWhatItServes(IntegrationTestCase):
 		frappe.db.set_single_value("Grove Settings", "gateway_host", "gw.probe.test")
 		result = api.provision_key("Probe Person", "probe-person@example.com", token_limit=99)
 
-		self.assertTrue(result["api_key"].startswith("gr_sk_"))
+		self.assertTrue(result["api_key"].startswith(KEY_PREFIX))
 		self.assertEqual(frappe.db.get_value("User", "probe-person@example.com", "first_name"), "Probe Person")
 		grove_user = frappe.db.get_value("Grove User", {"user": "probe-person@example.com"}, "max_tokens")
 		self.assertEqual(grove_user, 99)
