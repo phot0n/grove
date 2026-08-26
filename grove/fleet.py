@@ -13,7 +13,7 @@ no tenant state, and a doctype with no tenant fields cannot be talked into being
 import frappe
 
 from grove.ansible import AnsibleHost
-from grove.cloud_provider.route53 import Route53Client
+from grove.cloud_provider.dns import Route53Client
 from grove.monitoring import run_exporters_play
 from grove.tls import dns_credentials
 from grove.utils import validate_id_safe_name

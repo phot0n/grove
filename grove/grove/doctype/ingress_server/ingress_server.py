@@ -5,7 +5,7 @@ import frappe
 from frappe.model.document import Document
 
 from grove import failure
-from grove.cloud_provider.route53 import Route53Error
+from grove.cloud_provider.dns import Route53Error
 from grove.fleet import FleetHost, gateway_agent_version
 from grove.grove.doctype.network.network import sync_fleet_ingress
 from grove.naming import GeneratedName

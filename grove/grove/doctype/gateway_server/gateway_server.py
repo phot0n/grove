@@ -6,7 +6,7 @@ from frappe.model.document import Document
 
 from grove import failure
 from grove import pathway_sync
-from grove.cloud_provider.route53 import Route53Error, group_name
+from grove.cloud_provider.dns import Route53Error, group_name
 from grove.fleet import (
 	GATEWAY_DNS_SETTINGS,
 	FleetHost,

@@ -20,7 +20,7 @@ from unittest.mock import patch
 
 import frappe
 
-from grove.cloud_provider.route53 import (
+from grove.cloud_provider.dns import (
 	HEALTH_CHECK_FAILURES,
 	HEALTH_CHECK_INTERVAL,
 	REGION_HEALTH_THRESHOLD,

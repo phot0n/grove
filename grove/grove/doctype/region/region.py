@@ -6,7 +6,7 @@ import re
 import frappe
 from frappe.model.document import Document
 
-from grove.cloud_provider.route53 import Route53Client, Route53Error
+from grove.cloud_provider.dns import Route53Client, Route53Error
 from grove.fleet import (
 	GATEWAY_DNS_SETTINGS,
 	gateway_health_checks_enabled,
