@@ -72,7 +72,8 @@
    "description": "Bearer token this agent pushes with, minted by the ingestion service \u2014 it carries the tenant and source. Per agent, since a regional endpoint issues its own. Use Rotate Token to change it: the new one has to reach the box, or the pushes start failing.",
    "fieldname": "metrics_token",
    "fieldtype": "Password",
-   "label": "Metrics Token"
+   "label": "Metrics Token",
+   "read_only": 1
   },
   {
    "fieldname": "section_scrape",
@@ -112,7 +113,7 @@
   }
  ],
  "links": [],
- "modified": "2026-08-08 02:57:26.704210",
+ "modified": "2026-08-25 14:12:15.336815",
  "modified_by": "Administrator",
  "module": "Grove",
  "name": "Monitoring Agent",
