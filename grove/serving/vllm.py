@@ -121,8 +121,8 @@ class VllmEngine(Engine):
 			# response body id carries it. The response HEADER is set by the gateway, so we
 			# deliberately DON'T pass --enable-request-id-headers (it would echo a duplicate).
 			"--enable-log-requests",
-			# Logs the generated text alongside the request — paired with VLLM_LOGGING_LEVEL=DEBUG
-			# on both placements, so a request can be read end to end out of the engine log.
+			# Logs the generated text alongside the request. vLLM emits both this and the
+			# received-request line at INFO, so the completion is on the box without DEBUG.
 			"--enable-log-outputs",
 			# vLLM defaults system_fingerprint to "full", which is its exact version and build
 			# hash — `vllm-0.24.0-bf54a486` — on every response and on EVERY streaming frame.
@@ -188,8 +188,14 @@ class VllmEngine(Engine):
 		"""vLLM's own variables. Insertion order reproduces the on-prem env file line for line —
 		see Engine.env for why that matters."""
 		env = {
-			# What --enable-log-requests/--enable-log-outputs actually emit at.
-			"VLLM_LOGGING_LEVEL": "DEBUG",
+			# INFO, not DEBUG. DEBUG is not only louder: it turns on inductor's size/alignment
+			# asserts (vllm/config/compilation.py) and puts the custom-op dispatcher's per-op
+			# skip lines in the log, several per decode step. On a card whose kernels fall back
+			# a lot that is most of the throughput. What INFO keeps is the pair that makes a
+			# request readable end to end — the received-request line and the generated output.
+			# What it drops is the prompt text, which is a DEBUG-only line. Raise it per
+			# deployment with an Environment Variables row when a prompt has to be captured.
+			"VLLM_LOGGING_LEVEL": "INFO",
 			# Telemetry is off for every image: huggingface_hub reads this with a plain env lookup
 			# in every version, so unlike hf_transfer it cannot crash an image without extras.
 			"HF_HUB_DISABLE_TELEMETRY": "1",

@@ -61,4 +61,10 @@ rather than being handed to `--max-model-len` and failing minutes later inside a
 `docker --env-file` is line-ordered and the on-prem template iterates `.items()`, so reordering the
 keys re-renders the env file, which fires `notify: recreate vllm container` and replaces every
 container in the fleet. `VllmEngine.env` inserts in the order the box already has, and a test pins
-it.
+it. Changing a *value* has the same effect on the deployments that hold it — each container is
+replaced by its next serve or reconfigure, not all at once — so treat a default here as fleet-wide.
+
+`VLLM_LOGGING_LEVEL` is `INFO`. vLLM logs the received request and the generated output at INFO;
+only the prompt text needs DEBUG. DEBUG also enables inductor's size/alignment asserts and the
+custom-op dispatcher's per-op skip lines, which cost real throughput on a card whose kernels fall
+back. Raise it per deployment with an Environment Variables row.

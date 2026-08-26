@@ -39,13 +39,14 @@ def engine(**tuning):
 
 
 class TestEngineEnv(unittest.TestCase):
-	def test_a_deployment_that_sets_nothing_still_logs_at_debug(self):
-		# The one thing every engine gets: DEBUG is what makes vLLM log each request's output,
-		# which is the only per-request record on the box itself.
+	def test_a_deployment_that_sets_nothing_still_logs_each_request(self):
+		# The one thing every engine gets. INFO is enough for vLLM to log the request and its
+		# generated output — the only per-request record on the box itself — without the
+		# per-op debug lines that cost more than the record is worth.
 		self.assertEqual(
 			_engine_env(deployment(), engine(), ""),
 			{
-				"VLLM_LOGGING_LEVEL": "DEBUG",
+				"VLLM_LOGGING_LEVEL": "INFO",
 				"HF_HUB_DISABLE_TELEMETRY": "1",
 				"VLLM_NO_USAGE_STATS": "1",
 			},
@@ -56,7 +57,7 @@ class TestEngineEnv(unittest.TestCase):
 		self.assertEqual(
 			_engine_env(md, engine(allow_long_max_model_len=1), "hf_xxx"),
 			{
-				"VLLM_LOGGING_LEVEL": "DEBUG",
+				"VLLM_LOGGING_LEVEL": "INFO",
 				"HF_HUB_DISABLE_TELEMETRY": "1",
 				"VLLM_NO_USAGE_STATS": "1",
 				"HF_TOKEN": "hf_xxx",
@@ -64,11 +65,11 @@ class TestEngineEnv(unittest.TestCase):
 			},
 		)
 
-	def test_an_operator_row_can_turn_the_logging_level_down(self):
-		# The baseline is a default, not a policy: DEBUG puts prompts and completions in the
-		# container log, so a deployment that must not keep them can say so.
-		md = deployment({"VLLM_LOGGING_LEVEL": "INFO"})
-		self.assertEqual(_engine_env(md, engine(), "")["VLLM_LOGGING_LEVEL"], "INFO")
+	def test_an_operator_row_can_turn_the_logging_level_up(self):
+		# The baseline is a default, not a policy: the prompt text is a DEBUG-only line, so a
+		# deployment being debugged can ask for it — and pay for it.
+		md = deployment({"VLLM_LOGGING_LEVEL": "DEBUG"})
+		self.assertEqual(_engine_env(md, engine(), "")["VLLM_LOGGING_LEVEL"], "DEBUG")
 
 	def test_attention_backend_is_a_serve_flag_not_env(self):
 		# vLLM 0.24 dropped VLLM_ATTENTION_BACKEND — nothing in the package reads it, so
