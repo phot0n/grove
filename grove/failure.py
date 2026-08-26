@@ -46,8 +46,6 @@ def report(doctype, name, title, detail, *, mark_broken=False):
 	if mark_broken:
 		_mark_broken(doctype, name)
 
-	message = f"{title}: {detail}" if detail else title
-	_comment(doctype, name, message)
 	_toast(doctype, name, title, detail)
 	_notify(doctype, name, title, detail)
 
@@ -108,21 +106,6 @@ def _mark_broken(doctype, name):
 	frappe.db.commit()
 
 
-def _comment(doctype, name, message):
-	"""The durable half, on the doc that failed.
-
-	Follows what Machine.launch already did for exactly this reason: an operator watching a status
-	snap back has nothing else to read.
-	"""
-	try:
-		frappe.get_doc(doctype, name).add_comment("Comment", message)
-		frappe.db.commit()
-	except Exception:
-		# Reporting must never be the thing that fails a job. The original exception is on its way
-		# up and is the one worth having.
-		frappe.log_error(title=f"Could not comment a failure on {doctype} {name}")
-
-
 def _toast(doctype, name, title, detail):
 	"""The half that arrives while someone is still looking.
 
@@ -153,8 +136,9 @@ def _notify(doctype, name, title, detail):
 	is why the scheduled syncs are not wired into this.
 	"""
 	user = frappe.session.user
-	if not user or user in ("Administrator", "Guest"):
+	if not user or user == "Guest":
 		return
+
 	try:
 		enqueue_create_notification(
 			user,
