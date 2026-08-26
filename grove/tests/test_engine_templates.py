@@ -13,7 +13,7 @@ import unittest
 from pathlib import Path
 
 import yaml
-from jinja2 import Environment, FileSystemLoader
+from jinja2 import Environment, FileSystemLoader, StrictUndefined
 
 
 PLAYBOOKS = Path(__file__).parent.parent / "playbooks"
@@ -21,9 +21,14 @@ INFERENCE_ROLES = PLAYBOOKS / "inference_server/roles"
 
 
 def environment(templates_dir):
-	# Ansible renders with trim_blocks on; matching it is the whole point of this file.
+	# Ansible renders with trim_blocks on; matching it is the whole point of this file. Undefined
+	# is strict for the same reason: Ansible fails the play on an undefined name, while plain
+	# Jinja renders it falsy — so `{% if not undefined_var %}` passes here and dies on the box.
 	return Environment(
-		loader=FileSystemLoader(templates_dir), trim_blocks=True, keep_trailing_newline=True
+		loader=FileSystemLoader(templates_dir),
+		trim_blocks=True,
+		keep_trailing_newline=True,
+		undefined=StrictUndefined,
 	)
 
 
@@ -60,7 +65,11 @@ PROXY_VARS = resolve({
 	**role_defaults(INFERENCE_ROLES / "engine_proxy"),
 })
 
-BASE = {
+# Layered on the role's OWN defaults, not a hand-written copy of them: a fixture that
+# re-declares a default can supply a variable the play never sets, which is exactly how
+# `vllm_download_glob` reached production undefined on the reconfigure path.
+RAW_BASE = {
+	**role_defaults(INFERENCE_ROLES / "vllm"),
 	"vllm_unit": "vllm-md-00007",
 	"vllm_instance": "md-00007",
 	"vllm_port": 8081,
@@ -79,10 +88,9 @@ BASE = {
 	"vllm_api_key": "deadbeef",
 	"vllm_engine_kind": "vllm",
 	"vllm_health_path": "/health",
-	# Role defaults: the play pre-downloads the whole repo, so nothing is a GGUF file glob.
 	"vllm_predownload_model": True,
-	"vllm_download_glob": "",
 }
+BASE = resolve(RAW_BASE)
 # The unpinned single-GPU box with no operator env and a caller-supplied key.
 BARE = {**BASE, "vllm_cuda_visible_devices": "", "vllm_env": {}, "vllm_effective_api_key": ""}
 
@@ -183,14 +191,16 @@ class TestTheEngineDoesNotFetchWeightsItself(unittest.TestCase):
 	different weights, or OOMs loading them."""
 
 	def env(self, **overrides):
-		return render("vllm-container.env.j2", {**BASE, **overrides}).splitlines()
+		# Resolved, not merged: the glob is derived from vllm_model in the role's defaults, so a
+		# test that overrode the glob directly would never exercise the derivation.
+		return render("vllm-container.env.j2", resolve({**RAW_BASE, **overrides})).splitlines()
 
 	def test_a_predownloaded_repo_runs_offline(self):
 		self.assertIn("HF_HUB_OFFLINE=1", self.env())
 
 	def test_a_gguf_ref_stays_online(self):
 		# Its download is one file; the config and tokenizer beside it are fetched at boot.
-		self.assertNotIn("HF_HUB_OFFLINE=1", self.env(vllm_download_glob="*Q4_K_M.gguf"))
+		self.assertNotIn("HF_HUB_OFFLINE=1", self.env(vllm_model="unsloth/Qwen3-35B-GGUF:Q4_K_M"))
 
 	def test_a_streaming_placement_stays_online(self):
 		# Weights come from S3, but the tokenizer is still the hub's.

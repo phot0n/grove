@@ -34,6 +34,16 @@ vllm_container_env_file: "{{ vllm_container_dir }}/{{ vllm_unit }}.env"
 # The run script only renders it.
 vllm_port: 8080
 vllm_serve_args: []
+# A GGUF repo publishes a dozen quantizations of one model, so vLLM takes `repo:QUANT` and serves
+# a single file out of it. `hf download` has no such ref — it wants the repo, and left alone would
+# pull every quantization. Split the suffix back off and pass it as the file glob.
+#
+# Derived here rather than in a task because reconfigure.yml renders the container env file
+# without ever running the serve tasks: a fact set there is invisible to the config-only path,
+# and the two must render the same file or every reconfigure replaces the container.
+vllm_model: ""
+vllm_download_repo: "{{ vllm_model.split(':')[0] }}"
+vllm_download_glob: "{{ '*' + vllm_model.split(':')[1] + '.gguf' if ':' in vllm_model else '' }}"
 # Engine env vars: Grove's own (attention backend, HF token, long-max-len guard) with the
 # deployment's Environment Variables rows layered on top, rendered as the --env-file.
 # VLLM_API_KEY is not in here — it is resolved on the box and added by the template.
