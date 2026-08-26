@@ -3,7 +3,10 @@
 """Engine env assembly and box-local port allocation. Pure — the deployment is passed in and
 the sibling lookup is stubbed with a small table, so no site needed."""
 
+import json
+import re
 import unittest
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -12,10 +15,12 @@ import frappe
 from grove.serving.vllm import VllmEngine
 from grove.grove.doctype.model_deployment.model_deployment import (
 	ENGINE_PORT_BASE,
+	GPU_CLAIMING_STATUSES,
 	ModelDeployment,
 	_engine_env,
 	_vllm_extravars,
 	reconfigure_deployment,
+	set_container_state,
 )
 from grove.serving.base import DEFAULT_MAX_MODEL_LEN, parse_context_length
 from grove.serving.custom import CustomEngine
@@ -164,11 +169,33 @@ class TestGpuClaims(unittest.TestCase):
 	def test_a_gpu_an_active_deployment_serves_on_is_refused(self):
 		self.assertFalse(self.claim(0, [{"name": "md-a", "status": "Active", "gpu_index": 0}]))
 
-	def test_a_stopped_deployment_still_owns_its_gpu(self):
-		self.assertFalse(self.claim(0, [{"name": "md-a", "status": "Inactive", "gpu_index": 0}]))
+	def test_a_stopped_deployment_releases_its_gpu(self):
+		# A stopped container holds no VRAM, so the card is genuinely free for a sibling. What
+		# keeps that safe is Start re-checking, not this refusing.
+		self.assertTrue(self.claim(0, [{"name": "md-a", "status": "Inactive", "gpu_index": 0}]))
+
+	def test_a_deploying_sibling_already_owns_its_gpu(self):
+		# deploy_model checks the claim before it writes Provisioning, so if this status did not
+		# claim, a second deploy launched during the first one's play would pass the same check
+		# and put both engines on the card.
+		self.assertFalse(self.claim(0, [{"name": "md-a", "status": "Provisioning", "gpu_index": 0}]))
+
+	def test_a_broken_deployment_still_owns_its_gpu(self):
+		# --restart unless-stopped: a crash-looping engine keeps coming back onto its cards, so
+		# they are not free to hand out however dead the deployment looks.
+		self.assertFalse(self.claim(0, [{"name": "md-a", "status": "Broken", "gpu_index": 0}]))
 
 	def test_a_torn_down_deployment_releases_its_gpu(self):
 		self.assertTrue(self.claim(0, [{"name": "md-a", "status": "Terminated", "gpu_index": 0}]))
+
+	def test_the_gpu_panel_reads_the_same_list_this_check_does(self):
+		# Inference Server's GPU allocation panel used its own "Active" literal, so a Broken
+		# deployment's cards showed Free while a save onto them was refused. One list, imported.
+		from grove.grove.doctype.inference_server.inference_server import (
+			GPU_CLAIMING_STATUSES as panel_statuses,
+		)
+
+		self.assertIs(panel_statuses, GPU_CLAIMING_STATUSES)
 
 	def test_a_free_gpu_on_a_busy_box_is_allowed(self):
 		self.assertTrue(self.claim(1, [{"name": "md-a", "status": "Active", "gpu_index": 0}]))
@@ -346,6 +373,139 @@ class TestExtraVarsFollowTheEngineKind(unittest.TestCase):
 		self.assertTrue(vars["vllm_predownload_model"])
 		self.assertEqual(vars["vllm_health_path"], "/health")
 		self.assertEqual(vars["vllm_cache_bucket"], "grove-weights")
+
+
+class TestStartRechecksTheGpuClaim(unittest.TestCase):
+	"""Inactive releases its cards, so between Stop and Start a sibling can be placed on them.
+	`docker start` would put a second engine on the card regardless — they split its VRAM and
+	both OOM later, at a size each thought it had — so Start refuses before it queues the play."""
+
+	def start(self, claimed):
+		"""What Start queued, given a GPU claim that does or does not clash."""
+		queued = []
+
+		def reject_claimed_gpus():
+			if claimed:
+				raise frappe.ValidationError("GPU 0 is already claimed by deployment md-a.")
+
+		doc = SimpleNamespace(
+			reject_claimed_gpus=reject_claimed_gpus,
+			set_container_running=queued.append,
+		)
+		try:
+			ModelDeployment.start(doc)
+		except frappe.ValidationError:
+			pass
+		return queued
+
+	def test_a_free_card_starts(self):
+		self.assertEqual(self.start(claimed=False), [True])
+
+	def test_a_taken_card_never_reaches_the_play(self):
+		# Refused on the button, not in a worker: the operator is told why while they are
+		# looking at the form, and no Ansible Play is queued for a start that cannot happen.
+		self.assertEqual(self.start(claimed=True), [])
+
+
+class TestStopAndStartRunAsAPlay(unittest.TestCase):
+	"""Stop and Start change the box, so they go through a play like every other lifecycle
+	button — `run_command` is for reads, and a run that leaves no Ansible Play leaves nobody
+	able to see what docker actually did.
+
+	The status write is the dangerous half: `status` is what _gateway_routes routes on, so it
+	must follow the play, never lead it."""
+
+	def run_state(self, running, rc):
+		"""Every db.set_value a Stop/Start emits, plus the play it ran and its extra-vars."""
+		md = SimpleNamespace(
+			name="MD-00007",
+			model="qwen3.5-4b",
+			server=SimpleNamespace(name="INF-1", run_playbook=self.record_play(rc)),
+		)
+		written = []
+
+		def set_value(doctype, name, values, value=None):
+			written.append({values: value} if isinstance(values, str) else values)
+
+		db = SimpleNamespace(set_value=set_value, commit=lambda: None)
+		with (
+			patch.object(frappe, "get_doc", lambda doctype, name=None: md),
+			patch.object(frappe, "db", db),
+			patch(f"{MODULE}.sync_published", create=True),
+			patch("grove.grove.doctype.model.model.sync_published"),
+		):
+			set_container_state("MD-00007", running)
+		return written
+
+	def record_play(self, rc):
+		def run_playbook(playbook, extravars=None, **kwargs):
+			self.played, self.extravars = playbook, extravars
+			return ("PLAY-1", rc)
+
+		return run_playbook
+
+	def test_it_runs_its_own_play(self):
+		# Not teardown.yml with a flag: that one removes the run script, the env file and the
+		# key, which is exactly what Stop promises to leave behind.
+		self.run_state(running=False, rc=0)
+		self.assertEqual(self.played, "container_state.yml")
+
+	def test_the_play_is_told_which_instance_and_which_way(self):
+		self.run_state(running=True, rc=0)
+		self.assertEqual(self.extravars["vllm_instance"], "md-00007")
+		self.assertIs(self.extravars["vllm_container_running"], True)
+
+	def test_a_stop_lands_inactive_and_a_start_lands_active(self):
+		self.assertEqual(self.run_state(running=False, rc=0), [{"status": "Inactive"}])
+		self.assertEqual(self.run_state(running=True, rc=0), [{"status": "Active"}])
+
+	def test_a_failed_run_writes_nothing(self):
+		# The play proves the container reached the state. A stop that did not take must leave
+		# the doc Active — writing Inactive would pull a serving engine out of the route table.
+		self.assertEqual(self.run_state(running=False, rc=2), [])
+
+
+class TestEveryStatusHasItsOwnColour(unittest.TestCase):
+	"""The list view's indicator. Frappe falls back to guessing a colour from the status TEXT,
+	and it knows none of these words — every unmapped status comes out the same grey, which is
+	how Inactive and Broken became indistinguishable. Leaving a status unmapped is allowed and
+	means "default grey"; what is checked is that the ones named are spelled like real statuses
+	and coloured with something frappe will actually paint."""
+
+	HERE = Path(__file__).parent
+
+	def statuses(self):
+		fields = json.loads((self.HERE / "model_deployment.json").read_text())["fields"]
+		[status] = [f for f in fields if f["fieldname"] == "status"]
+		return status["options"].split("\n")
+
+	# What frappe's indicator.scss actually renders. Anything else is a pill with no styling.
+	RENDERABLE = frozenset(
+		"green cyan blue orange yellow gray grey red pink darkgrey purple light-blue".split()
+	)
+
+	def colours(self):
+		listview = (self.HERE / "model_deployment_list.js").read_text()
+		return dict(re.findall(r"\b(\w+): '([a-z-]+)',", listview))
+
+	def test_every_status_it_names_is_one_the_doctype_offers(self):
+		# Not every status needs naming — an unnamed one falls through to the default grey on
+		# purpose. A MISNAMED one is the bug this catches: `Inactve: 'blue'` reads fine and
+		# silently leaves Inactive grey again, which is the whole failure being fixed here.
+		for status in self.colours():
+			with self.subTest(status):
+				self.assertIn(status, self.statuses())
+
+	def test_every_colour_it_names_is_one_frappe_renders(self):
+		# An unknown colour is not a fallback — the pill renders unstyled.
+		for status, colour in self.colours().items():
+			with self.subTest(status):
+				self.assertIn(colour, self.RENDERABLE)
+
+	def test_a_deliberate_stop_does_not_look_like_a_failure(self):
+		# The pair this exists for. Same colour here is the bug, whatever the colours are.
+		colours = self.colours()
+		self.assertNotEqual(colours["Inactive"], colours["Broken"])
 
 
 if __name__ == "__main__":

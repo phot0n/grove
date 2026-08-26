@@ -8,7 +8,7 @@ against. `grove.utils.ansible_project_dir("Gateway Server")` is literally
 playbooks/
   gateway_server/     gateway.yml  deploy_agent.yml  deploy_tls.yml   + config.json.j2, systemd/
   ingress_server/     ingress.yml  deploy_agent.yml
-  inference_server/   provision.yml  serve.yml  reconfigure.yml  teardown.yml
+  inference_server/   provision.yml  serve.yml  reconfigure.yml  container_state.yml  teardown.yml
   machine/            ping.yml  grow_root.yml  scan_gpus.yml     — box-level, no role layered on yet
   monitoring_agent/   agent.yml  config.yml  exporters.yml  push_targets.yml
   roles/              dcgm_exporter  node_exporter  fleet_tls  grove_https  install_gateway_agent  openresty

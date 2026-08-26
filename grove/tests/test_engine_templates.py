@@ -328,6 +328,38 @@ class TestReconfigureRunsTheConfigTasksOnly(unittest.TestCase):
 		)
 
 
+class TestStopIsResumable(unittest.TestCase):
+	"""Stop leaves the container, its run script, its env file and its key on the box — that is
+	the whole difference from a teardown, and what lets Start be a `docker start` rather than a
+	redeploy. The play is where that promise is either kept or quietly broken."""
+
+	def setUp(self):
+		self.text = (PLAYBOOKS / "inference_server/container_state.yml").read_text()
+		[self.play] = yaml.safe_load(self.text)
+
+	def test_it_runs_no_roles(self):
+		# Pulling the vllm role in for its defaults would run its tasks against a box being
+		# stopped — a pull, a disk check and a download, to stop a container.
+		self.assertFalse(self.play.get("roles"))
+
+	def test_it_removes_nothing(self):
+		for absent in ("rm -f", "state: absent", "docker rm"):
+			with self.subTest(absent):
+				self.assertNotIn(absent, self.text)
+
+	def test_it_does_not_go_through_the_run_script(self):
+		# The script stops, removes and re-runs the container. Starting through it would hand
+		# back a NEW container built from the current argv — a silent Update Engine Config.
+		self.assertNotIn("vllm_container_script", self.text)
+
+	def test_the_state_is_read_back_rather_than_assumed(self):
+		# docker reports what it was asked to do. The status this play returns to is what the
+		# gateway routes on, so a stop that did not take has to fail the play.
+		[_action, check] = self.play["tasks"]
+		self.assertIn("--filter status=running", check["ansible.builtin.command"])
+		self.assertIn("vllm_container_running", check["failed_when"])
+
+
 class TestCompileCachePrewarmHooks(unittest.TestCase):
 	"""With a weights bucket configured, the run script pulls the compile cache before the
 	container and pushes it (backgrounded, after /health) once compiled. No bucket → the
