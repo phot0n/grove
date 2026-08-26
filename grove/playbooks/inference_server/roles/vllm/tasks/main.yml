@@ -158,6 +158,16 @@
     - "{{ vllm_cache_dir }}/triton"
     - "{{ vllm_hf_home }}"
 
+# Ubuntu ships ensurepip in its own package, so `python3 -m venv` fails on a box carrying only
+# the base python3 — "the virtual environment was not created successfully". Installed here
+# rather than at provision so a box already built keeps serving without one.
+- name: Ensure python3 can create a virtualenv
+  ansible.builtin.apt:
+    name: python3-venv
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+
 # Host-side hf so the weight download can overlap the image pull above — the image's own hf
 # can't run before the pull lands. hf_transfer saturates the NIC on multi-GB weights; awscli
 # serves the compile-cache pre-warm and the weight mirror.

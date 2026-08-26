@@ -389,6 +389,30 @@ class TestPullAndDownloadOverlap(unittest.TestCase):
 		self.assertIn("Image is up to date", collect["changed_when"])
 
 
+class TestTheHostVenvHasWhatItNeedsToExist(unittest.TestCase):
+	"""Ubuntu ships ensurepip in python3-venv, so `python3 -m venv` on a box carrying only the base
+	python3 fails the play at the host venv — which is every box provisioned before it went in."""
+
+	def order(self, path):
+		"""(where python3-venv is installed, where the venv is created) in that file's task list."""
+		tasks = yaml.safe_load(path.read_text())
+		if isinstance(tasks[0], dict) and "tasks" in tasks[0]:
+			tasks = tasks[0]["tasks"]
+		return (
+			next(i for i, task in enumerate(tasks) if "python3-venv" in str(task)),
+			next(i for i, task in enumerate(tasks) if "python3 -m venv" in str(task)),
+		)
+
+	def test_the_serve_role_installs_it_before_using_it(self):
+		apt, venv = self.order(INFERENCE_ROLES / "vllm/tasks/main.yml")
+		self.assertLess(apt, venv)
+
+	def test_so_does_the_mirror_play(self):
+		# It builds the same venv and can be the first thing to want it on a box.
+		apt, venv = self.order(PLAYBOOKS / "inference_server/mirror_weights.yml")
+		self.assertLess(apt, venv)
+
+
 class TestWeightsOffTheDataVolume(unittest.TestCase):
 	"""vllm_hf_home outside vllm_home — the instance-store opt-in. The weights then stop
 	counting against the data volume, and their own mount is checked instead."""

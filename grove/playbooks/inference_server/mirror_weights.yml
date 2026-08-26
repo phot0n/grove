@@ -9,6 +9,15 @@
     mirror_venv: "{{ vllm_home }}/hf-venv"
     mirror_cache_path: "{{ vllm_hf_home }}/hub/models--{{ mirror_repo | replace('/', '--') }}"
   tasks:
+    # Same reason as the vllm role: ensurepip is a separate package on Ubuntu, and this play
+    # can be the first thing to want the venv on a box that has never served.
+    - name: Ensure python3 can create a virtualenv
+      ansible.builtin.apt:
+        name: python3-venv
+        state: present
+        update_cache: true
+        cache_valid_time: 3600
+
     - name: Install hf + awscli into the host venv
       ansible.builtin.pip:
         name:
