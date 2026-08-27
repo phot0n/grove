@@ -8,9 +8,10 @@ from frappe.model.document import Document
 
 from grove.grove.doctype.engine_image.engine_image import engine_tuning
 from grove.grove.doctype.model.model import launch_config
+from grove.grove.doctype.model_replica.model_replica import GPU_CLAIMING_STATUSES
 from grove.naming import next_deployment_name
+from grove.placement.base import Candidate, fitting_gpus, placement_policy, sort_key
 from grove.serving.base import DEFAULT_PORT, build_engine
-from grove.utils import slugify
 
 
 # The knobs a replica may override. Blank or 0 on a replica means inherit: none of these has 0 as
@@ -66,6 +67,7 @@ class ModelDeployment(Document):
 		min_vram_gb: DF.Float
 		model: DF.Link
 		pipeline_parallel_size: DF.Int
+		placement_policy: DF.Literal["balanced", "pack", "spread"]
 		serve_command: DF.Code | None
 		startup_command: DF.SmallText | None
 		tensor_parallel_size: DF.Int
@@ -122,12 +124,14 @@ class ModelDeployment(Document):
 			)
 		return config
 
-	def engine_for(self, replica=None):
+	def engine_for(self, replica=None, gpu_vram_gb=None):
 		"""The Engine a replica of this deployment runs — the one place either doc builds one.
 
 		`replica=None` is the deployment's own preview, off its declared shape rather than a box's:
-		gpus_per_replica for the GPU count and min_vram_gb for the fit check, which is exactly
-		what the scheduler will hand a placement later."""
+		gpus_per_replica for the GPU count and min_vram_gb for the fit check.
+
+		`gpu_vram_gb` is what the scheduler hands in — the card size a candidate box would really
+		give it, which is stricter than the declared min_vram_gb and is the point of asking."""
 		kind, image_tuning = engine_tuning(self.engine_image)
 		return build_engine(
 			kind,
@@ -135,7 +139,7 @@ class ModelDeployment(Document):
 			launch_config(self.model),
 			port=(replica.engine_port if replica else 0) or DEFAULT_PORT,
 			gpu_count=len(replica.gpus or []) if replica else self.gpus_per_replica,
-			gpu_vram_gb=(replica.gpu_vram_gb if replica else None) or self.min_vram_gb,
+			gpu_vram_gb=gpu_vram_gb or (replica.gpu_vram_gb if replica else None) or self.min_vram_gb,
 			**self.resolved_config(replica),
 			**image_tuning,
 		)
@@ -156,12 +160,119 @@ class ModelDeployment(Document):
 		)
 
 	@frappe.whitelist()
-	def add_replica(self, inference_server, gpus=None):
+	def find_placement(self):
+		"""`(inference_server, [gpu_index, ...])` for one more replica of this deployment.
+
+		Chooses only among boxes that can actually take it — the policy orders viable boxes and
+		cannot make an invalid one viable. With none, throws naming why EVERY box was rejected:
+		a scheduler that says only "no capacity" is the infuriating kind."""
+		candidates = self._candidates()
+		viable = [c for c in candidates if c.is_viable]
+		if not viable:
+			frappe.throw(
+				"<br>".join(f"<b>{c.inference_server}</b>: {c.rejection}" for c in candidates)
+				or "No Inference Server is Active and provisioned."
+			)
+		scorers = placement_policy(self.placement_policy or "balanced")
+		best = min(viable, key=lambda c: sort_key(c, scorers))
+		return best.inference_server, list(best.fitting_gpus[: self.gpus_per_replica])
+
+	def _candidates(self):
+		"""Every Active, provisioned box measured against this deployment's shape.
+
+		Rejected boxes are kept, carrying their reason, because the reason is the whole error
+		message when nothing fits."""
+		boxes = frappe.get_all(
+			"Inference Server",
+			filters={"status": "Active", "is_provisioned": 1},
+			fields=["name", "machine", "region"],
+		)
+		if not boxes:
+			return []
+		claims = _claims_by_box(boxes)
+		architectures = _machine_architectures([box.machine for box in boxes])
+		image_architecture = frappe.db.get_value("Engine Image", self.engine_image, "cpu_architecture")
+		siblings = self._sibling_boxes()
+		per_region = self._replicas_per_region()
+		return [
+			self._candidate(box, claims[box.name], architectures.get(box.machine), image_architecture,
+			                siblings, per_region)
+			for box in boxes
+		]
+
+	def _candidate(self, box, claim, box_architecture, image_architecture, siblings, per_region):
+		free = fitting_gpus(claim.free_gpus, self.gpu_model, self.min_vram_gb)
+		return Candidate(
+			inference_server=box.name,
+			region=box.region or "",
+			fitting_gpus=free,
+			surplus=len(free) - self.gpus_per_replica,
+			# Only worth something when the weights actually live on a box. A model streamed from
+			# S3 is fetched the same way everywhere, so no box is warmer than another.
+			has_local_weights=box.name in siblings and not self.streams_weights,
+			active_replicas=claim.replicas,
+			replicas_in_region=per_region.get(box.region or "", 0),
+			rejection=self._rejection(claim, free, box_architecture, image_architecture),
+		)
+
+	def _rejection(self, claim, free, box_architecture, image_architecture):
+		"""Why this box cannot take a replica, or "" if it can."""
+		# A box with no architecture recorded is on-prem — nothing to check against, the same
+		# reading `_validate_engine_architecture` already takes.
+		if box_architecture and image_architecture and box_architecture != image_architecture:
+			return f"runs {box_architecture}, and {self.engine_image} is {image_architecture}"
+		# An unpinned replica claims no cards but uses them, so every card here READS free while
+		# some are busy. Declining is the only honest answer — placing would double-book VRAM.
+		if claim.unpinned:
+			return f"{claim.unpinned} replica(s) here pin no cards, so what is free cannot be known"
+		if len(free) < self.gpus_per_replica:
+			return (
+				f"{len(free)} free card(s) match this shape, and it needs {self.gpus_per_replica}"
+				f"{f' of {self.gpu_model}' if self.gpu_model else ''}"
+			)
+		# The engine's own arithmetic, against the cards this box would actually give it — a
+		# stricter check than the deployment's declared min_vram_gb, and it catches weights that
+		# do not fit before a play starts.
+		vram = min(claim.vram_by_index[index] for index in free[: self.gpus_per_replica])
+		if errors := self.engine_for(gpu_vram_gb=vram).placement_errors:
+			return "; ".join(errors)
+		return ""
+
+	@property
+	def streams_weights(self):
+		"""Whether this deployment's Model is served from S3 rather than a box's HF cache."""
+		return bool(launch_config(self.model).get("weights_s3_uri"))
+
+	def _sibling_boxes(self):
+		"""Boxes already serving this deployment's Model — from any deployment of it, since the
+		HF cache is keyed on the repo and not on who asked for it."""
+		return {
+			replica.inference_server
+			for replica in frappe.get_all(
+				"Model Replica",
+				filters={"model": self.model, "status": ("in", GPU_CLAIMING_STATUSES)},
+				fields=["inference_server"],
+			)
+		}
+
+	def _replicas_per_region(self):
+		counts = {}
+		for replica in self.replicas:
+			region = frappe.db.get_value("Inference Server", replica.inference_server, "region") or ""
+			counts[region] = counts.get(region, 0) + 1
+		return counts
+
+	@frappe.whitelist()
+	def add_replica(self, inference_server=None, gpus=None):
 		"""Button: place one more replica of this deployment on a box and serve it.
 
 		Creates the Model Replica and calls its own `setup()` — this adds no second deploy
 		path. `gpus` is the CUDA indices to pin, as a list or a comma-separated string; none
-		means single-GPU unpinned, which is what a deployment naming no GPU rows already is."""
+		means single-GPU unpinned, which is what a deployment naming no GPU rows already is.
+
+		With no box named, the scheduler picks one."""
+		if not inference_server:
+			inference_server, gpus = self.find_placement()
 		replica = frappe.get_doc(
 			{
 				"doctype": "Model Replica",
@@ -172,6 +283,60 @@ class ModelDeployment(Document):
 		).insert()
 		replica.setup()
 		return replica.name
+
+
+def _claims_by_box(boxes):
+	"""What each box is running and which of its cards nothing holds.
+
+	Three queries for the whole fleet rather than the per-box walk `get_gpu_allocation` does —
+	that one re-queries per box and again per replica on it, which a fleet scan cannot afford."""
+	machines = sorted({box.machine for box in boxes if box.machine})
+	cards = frappe.get_all(
+		"Machine GPU",
+		filters={"parent": ("in", machines), "parenttype": "Machine"},
+		fields=["parent", "gpu_index", "gpu_model", "vram_gb"],
+		order_by="gpu_index",
+	) if machines else []
+	replicas = frappe.get_all(
+		"Model Replica",
+		filters={"inference_server": ("in", [box.name for box in boxes]),
+		         "status": ("in", GPU_CLAIMING_STATUSES)},
+		fields=["name", "inference_server"],
+	)
+	pinned = frappe.get_all(
+		"Model Replica GPU",
+		filters={"parent": ("in", [r.name for r in replicas]), "parenttype": "Model Replica"},
+		fields=["parent", "gpu_index"],
+		parent_doctype="Model Replica",
+	) if replicas else []
+
+	held = {}
+	for row in pinned:
+		held.setdefault(row.parent, set()).add(int(row.gpu_index))
+	claims = {}
+	for box in boxes:
+		mine = [r for r in replicas if r.inference_server == box.name]
+		taken = {index for r in mine for index in held.get(r.name, ())}
+		on_machine = [c for c in cards if c.parent == box.machine]
+		claims[box.name] = frappe._dict(
+			free_gpus=[c for c in on_machine if int(c.gpu_index) not in taken],
+			vram_by_index={int(c.gpu_index): c.vram_gb for c in on_machine},
+			replicas=len(mine),
+			unpinned=len([r for r in mine if not held.get(r.name)]),
+		)
+	return claims
+
+
+def _machine_architectures(machine_names):
+	"""Each Machine's cpu_architecture. Blank is on-prem and means "do not check"."""
+	return {
+		machine.name: machine.cpu_architecture
+		for machine in frappe.get_all(
+			"Machine",
+			filters={"name": ("in", sorted({name for name in machine_names if name}))},
+			fields=["name", "cpu_architecture"],
+		)
+	}
 
 
 def gpu_indexes(gpus):

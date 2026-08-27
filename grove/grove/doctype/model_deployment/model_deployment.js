@@ -1,15 +1,27 @@
 frappe.ui.form.on('Model Deployment', {
 	refresh(frm) {
 		if (frm.is_new()) return;
+		frm.add_custom_button(__('Place a Replica'), () => place_replica(frm));
 		frm.add_custom_button(__('Add Replica'), () => add_replica(frm));
 		show_replicas(frm);
 	},
 });
 
-// Until the scheduler lands, the operator names the box and the cards. Any Active box is
-// offered — a deployment is not tied to a region, and deploy:<model> unions its replicas wherever
-// they sit. The box's live GPU allocation is shown so a card another deployment already holds is
-// visible before the deploy refuses it.
+// The scheduler picks the box and the cards off this deployment's placement_policy. It throws
+// naming why every box was rejected when nothing fits, so the failure is readable here rather
+// than being a silent "no capacity".
+function place_replica(frm) {
+	frappe.confirm(__('Let the scheduler choose a box for one more replica?'), () => {
+		frm.call('add_replica').then((r) => {
+			if (r.message) frappe.set_route('Form', 'Model Replica', r.message);
+		});
+	});
+}
+
+// The manual path, still here: naming the box and the cards is how an operator overrides the
+// scheduler for one replica. Any Active box is offered — a deployment is not tied to a region,
+// and deploy:<model> unions its replicas wherever they sit. The box's live GPU allocation is
+// shown so a card another deployment already holds is visible before the deploy refuses it.
 function add_replica(frm) {
 	const dialog = new frappe.ui.Dialog({
 		title: __('Add Replica'),

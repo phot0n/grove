@@ -11,6 +11,7 @@
   "gpus_per_replica",
   "gpu_model",
   "min_vram_gb",
+  "placement_policy",
   "pipeline_parallel_size",
   "tensor_parallel_size",
   "section_tuning",
@@ -32,7 +33,7 @@
  ],
  "fields": [
   {
-   "description": "What every replica of this deployment serves. Set once \u2014 the gateway routes on it.",
+   "description": "What every replica of this deployment serves. Set once — the gateway routes on it.",
    "fieldname": "model",
    "fieldtype": "Link",
    "in_list_view": 1,
@@ -42,7 +43,7 @@
    "set_only_once": 1
   },
   {
-   "description": "The image every replica serves from. Deployment-only \u2014 a replica on a different image would answer to the same model name with a different engine.",
+   "description": "The image every replica serves from. Deployment-only — a replica on a different image would answer to the same model name with a different engine.",
    "fieldname": "engine_image",
    "fieldtype": "Link",
    "label": "Engine Image",
@@ -77,10 +78,18 @@
    "label": "GPU Model"
   },
   {
-   "description": "Optional hard filter for placement, per card. Also what the weights-fit check is run against \u2014 blank skips that check rather than blocking.",
+   "description": "Optional hard filter for placement, per card. Also what the weights-fit check is run against — blank skips that check rather than blocking.",
    "fieldname": "min_vram_gb",
    "fieldtype": "Float",
    "label": "Min VRAM (GB)"
+  },
+  {
+   "fieldname": "placement_policy",
+   "fieldtype": "Select",
+   "label": "Placement Policy",
+   "options": "balanced\npack\nspread",
+   "default": "balanced",
+   "description": "How the scheduler ORDERS boxes that can already take a replica — it never makes an unsuitable box suitable. balanced: reuse a warm box, then spread across regions, then leave big boxes whole. pack: fill a box before opening another. spread: availability first, even off a warm box."
   },
   {
    "default": "1",
@@ -90,7 +99,7 @@
    "label": "Pipeline Parallel Size"
   },
   {
-   "description": "Derived = GPUs per Replica / pipeline parallel size. \u2192 --tensor-parallel-size.",
+   "description": "Derived = GPUs per Replica / pipeline parallel size. → --tensor-parallel-size.",
    "fieldname": "tensor_parallel_size",
    "fieldtype": "Int",
    "label": "Tensor Parallel Size",
@@ -105,7 +114,7 @@
   },
   {
    "default": "auto",
-   "description": "\u2192 --kv-cache-dtype. fp8 halves the KV cache, which buys context on a card short of VRAM, at some accuracy.",
+   "description": "→ --kv-cache-dtype. fp8 halves the KV cache, which buys context on a card short of VRAM, at some accuracy.",
    "fieldname": "kv_cache_dtype",
    "fieldtype": "Select",
    "label": "KV Cache Dtype",
@@ -113,20 +122,20 @@
   },
   {
    "default": "0.9",
-   "description": "\u2192 --gpu-memory-utilization (0-1).",
+   "description": "→ --gpu-memory-utilization (0-1).",
    "fieldname": "gpu_memory_utilization",
    "fieldtype": "Float",
    "label": "GPU Memory Utilization"
   },
   {
-   "description": "\u2192 --max-num-batched-tokens. Blank = vLLM's own default.",
+   "description": "→ --max-num-batched-tokens. Blank = vLLM's own default.",
    "fieldname": "max_num_batched_tokens",
    "fieldtype": "Int",
    "label": "Max Num Batched Tokens"
   },
   {
    "default": "1024",
-   "description": "\u2192 --max-num-seqs, and the gateway's admission cap per replica. A replica that overrides this reports its own number to the route table; one that leaves it blank reports this one.",
+   "description": "→ --max-num-seqs, and the gateway's admission cap per replica. A replica that overrides this reports its own number to the route table; one that leaves it blank reports this one.",
    "fieldname": "max_num_seqs",
    "fieldtype": "Int",
    "label": "Max Num Seqs"
@@ -143,7 +152,7 @@
    "options": "auto\nFLASH_ATTN\nXFORMERS\nFLASHINFER"
   },
   {
-   "description": "\u2192 --max-model-len. Blank = 8192. Takes a suffix \u2014 32k, 128k, 1m \u2014 or a plain token count.",
+   "description": "→ --max-model-len. Blank = 8192. Takes a suffix — 32k, 128k, 1m — or a plain token count.",
    "fieldname": "max_model_len",
    "fieldtype": "Data",
    "label": "Max Model Len"
@@ -151,13 +160,13 @@
   {
    "default": "0",
    "depends_on": "max_model_len",
-   "description": "\u2192 VLLM_ALLOW_LONG_MAX_MODEL_LEN=1. Deployment-only: a Check cannot express 'inherit', and a wrong value gives garbage output instead of an error.",
+   "description": "→ VLLM_ALLOW_LONG_MAX_MODEL_LEN=1. Deployment-only: a Check cannot express 'inherit', and a wrong value gives garbage output instead of an error.",
    "fieldname": "allow_long_max_model_len",
    "fieldtype": "Check",
    "label": "Allow Long Max Model Len"
   },
   {
-   "description": "Deployment-only, except Extra Serve Args. These decide what the service advertises and what the compile cache is keyed on \u2014 replicas differing here would answer one model name with different engines.",
+   "description": "Deployment-only, except Extra Serve Args. These decide what the service advertises and what the compile cache is keyed on — replicas differing here would answer one model name with different engines.",
    "fieldname": "section_extra",
    "fieldtype": "Section Break",
    "label": "Extra"
@@ -177,13 +186,13 @@
   },
   {
    "depends_on": "eval:doc.engine_kind != 'custom'",
-   "description": "Freeform extra `vllm serve` flags appended verbatim. A replica may append its OWN on top of these \u2014 vLLM takes the last occurrence of a repeated flag, so a replica can add to this or override one of its flags without retyping the rest.",
+   "description": "Freeform extra `vllm serve` flags appended verbatim. A replica may append its OWN on top of these — vLLM takes the last occurrence of a repeated flag, so a replica can add to this or override one of its flags without retyping the rest.",
    "fieldname": "extra_serve_args",
    "fieldtype": "Small Text",
    "label": "Extra Serve Args"
   },
   {
-   "description": "What a replica of this deployment runs, from the same builder the deploy uses. A replica that overrides a knob renders its own \u2014 this is the shape they share.",
+   "description": "What a replica of this deployment runs, from the same builder the deploy uses. A replica that overrides a knob renders its own — this is the shape they share.",
    "fieldname": "serve_command",
    "fieldtype": "Code",
    "label": "Serve Command",

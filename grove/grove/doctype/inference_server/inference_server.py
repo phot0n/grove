@@ -150,6 +150,16 @@ class InferenceServer(GeneratedName, AnsibleHost, Document):
 			gpu.status = ("Allocated" if len(holders) == 1 else "Conflict") if holders else "Free"
 		return gpus
 
+	@property
+	def free_gpus(self):
+		"""The cards on this box nothing currently claims — `get_gpu_allocation` read the other
+		way round. Live, like the panel it inverts, so it cannot drift from what is really there.
+
+		A replica pinning no cards claims none, so it does NOT show here: a box running one looks
+		emptier than it is, which is why the scheduler declines such a box rather than trusting
+		this."""
+		return [gpu for gpu in self.get_gpu_allocation() if gpu.status == "Free"]
+
 	@frappe.whitelist()
 	def install_exporters(self):
 		"""Button: install this box's metrics exporters — node, and DCGM since it has GPUs
