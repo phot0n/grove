@@ -154,7 +154,7 @@ class Model(Document):
 			frappe.throw("A GGUF ref cannot be mirrored — the streamer needs safetensors.")
 		if not mirror_server(self.name):
 			frappe.throw(
-				f"No Active Model Deployment serves {self.name}. The mirror runs from a box "
+				f"No Active Model Replica serves {self.name}. The mirror runs from a box "
 				"that has the weights cached — deploy the model once first."
 			)
 		frappe.enqueue(
@@ -223,7 +223,7 @@ def mirror_server(model):
 	"""The Inference Server of an Active deployment of this model — a box that already has
 	the weights cached (or can pull them onto the disk that was sized for them)."""
 	rows = frappe.get_all(
-		"Model Deployment",
+		"Model Replica",
 		filters={"model": model, "status": "Active"},
 		fields=["inference_server"],
 		limit=1,
@@ -258,14 +258,14 @@ def mirror_weights_to_s3(model):
 
 
 def is_reachable(model, exclude=None, provider=None):
-	"""True if a request for `model` has somewhere to go: >=1 Active Model Deployment (on-prem), a
+	"""True if a request for `model` has somewhere to go: >=1 Active Model Replica (on-prem), a
 	Running standalone Pod (cloud), or a third-party provider we hold an endpoint and a key for.
-	`exclude` drops one deployment name (used from Model Deployment.on_trash, where the row still
+	`exclude` drops one deployment name (used from Model Replica.on_trash, where the row still
 	exists in the DB during delete). `provider` is for a caller mid-insert — see vendor_base_url."""
 	filters = {"model": model, "status": "Active"}
 	if exclude:
 		filters["name"] = ("!=", exclude)
-	if frappe.db.get_all("Model Deployment", filters=filters, limit=1):
+	if frappe.db.get_all("Model Replica", filters=filters, limit=1):
 		return True
 	if frappe.db.get_all("Pod", filters={"model": model, "status": "Running"}, limit=1):
 		return True

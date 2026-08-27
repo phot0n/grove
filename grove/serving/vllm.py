@@ -2,7 +2,7 @@
 # For license information, please see license.txt
 """`vllm serve` arguments, and the one request that proves the engine they started can serve. Both
 placements build them here: a Pod serves a Model in a container (command → dockerStartCmd) and a
-Model Deployment serves it in a container on a box (repo + args → the rendered run script).
+Model Replica serves it in a container on a box (repo + args → the rendered run script).
 Model-intrinsic flags come from the Model, per-box tuning from whichever doc owns the placement."""
 
 import json
@@ -107,7 +107,7 @@ class VllmEngine(Engine):
 	def args(self):
 		"""The flags only, without the positional repo (the run script supplies that)."""
 		args = [
-			"--served-model-name", self.model_name, *self.aliases,
+			"--served-model-name", self.model_name,
 			"--host", self.host,
 			"--port", str(self.port),
 			"--tensor-parallel-size", str(self.tensor_parallel_size),
@@ -188,19 +188,13 @@ class VllmEngine(Engine):
 		"""vLLM's own variables. Insertion order reproduces the on-prem env file line for line —
 		see Engine.env for why that matters."""
 		env = {
-			# INFO, not DEBUG. DEBUG is not only louder: it turns on inductor's size/alignment
-			# asserts (vllm/config/compilation.py) and puts the custom-op dispatcher's per-op
-			# skip lines in the log, several per decode step. On a card whose kernels fall back
-			# a lot that is most of the throughput. What INFO keeps is the pair that makes a
-			# request readable end to end — the received-request line and the generated output.
-			# What it drops is the prompt text, which is a DEBUG-only line. Raise it per
-			# deployment with an Environment Variables row when a prompt has to be captured.
 			"VLLM_LOGGING_LEVEL": "INFO",
 			# Telemetry is off for every image: huggingface_hub reads this with a plain env lookup
 			# in every version, so unlike hf_transfer it cannot crash an image without extras.
 			"HF_HUB_DISABLE_TELEMETRY": "1",
 			# vLLM phones home on startup unless told not to.
 			"VLLM_NO_USAGE_STATS": "1",
+			"SAFETENSORS_LOAD_STRATEGY": "prefetch",
 		}
 		if self.is_streaming:
 			env.update(streaming_env or {})

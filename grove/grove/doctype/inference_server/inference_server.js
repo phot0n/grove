@@ -14,7 +14,7 @@ frappe.ui.form.on('Inference Server', {
 });
 
 // GPU allocation is derived, never stored: the server recomputes it from the Machine's cards
-// and the Active Model Deployments on this box, so it is correct the moment one is deployed or
+// and the Active Model Replicas on this box, so it is correct the moment one is deployed or
 // torn down. Nothing to sync, nothing to go stale.
 function render_gpus(frm) {
 	const field = frm.fields_dict.gpus_html;
@@ -56,7 +56,7 @@ function render_gpus(frm) {
 		wrap.html(`
 			<div class="text-muted" style="margin-bottom:6px">
 				${__('{0} of {1} free', [free, gpus.length])} ·
-				${__('derived from Active Model Deployments')}
+				${__('derived from Active Model Replicas')}
 				${clash ? ` · <span style="color:var(--red-500)">${__('same GPU claimed twice')}</span>` : ''}
 			</div>
 			<table class="table table-bordered" style="margin:0">

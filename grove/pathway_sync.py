@@ -263,6 +263,32 @@ def _engine_kinds():
 	}
 
 
+def _deployments():
+	"""Every Model Deployment's image and admission cap, resolved once per snapshot rather than
+	per route row — the same reason `_engine_kinds` resolves images once. There is a handful of
+	deployments against every replica in the fleet."""
+	return {
+		deployment["name"]: deployment
+		for deployment in frappe.get_all(
+			"Model Deployment", fields=["name", "engine_image", "max_num_seqs"]
+		)
+	}
+
+
+def _resolve_deployment(replica, deployments):
+	"""A replica's effective image and admission cap. The image lives on its deployment; the cap may
+	be overridden per replica, where blank means inherit.
+
+	Not cosmetic — `max_num_seqs` IS the gateway's admission cap. A blank left unresolved would
+	advertise `engine_class.default_concurrency` while the engine actually runs the deployment's
+	number, and the gateway would admit against a cap the engine never had; the ingress's
+	authoritative per-replica gate would then 429 traffic the gateway thought it had room for."""
+	deployment = deployments.get(replica.get("model_deployment")) or {}
+	replica["engine_image"] = deployment.get("engine_image")
+	replica["max_num_seqs"] = replica.get("max_num_seqs") or deployment.get("max_num_seqs")
+	return replica
+
+
 def _capacity(row, kinds):
 	"""What this placement's engine runs at once. Past it the engine queues, where the gateway can
 	neither see the wait nor spend it on a replica — so it is admission control, not a hint. A
@@ -276,11 +302,18 @@ def _gateway_routes():
 	engine maps to its engines. A model with none is simply absent; the push prunes its key,
 	so it drops out of Redis and /v1/models on the next tick."""
 	kinds = _engine_kinds()
-	deps = frappe.get_all(
-		"Model Deployment",
-		filters={"status": "Active"},
-		fields=["name", "model", "engine_url", "inference_server", "max_num_seqs", "engine_image"],
-	)
+	deployments = _deployments()
+	deps = [
+		_resolve_deployment(replica, deployments)
+		for replica in frappe.get_all(
+			"Model Replica",
+			filters={"status": "Active"},
+			fields=[
+				"name", "model", "engine_url", "inference_server",
+				"max_num_seqs", "model_deployment",
+			],
+		)
+	]
 	# Which endpoints the model answers on. Stamped per row because deploy:<model> is the only
 	# thing pushed per model — a separate record would be a new namespace and a new push for one
 	# short string. Blank means unrestricted, which is what a Model predating the field reads as.
@@ -311,7 +344,7 @@ def _gateway_routes():
 			row = folded.setdefault((d.model, target["server"]), {**target, "capacity": 0})
 			row["capacity"] += capacity
 			continue
-		internal_key = frappe.get_doc("Model Deployment", d.name).get_password("internal_api_key") or ""
+		internal_key = frappe.get_doc("Model Replica", d.name).get_password("internal_api_key") or ""
 		routes.setdefault(d.model, []).append({
 			"engine_url": d.engine_url,
 			"internal_key": internal_key,
@@ -334,7 +367,7 @@ def _gateway_routes():
 			"upstream_model": upstream.get(model, ""),
 		})
 
-	# Standalone serving Pods (a vLLM image serving the Model directly — no Model Deployment)
+	# Standalone serving Pods (a vLLM image serving the Model directly — no Model Replica)
 	# register the same way: deploy:<model> → engine. Only Running pods with a derived
 	# engine_url contribute; others are dropped so the agent 503s instead of routing to a
 	# dead endpoint. A model served by both an MD and a Pod gets both engines (load-balanced).
@@ -468,24 +501,35 @@ def _replicas_for_ingress(ingress_name):
 		return routes
 
 	kinds = _engine_kinds()
-	deployments = frappe.get_all(
-		"Model Deployment",
-		filters={"status": "Active", "inference_server": ("in", list(owned))},
-		fields=["name", "model", "engine_url", "inference_server", "max_num_seqs", "engine_image"],
-	)
-	for deployment in deployments:
-		engine_url = private_url(deployment.engine_url, owned[deployment.inference_server])
+	deployments = _deployments()
+	# Resolved here for the same reason _gateway_routes resolves it, and it matters MORE here:
+	# the gateway's capacity is advisory, this one is the authoritative per-replica gate. An
+	# unresolved blank would have the ingress 429 at the engine default while the gateway admits
+	# against the deployment's number — the two planes disagreeing about one engine's cap.
+	replicas = [
+		_resolve_deployment(replica, deployments)
+		for replica in frappe.get_all(
+			"Model Replica",
+			filters={"status": "Active", "inference_server": ("in", list(owned))},
+			fields=[
+				"name", "model", "engine_url", "inference_server",
+				"max_num_seqs", "model_deployment",
+			],
+		)
+	]
+	for replica in replicas:
+		engine_url = private_url(replica.engine_url, owned[replica.inference_server])
 		if not engine_url:
 			continue
-		internal_key = frappe.get_doc("Model Deployment", deployment.name).get_password("internal_api_key") or ""
-		routes.setdefault(deployment.model, []).append({
+		internal_key = frappe.get_doc("Model Replica", replica.name).get_password("internal_api_key") or ""
+		routes.setdefault(replica.model, []).append({
 			"engine_url": engine_url,
 			"internal_key": internal_key,
 			"healthy": True,
-			"capacity": _capacity(deployment, kinds),
+			"capacity": _capacity(replica, kinds),
 			# No `server`: which box an engine sits on is the gateway's request-id part, and the
 			# ingress has no use for it — it already holds the box's address in engine_url.
-			"deployment": deployment.name,
+			"deployment": replica.name,
 		})
 	for rows in routes.values():
 		rows.sort(key=lambda r: r["deployment"])

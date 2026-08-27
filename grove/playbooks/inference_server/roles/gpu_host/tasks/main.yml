@@ -168,7 +168,7 @@
           / 1073741824) | round | int }}
 
 # ── Docker + NVIDIA container runtime ───────────────────────────────────────
-# Every Model Deployment serves from a container, so this is what makes the box able to.
+# Every Model Replica serves from a container, so this is what makes the box able to.
 # Everything below must come AFTER the mount above: Docker's data-root lives on the data
 # volume, and writing it into an unmounted mount point would shadow it.
 - name: Fetch the NVIDIA container-toolkit signing key

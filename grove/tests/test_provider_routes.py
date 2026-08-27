@@ -51,7 +51,7 @@ class FakeQuery:
 	def __call__(self, doctype, filters=None, fields=None, pluck=None, **kwargs):
 		rows = {
 			"Model": MODELS,
-			"Model Deployment": DEPLOYMENTS,
+			"Model Replica": DEPLOYMENTS,
 			"Pod": PODS,
 			"Model Provider": [{"name": name} for name in PROVIDERS],
 			"Inference Server": [{"name": "INF-direct", "ingress": None}],

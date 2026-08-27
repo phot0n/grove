@@ -7,7 +7,7 @@ from frappe.model.document import Document
 
 from grove import failure
 from grove.ansible import AnsibleHost
-from grove.grove.doctype.model_deployment.model_deployment import GPU_CLAIMING_STATUSES
+from grove.grove.doctype.model_replica.model_replica import GPU_CLAIMING_STATUSES
 from grove.monitoring import run_exporters_play
 from grove.naming import GeneratedName
 from grove.utils import validate_id_safe_name
@@ -82,7 +82,7 @@ class InferenceServer(GeneratedName, AnsibleHost, Document):
 		validate_id_safe_name(self.doctype, new_name)
 
 	# ── The box ───────────────────────────────────────────────────────────────
-	# Everything that reaches the hardware goes through here: a Model Deployment talks to
+	# Everything that reaches the hardware goes through here: a Model Replica talks to
 	# its Inference Server, and the Server is the only side that knows about a Machine.
 
 	@property
@@ -123,7 +123,7 @@ class InferenceServer(GeneratedName, AnsibleHost, Document):
 	@frappe.whitelist()
 	def get_gpu_allocation(self):
 		"""The box's GPUs and which deployments hold them, computed live: the cards come
-		from the Machine, the claims from every Model Deployment on this server whose status
+		from the Machine, the claims from every Model Replica on this server whose status
 		still owns its cards. Nothing is stored, so it can't drift out of step with what's
 		really there — and the statuses come from the deployment module rather than a second
 		list here, so this panel and the check that refuses a clash can never disagree.
@@ -133,15 +133,15 @@ class InferenceServer(GeneratedName, AnsibleHost, Document):
 		gpus = self.gpus
 		claims = {}
 		for deployment in frappe.get_list(
-			"Model Deployment",
+			"Model Replica",
 			filters={"inference_server": self.name, "status": ["in", GPU_CLAIMING_STATUSES]},
 			fields=["name", "model"],
 		):
 			for row in frappe.get_list(
-				"Model Deployment GPU",
-				filters={"parent": deployment.name, "parenttype": "Model Deployment"},
+				"Model Replica GPU",
+				filters={"parent": deployment.name, "parenttype": "Model Replica"},
 				fields=["gpu_index"],
-				parent_doctype="Model Deployment",
+				parent_doctype="Model Replica",
 			):
 				claims.setdefault(row.gpu_index, []).append(deployment)
 		for gpu in gpus:

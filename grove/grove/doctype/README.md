@@ -24,8 +24,9 @@ one own**, because Grove's rule is that state has exactly one owner and everythi
 |---|---|
 | `Model` | A model, named `<provider>/<id>` off the Model ID typed at creation and frozen there. One we host names an HF repo — that is what an engine serves, and what the S3 mirror is filled from; one a vendor serves names none, because there is no engine to start. `published` means *reachable* — a live deployment, a running pod, or a complete provider — and is never a manual claim. Not an access gate. |
 | `Model Provider` | Who serves a model: `frappe` for our own engines, a vendor for a third-party API. The name is the namespace every model under it is named in. A **Base URL** is what makes it third-party: with one (and a key), its published models route straight to the vendor and nothing is ever deployed for them. |
-| `Model Deployment` | One on-prem placement of a Model on an Inference Server, named `<model id>-<region>-<server>-<n>` (`qwen3-8b-ap-south-1-inf3-00007`). Re-derives its arguments at deploy time, from the Engine its Engine Image names — a `custom` image runs its own entrypoint and is gated at the box's proxy instead of by a key it does not enforce. |
-| `Model Deployment GPU` | Which GPUs that placement takes (child). |
+| `Model Deployment` | The logical service: one Model on one hardware shape. Owns the image, the GPUs-per-replica, and the tuning every replica of it runs. Named `MD-{#####}`, counted — several deployments of one model are normal (a second **shape**, or a rollout running old and new side by side). The name carries neither the model nor the shape: `gpus_per_replica` is editable while a name is not, so `4xh100` would go stale the first time someone re-shaped it. Deliberately **not** region-scoped: `deploy:<model>` is global, so replicas in different regions already stand in for each other, and one deployment rolls a model out everywhere. |
+| `Model Replica` | One **replica** of a Model Deployment: which box, which cards, which port. Named `<model id>-<region>-<server>-<n>` (`qwen3-8b-ap-south-1-inf3-00007`). Re-derives its arguments at deploy time from the Engine its deployment builds — a `custom` image runs its own entrypoint and is gated at the box's proxy instead of by a key it does not enforce. Carries tuning where it **overrides** its deployment: blank or 0 there means inherit. `kv_cache_dtype`, `gpu_memory_utilization`, `max_num_seqs` and `attention_backend` are **prefilled**, so a new replica starts as an explicit override and editing the deployment will not move it — clear the field to hand ownership back. Migrated replicas were blanked, so they inherit. Takes as many cards as its deployment declares — replicas of one deployment are interchangeable, which is what makes `replicas x capacity` arithmetic. |
+| `Model Replica GPU` | Which GPUs that replica takes (child). |
 | `Pod` | A standalone RunPod vLLM instance. Fully self-contained — its own spawn/sync/restart/terminate, and it registers its own endpoint. Sends its **stored** `serve_command`, so it must be saved before it is re-spawned. |
 | `Pod Env` / `Pod Port` | That pod's environment and its port pool (children). |
 | `Engine Image` | The container image an engine is spawned from, and what only the image knows: its `engine_kind`, and for a `custom` one the warmup request (path + body) that proves it serves. Both placements read them, so the same image warms up the same way wherever it runs. |
@@ -61,13 +62,18 @@ Append-only. Never read to decide anything; read to find out why.
 - **Server names are generated, never typed** (`grove/naming.py`): `<prefix><n>-<region>`, counted per
   region out of `tabSeries`. A name is one DNS label, so the region is a suffix rather than a
   namespace — `*.<zone>` covers `gw1-ap-south-1.<zone>` and nothing deeper.
-- **A deployment's name says what it serves and where** (`grove/naming.py`):
+- **A replica's name says what it serves and where** (`grove/naming.py`):
   `<model id>-<region>-<server>-<n>`, e.g. `qwen3-8b-ap-south-1-inf3-00007`. The region goes in as
   its provider codes it — no shortening rule, since `ap-south-1`, `asia-south1` and `southeastasia`
   share none. The box contributes only the part of its name that is not the region (`inf3`), and
-  the number comes out of the same `MD-` series the old `MD-00007` names used. The name is also the
-  engine's container name (`vllm-<name>`) and its path on the box's proxy, so it is never renamed
-  after insert.
+  the number comes out of the same `MD-` series the old `MD-00007` names used — kept as `MD-`
+  through the rename because it is a counter key, not a label. The name is also the engine's
+  container name (`vllm-<name>`) and its path on the box's proxy, so it is never renamed after
+  insert.
+- **A deployment's name is `MD-{#####}`** (`grove/naming.py`), off the SAME `MD-` series, so one
+  number is handed out once and an `MD-` name never means two things — replicas predating the
+  descriptive format are still named `MD-00010`, and a route row's `deployment=` carries a replica
+  name. It says neither the model nor the shape: `gpus_per_replica` is editable and a name is not.
 - **A cloud resource id lives in a read-only `Data` field**, written with `db_set`, and its creator is
   guarded by `if self.<id>: return` (see `Network.create_network`). That is what makes provisioning
   re-runnable.

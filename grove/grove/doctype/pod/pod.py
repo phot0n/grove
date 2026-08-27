@@ -27,7 +27,6 @@ class Pod(Document):
 		from grove.grove.doctype.pod_env.pod_env import PodEnv
 		from grove.grove.doctype.pod_port.pod_port import PodPort
 
-		aliases: DF.SmallText | None
 		allow_long_max_model_len: DF.Check
 		api_key: DF.Password | None
 		attention_backend: DF.Literal["auto", "FLASH_ATTN", "XFORMERS", "FLASHINFER"]
@@ -64,7 +63,7 @@ class Pod(Document):
 
 	"""A cloud GPU pod (e.g. RunPod), modelled on the provider's pod-create request: GPU
 	list, port pool, Engine Image, startup command, volume, SSH, env. The pod IS the
-	deployment — it serves its Model directly, with no Model Deployment behind it, and is
+	deployment — it serves its Model directly, with no Model Replica behind it, and is
 	operated from its own Spawn / Sync / Restart / Terminate buttons.
 
 	The image decides how it is started. A vllm-kind image takes `vllm serve` arguments, so
@@ -91,7 +90,6 @@ class Pod(Document):
 			max_num_seqs=self.max_num_seqs,
 			attention_backend=self.attention_backend,
 			allow_long_max_model_len=self.allow_long_max_model_len,
-			aliases=self.aliases,
 			extra_serve_args=self.extra_serve_args,
 			startup_command=self.startup_command,
 			**image_tuning,

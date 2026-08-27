@@ -1,4 +1,4 @@
-// Head/layer counts drive the parallelism checks on Pod and Model Deployment, so read them
+// Head/layer counts drive the parallelism checks on Pod and Model Replica, so read them
 // off the repo rather than trusting a hand-typed number.
 frappe.ui.form.on('Model', {
 	refresh(frm) {

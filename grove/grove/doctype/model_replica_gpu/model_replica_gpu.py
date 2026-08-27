@@ -4,5 +4,5 @@
 from frappe.model.document import Document
 
 
-class ModelDeploymentGPU(Document):
+class ModelReplicaGPU(Document):
 	pass

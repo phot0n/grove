@@ -78,7 +78,7 @@
   },
   {
    "default": "1",
-   "description": "Auto: this model has a live route (an Active Model Deployment or a Running Pod). Not an access gate \u2014 access is granted per user, via Grove User Group or Grove User.",
+   "description": "Auto: this model has a live route (an Active Model Replica or a Running Pod). Not an access gate \u2014 access is granted per user, via Grove User Group or Grove User.",
    "fieldname": "published",
    "fieldtype": "Check",
    "in_list_view": 1,
@@ -186,7 +186,7 @@
  "links": [
   {
    "group": "Placements",
-   "link_doctype": "Model Deployment",
+   "link_doctype": "Model Replica",
    "link_fieldname": "model"
   },
   {

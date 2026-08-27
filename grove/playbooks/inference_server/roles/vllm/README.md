@@ -69,7 +69,8 @@ See [`defaults/main.yml`](defaults/main.yml) for the full list. Most-used:
 
 The individual serve flags (`--max-model-len`, `--gpu-memory-utilization`, the tool/reasoning
 parsers, …) are **not** role variables. Grove builds the full list in `grove/serving/` from the
-Model ⊕ the Model Deployment and passes it as `vllm_serve_args`; the Pod path uses the same
+Model ⊕ its Model Deployment ⊕ the Model Replica's own overrides and passes it as
+`vllm_serve_args`; the Pod path uses the same
 Engine, so the two can't drift. Running the
 role by hand means passing the flags yourself:
 

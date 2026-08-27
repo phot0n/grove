@@ -141,7 +141,7 @@ def engine_targets(agent):
 	boxes = {box["name"]: box for box in inference_boxes(agent)}
 	deployments = (
 		frappe.get_all(
-			"Model Deployment",
+			"Model Replica",
 			filters={"inference_server": ("in", list(boxes)), "status": "Active"},
 			fields=["name", "model", "engine_url", "inference_server"],
 		)

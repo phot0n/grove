@@ -3,7 +3,7 @@
 """Relay a live log stream onto a document's form over realtime, for as long as someone is
 watching it.
 
-Both log followers share this: a Pod reads its provider's SSE stream, a Model Deployment reads
+Both log followers share this: a Pod reads its provider's SSE stream, a Model Replica reads
 `docker logs --follow` over SSH. They differ only in where the lines come from, so each passes
 an iterator of lines — with `None` for a tick (a keep-alive, or a spell of silence) so a quiet
 stream still reaches the liveness check on time.

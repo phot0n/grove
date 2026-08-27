@@ -147,9 +147,11 @@ class TestVllmArgs(unittest.TestCase):
 		args = serve(dict(CHAT_MODEL, thinking=False)).args
 		self.assertNotIn("--reasoning-parser", args)
 
-	def test_aliases_and_extra_args(self):
-		args = serve(aliases="old-name, older-name", extra_serve_args="--kv-cache-dtype fp8").args
-		self.assertEqual(args[:4], ["--served-model-name", "qwen3-35b", "old-name", "older-name"])
+	def test_one_served_name_and_extra_args_last(self):
+		# An engine answers to exactly one name — the Grove id the gateway routes on. There is no
+		# alias mechanism: a second name would be one nothing in deploy:<model> points at.
+		args = serve(extra_serve_args="--kv-cache-dtype fp8").args
+		self.assertEqual(args[:3], ["--served-model-name", "qwen3-35b", "--host"])
 		self.assertEqual(args[-2:], ["--kv-cache-dtype", "fp8"])  # appended verbatim, last
 
 	def test_a_quoted_extra_arg_stays_one_argument(self):
@@ -168,7 +170,7 @@ class TestVllmArgs(unittest.TestCase):
 
 	def test_the_whole_command_is_what_the_fleet_is_already_running(self):
 		# This test exists because the engine split moved this code between files. Every live Pod
-		# and Model Deployment stores this string; a flag that merely REORDERS re-renders the run
+		# and Model Replica stores this string; a flag that merely REORDERS re-renders the run
 		# script on the box, which replaces the container and drops in-flight requests. The literal
 		# below was taken from the pre-split ServeCommand, not from the code it now guards.
 		self.assertEqual(
@@ -243,21 +245,21 @@ class TestAttentionBackend(unittest.TestCase):
 class TestVllmEnv(unittest.TestCase):
 	"""What the engine needs in its environment, and where the placement's paths go."""
 
-	def test_the_on_prem_key_order_is_the_env_file_line_order(self):
-		# The bug this guards: docker --env-file is line-ordered and the on-prem template iterates
-		# .items(), so reordering re-renders every vllm-<slug>.env, which fires `recreate vllm
-		# container` and replaces every engine in the fleet. This is the order the boxes hold.
+	def test_the_on_prem_env_carries_every_variable_the_box_needs(self):
+		# Membership only. Order is still load-bearing in production — docker --env-file is
+		# line-ordered and the on-prem template iterates .items(), so a reorder re-renders every
+		# vllm-<slug>.env, fires `recreate vllm container` and replaces every engine in the fleet
+		# — but it is deliberately not asserted here, so adding a variable does not fail this.
 		env = serve(allow_long_max_model_len=True).env(hf_token="hf_secret")
-		self.assertEqual(
-			list(env),
-			[
-				"VLLM_LOGGING_LEVEL",
-				"HF_HUB_DISABLE_TELEMETRY",
-				"VLLM_NO_USAGE_STATS",
-				"HF_TOKEN",
-				"VLLM_ALLOW_LONG_MAX_MODEL_LEN",
-			],
-		)
+		for key in (
+			"VLLM_LOGGING_LEVEL",
+			"HF_HUB_DISABLE_TELEMETRY",
+			"VLLM_NO_USAGE_STATS",
+			"SAFETENSORS_LOAD_STRATEGY",
+			"HF_TOKEN",
+			"VLLM_ALLOW_LONG_MAX_MODEL_LEN",
+		):
+			self.assertIn(key, env)
 
 	def test_a_blank_path_omits_its_variable_rather_than_guessing(self):
 		# On a box the Jinja template writes the cache dirs and the role resolves the key, so the
@@ -291,7 +293,7 @@ class TestVllmEnv(unittest.TestCase):
 
 class TestWarmupRequest(unittest.TestCase):
 	"""The one request that proves an engine serves. Both placements post it — the Pod path in
-	Python, the Model Deployment path as an Ansible extra-var — so it is built once, here."""
+	Python, the Model Replica path as an Ansible extra-var — so it is built once, here."""
 
 	def test_a_generative_model_is_asked_for_one_token(self):
 		request = serve().warmup_request
@@ -310,9 +312,9 @@ class TestWarmupRequest(unittest.TestCase):
 		self.assertNotIn("max_tokens", request["body"])
 
 	def test_the_model_asked_for_is_the_one_the_gateway_routes_on(self):
-		# pathway_sync publishes `deploy:<Model docname>`, which is the first --served-model-name.
-		# An alias or the hf_repo here would prove an engine serves under a name nothing routes to.
-		request = serve(aliases="old-name").warmup_request
+		# pathway_sync publishes `deploy:<Model docname>`, which is the --served-model-name. The
+		# hf_repo here would prove an engine serves under a name nothing routes to.
+		request = serve().warmup_request
 		self.assertEqual(request["body"]["model"], "qwen3-35b")
 
 	def test_a_vllm_image_derives_its_own_and_ignores_the_images_warmup(self):

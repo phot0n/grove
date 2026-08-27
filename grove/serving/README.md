@@ -1,6 +1,6 @@
 # `serving/` — what starts an engine
 
-One class per engine kind, behind one contract. A placement (Pod, Model Deployment) asks an engine
+One class per engine kind, behind one contract. A placement (Pod, Model Replica) asks an engine
 what to run, what environment it needs, what proves it serves, and what the routing side may hold
 it to — and never branches on `engine_kind` itself.
 
@@ -16,7 +16,7 @@ package is pure: no site, no mocking.
 
 ## Adding an engine
 
-One file, one entry in `engine_class`'s dict. `Pod`, `Model Deployment` and `pathway_sync` do not
+One file, one entry in `engine_class`'s dict. `Pod`, `Model Replica` and `pathway_sync` do not
 change. The kind string is the `Engine Image.engine_kind` Select option, verbatim and lowercase.
 
 ## What belongs on the contract
@@ -34,7 +34,7 @@ start failing containers that have been serving fine.
 `warmup_request` is the one thing a custom image is asked to state rather than answer with an
 absence, and it is stated on the **Engine Image** (`warmup_path`, `warmup_body`) — which request
 proves an engine serves is a fact about the image, not about where it is placed, so a Pod and a
-Model Deployment of the same image warm up the same way. `VllmEngine` derives its own and ignores
+Model Replica of the same image warm up the same way. `VllmEngine` derives its own and ignores
 both fields; a custom image that names no path has no warmup, and the health gate is the whole
 proof.
 
@@ -49,6 +49,10 @@ operator's Startup Command reaching the shell, so the two must not be collapsed 
 multiplier is 1024 and never 1000 — that is the number a repo's `config.json` declares, and the
 only one vLLM accepts without `VLLM_ALLOW_LONG_MAX_MODEL_LEN`. A bare number is already tokens, so
 every placement saved before the suffix existed reads back unchanged.
+
+A Model Replica carries the same field as an *override* of its deployment's, where blank means
+inherit — so blank on a replica falls through to the deployment, and blank on the deployment asks for
+the engine default. The two compose rather than colliding.
 
 Parsed once, in `Engine.__init__`, so both placements get it from the one builder they already
 share, and each `validate` writes the parsed number back onto the field — what is stored is
