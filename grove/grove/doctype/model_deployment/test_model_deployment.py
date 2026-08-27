@@ -374,7 +374,12 @@ class TestACandidateMeasuresTheBox(unittest.TestCase):
 		dep = dep or deployment()
 		dep.streams_weights = over.get("streams_weights", False)
 		stub = lambda self, **_kwargs: frappe._dict(placement_errors=[])  # noqa: E731
-		with patch.object(FakeDeployment, "engine_for", stub):
+		# Leases are an in-flight hint from Redis, exercised in test_lease; a candidate built
+		# here is measured against committed state alone.
+		with (
+			patch.object(FakeDeployment, "engine_for", stub),
+			patch(f"{MODULE}.lease.leased", lambda machine, indexes: set()),
+		):
 			return dep._candidate(
 				frappe._dict(name="inf3", machine="M-1", region=over.get("region", "ap-south-1")),
 				over.get("claim", claim(free=(0, 1, 2, 3, 4, 5), replicas=2)),

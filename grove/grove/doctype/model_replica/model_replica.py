@@ -229,6 +229,7 @@ class ModelReplica(Document):
 			name = claim_name(machine, index)
 			if frappe.db.exists("GPU Claim", name):
 				release_if_stale(name)
+
 			frappe.get_doc(
 				{
 					"doctype": "GPU Claim",

@@ -11,6 +11,7 @@ from grove.grove.doctype.gpu_claim.gpu_claim import claims_on
 from grove.grove.doctype.model.model import launch_config
 from grove.grove.doctype.model_replica.model_replica import GPU_CLAIMING_STATUSES
 from grove.naming import next_deployment_name
+from grove.placement import lease
 from grove.placement.base import Candidate, fitting_gpus, placement_policy, sort_key
 from grove.serving.base import DEFAULT_PORT, build_engine
 
@@ -211,6 +212,8 @@ class ModelDeployment(Document):
 
 	def _candidate(self, box, claim, box_architecture, image_architecture, siblings, per_region):
 		free = fitting_gpus(claim.free_gpus, self.gpu_model, self.min_vram_gb)
+		# Cards a placement in flight has announced, which no committed row shows yet.
+		free = tuple(index for index in free if index not in lease.leased(box.machine, free))
 		return Candidate(
 			inference_server=box.name,
 			region=box.region or "",
@@ -303,9 +306,17 @@ class ModelDeployment(Document):
 	def _place(self, inference_server, gpus):
 		"""Create the replica and take its cards, or neither.
 
+		The lease goes first and is what keeps a rival from BLOCKING. A `GPU Claim` is invisible
+		until it commits, and InnoDB locks the unique index entry meanwhile — so a rival trying
+		the same card waits out this whole transaction rather than failing fast. A lease is
+		visible the moment it is written, so the rival skips the card instead of queueing.
+
 		One savepoint, because the claim is what can fail: without it a lost race would leave a
 		replica behind holding nothing, which the next scan would count as an unpinned box and
 		refuse to place on."""
+		machine = frappe.db.get_value("Inference Server", inference_server, "machine")
+		if not lease.take(machine, gpus, self.name):
+			raise frappe.DuplicateEntryError("GPU Claim", f"{machine}:{gpus}", None)
 		frappe.db.savepoint("place_replica")
 		try:
 			replica = frappe.get_doc(
@@ -316,9 +327,14 @@ class ModelDeployment(Document):
 					"gpus": [{"gpu_index": index} for index in gpus],
 				}
 			).insert()
-		except frappe.DuplicateEntryError:
+		except Exception:
 			frappe.db.rollback(save_point="place_replica")
+			lease.release(machine, gpus)
 			raise
+		# Published before anything slow. Until this commits, the claim is invisible AND its index
+		# entry is locked, so a rival blocks for however long the rest of this request takes —
+		# setup() enqueues a play, and that wait was landing on whoever asked next.
+		frappe.db.commit()
 		replica.setup()
 		return replica.name
 
