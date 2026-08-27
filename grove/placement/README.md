@@ -36,6 +36,24 @@ a container Docker pulls happily and then fails at exec, deep inside a play, wit
 output naming the cause — which is exactly what `_validate_engine_architecture` exists to stop. A
 policy can only ever choose badly among boxes that would all have worked.
 
+## The three policies
+
+| Policy | Order | For |
+|---|---|---|
+| `balanced` | warm box → thinnest region → tightest fit → fewest replicas | the default |
+| `pack` | warm box → tightest fit → fewest replicas | batch work; region is not weighed at all, so replicas gather |
+| `spread` | thinnest region → emptiest box → warm box → fewest replicas | maximum separation |
+
+`BestFit` and `WorstFit` are the standard bin-packing names and mean the standard things, which is
+easy to get backwards: **best fit consolidates, worst fit distributes.** Taking the tightest box
+means the partly-used one keeps winning until it is full; taking the emptiest means the next
+replica finds a different box emptiest and lands there instead. `pack` is built on `BestFit` for
+exactly that reason.
+
+Every policy ends in a scorer that breaks a remaining tie, so two boxes alike in everything a
+policy reads still order deterministically — otherwise placement wanders between them run to run.
+`test_every_policy_ends_in_a_total_order` pins it.
+
 ## The tuple is the tiebreak
 
 `sort_key` returns one number per scorer, in the policy's order, and the winner is the `min`. So a

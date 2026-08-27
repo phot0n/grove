@@ -68,14 +68,15 @@ def placement_policy(policy):
 	from grove.placement.scorers import BestFit, FewestReplicas, SpreadRegions, WarmCache, WorstFit
 
 	policies = {
-		# The default: reuse a warm box, then spread across regions so a deployment does not die
-		# with one, then leave the biggest boxes whole.
+		# The default: a warm box, then a region this deployment is thin in, then the tightest
+		# fit so a whole box is left for a shape that needs one, then the quietest box.
 		"balanced": (WarmCache(), SpreadRegions(), BestFit(), FewestReplicas()),
-		# Fill a box before opening another. For batch work, where a stranded card costs more
-		# than a shared one.
-		"pack": (WarmCache(), WorstFit(), FewestReplicas()),
-		# Availability first: spread before anything else, even off a warm box.
-		"spread": (SpreadRegions(), WarmCache(), BestFit()),
+		# Consolidate. Tightest fit outright and region is not weighed at all, so replicas gather
+		# onto as few boxes as the shape allows — BestFit, because best fit is the packing one.
+		"pack": (WarmCache(), BestFit(), FewestReplicas()),
+		# Distribute. Thinnest region, then the emptiest box, so one region or one box taking
+		# everything is the last thing that happens; warmth only breaks a remaining tie.
+		"spread": (SpreadRegions(), WorstFit(), WarmCache(), FewestReplicas()),
 	}
 	scorers = policies.get(policy)
 	if not scorers:

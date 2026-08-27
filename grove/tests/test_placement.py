@@ -69,6 +69,9 @@ class TestEachPreference(unittest.TestCase):
 		self.assertLess(BestFit().score(box("a", surplus=0)), BestFit().score(box("b", surplus=6)))
 
 	def test_worst_fit_is_best_fits_inverse(self):
+		# The standard bin-packing names, meaning the standard things: best fit takes the tightest
+		# box and so CONSOLIDATES; worst fit takes the emptiest and so DISTRIBUTES. Getting these
+		# the wrong way round is how `pack` once spread.
 		snug, roomy = box("a", surplus=0), box("b", surplus=6)
 		self.assertLess(BestFit().score(snug), BestFit().score(roomy))
 		self.assertLess(WorstFit().score(roomy), WorstFit().score(snug))
@@ -99,11 +102,30 @@ class TestAPolicyIsItsOrder(unittest.TestCase):
 		self.assertEqual(self.winner("balanced", [far, warm]), "warm")
 		self.assertEqual(self.winner("spread", [far, warm]), "far")
 
-	def test_pack_and_balanced_invert_on_the_same_boxes(self):
+	def test_every_policy_ends_in_a_total_order(self):
+		# Two boxes alike in everything a policy reads would sort arbitrarily, and placement
+		# would wander between them run to run. Each policy's last scorer has to break that.
+		a = box("a", surplus=2, active_replicas=1)
+		b = box("b", surplus=2, active_replicas=3)
+		for policy in POLICIES:
+			with self.subTest(policy):
+				scorers = placement_policy(policy)
+				self.assertNotEqual(sort_key(a, scorers), sort_key(b, scorers))
+
+	def test_pack_consolidates_and_spread_distributes(self):
+		# The property the policy NAMES have to hold, and the one that was wrong: packing takes
+		# the tightest box so replicas gather, spreading takes the emptiest so they scatter.
 		snug = box("snug", surplus=0)
 		roomy = box("roomy", surplus=6)
-		self.assertEqual(self.winner("balanced", [snug, roomy]), "snug")
-		self.assertEqual(self.winner("pack", [snug, roomy]), "roomy")
+		self.assertEqual(self.winner("pack", [snug, roomy]), "snug")
+		self.assertEqual(self.winner("spread", [snug, roomy]), "roomy")
+
+	def test_pack_ignores_region_and_balanced_does_not(self):
+		# The only thing separating them: balanced weighs region before fit, pack not at all.
+		crowded_but_snug = box("snug", replicas_in_region=5, surplus=0)
+		empty_region = box("far", replicas_in_region=0, surplus=6)
+		self.assertEqual(self.winner("balanced", [crowded_but_snug, empty_region]), "far")
+		self.assertEqual(self.winner("pack", [crowded_but_snug, empty_region]), "snug")
 
 	def test_a_later_scorer_only_speaks_once_the_earlier_ones_tie(self):
 		# Both warm, both equally spread, both the same fit — only FewestReplicas is left.

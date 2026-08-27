@@ -30,18 +30,22 @@ class SpreadRegions(Scorer):
 
 
 class BestFit(Scorer):
-	"""Prefer the box with the least left over — so an 8-card box is not stranded by a 2-card
-	replica that a 2-card box would have taken."""
+	"""Prefer the box with the least left over — the tightest fit.
+
+	A 2-card replica takes a 2-card box rather than stranding six cards of an 8-card one, so whole
+	boxes stay free for shapes that need them. Over several replicas this CONSOLIDATES: the
+	partly-used box keeps winning until it is full."""
 
 	def score(self, candidate: Candidate) -> float:
 		return candidate.surplus
 
 
 class WorstFit(Scorer):
-	"""Prefer the box with the most left over — fill one box before opening another.
+	"""Prefer the box with the most left over — the emptiest box.
 
-	BestFit's inverse, and the reason `pack` exists: for batch work a stranded card costs more
-	than a shared one, which is the opposite of the latency-critical case."""
+	BestFit's inverse, and it DISTRIBUTES: taking cards off the emptiest box makes another box the
+	emptiest, so successive replicas land on different boxes. These are the standard bin-packing
+	names and they mean the standard things — best fit consolidates, worst fit spreads."""
 
 	def score(self, candidate: Candidate) -> float:
 		return -candidate.surplus

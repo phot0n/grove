@@ -263,7 +263,7 @@ class ModelDeployment(Document):
 		return counts
 
 	@frappe.whitelist()
-	def add_replica(self, inference_server=None, gpus=None):
+	def add_replica(self, inference_server: str | None = None, gpus: str | list | None = None):
 		"""Button: place one more replica of this deployment on a box and serve it.
 
 		Creates the Model Replica and calls its own `setup()` — this adds no second deploy
