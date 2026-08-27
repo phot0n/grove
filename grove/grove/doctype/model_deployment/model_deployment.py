@@ -7,6 +7,7 @@ import frappe
 from frappe.model.document import Document
 
 from grove.grove.doctype.engine_image.engine_image import engine_tuning
+from grove.grove.doctype.gpu_claim.gpu_claim import claims_on
 from grove.grove.doctype.model.model import launch_config
 from grove.grove.doctype.model_replica.model_replica import GPU_CLAIMING_STATUSES
 from grove.naming import next_deployment_name
@@ -173,9 +174,17 @@ class ModelDeployment(Document):
 				"<br>".join(f"<b>{c.inference_server}</b>: {c.rejection}" for c in candidates)
 				or "No Inference Server is Active and provisioned."
 			)
-		scorers = placement_policy(self.placement_policy or "balanced")
-		best = min(viable, key=lambda c: sort_key(c, scorers))
+		best = self.ranked_placements()[0]
 		return best.inference_server, list(best.fitting_gpus[: self.gpus_per_replica])
+
+	def ranked_placements(self):
+		"""Every box that can take a replica, best first by this deployment's policy.
+
+		The whole list rather than the winner, because losing a race for a card is not a failure:
+		the next box is already ranked, and `add_replica` just walks down."""
+		scorers = placement_policy(self.placement_policy or "balanced")
+		viable = [c for c in self._candidates() if c.is_viable]
+		return sorted(viable, key=lambda c: sort_key(c, scorers))
 
 	def _candidates(self):
 		"""Every Active, provisioned box measured against this deployment's shape.
@@ -270,17 +279,46 @@ class ModelDeployment(Document):
 		path. `gpus` is the CUDA indices to pin, as a list or a comma-separated string; none
 		means single-GPU unpinned, which is what a deployment naming no GPU rows already is.
 
-		With no box named, the scheduler picks one."""
-		if not inference_server:
-			inference_server, gpus = self.find_placement()
-		replica = frappe.get_doc(
-			{
-				"doctype": "Model Replica",
-				"model_deployment": self.name,
-				"inference_server": inference_server,
-				"gpus": [{"gpu_index": index} for index in gpu_indexes(gpus)],
-			}
-		).insert()
+		With no box named, the scheduler picks one — and if a sibling takes those cards first,
+		moves to the next box it already ranked rather than failing the request."""
+		if inference_server:
+			return self._place(inference_server, gpu_indexes(gpus))
+
+		candidates = self.ranked_placements()
+		if not candidates:
+			self.find_placement()  # throws naming why every box was rejected
+		for candidate in candidates:
+			try:
+				return self._place(
+					candidate.inference_server,
+					list(candidate.fitting_gpus[: self.gpus_per_replica]),
+				)
+			except frappe.DuplicateEntryError:
+				continue  # a sibling won these cards; the next box is already ranked
+		frappe.throw(
+			f"Every box that could take a replica of {self.name} lost its cards to another "
+			"placement while this one was being made. Try again."
+		)
+
+	def _place(self, inference_server, gpus):
+		"""Create the replica and take its cards, or neither.
+
+		One savepoint, because the claim is what can fail: without it a lost race would leave a
+		replica behind holding nothing, which the next scan would count as an unpinned box and
+		refuse to place on."""
+		frappe.db.savepoint("place_replica")
+		try:
+			replica = frappe.get_doc(
+				{
+					"doctype": "Model Replica",
+					"model_deployment": self.name,
+					"inference_server": inference_server,
+					"gpus": [{"gpu_index": index} for index in gpus],
+				}
+			).insert()
+		except frappe.DuplicateEntryError:
+			frappe.db.rollback(save_point="place_replica")
+			raise
 		replica.setup()
 		return replica.name
 
@@ -288,8 +326,9 @@ class ModelDeployment(Document):
 def _claims_by_box(boxes):
 	"""What each box is running and which of its cards nothing holds.
 
-	Three queries for the whole fleet rather than the per-box walk `get_gpu_allocation` does —
-	that one re-queries per box and again per replica on it, which a fleet scan cannot afford."""
+	Cards come from the Machine, holders from `GPU Claim` — the same one owner the allocation
+	panel reads, so the scheduler and the panel cannot disagree about what is free. Three queries
+	for the whole fleet rather than the per-box walk `get_gpu_allocation` does."""
 	machines = sorted({box.machine for box in boxes if box.machine})
 	cards = frappe.get_all(
 		"Machine GPU",
@@ -297,32 +336,30 @@ def _claims_by_box(boxes):
 		fields=["parent", "gpu_index", "gpu_model", "vram_gb"],
 		order_by="gpu_index",
 	) if machines else []
+	holders = claims_on([box.name for box in boxes])
+	# A replica pinning no cards claims none, so it cannot be counted from the claims — and it is
+	# exactly the case that makes a box look emptier than it is. Counted here so `_rejection` can
+	# decline the box rather than place onto cards it cannot see.
 	replicas = frappe.get_all(
 		"Model Replica",
 		filters={"inference_server": ("in", [box.name for box in boxes]),
 		         "status": ("in", GPU_CLAIMING_STATUSES)},
 		fields=["name", "inference_server"],
 	)
-	pinned = frappe.get_all(
-		"Model Replica GPU",
-		filters={"parent": ("in", [r.name for r in replicas]), "parenttype": "Model Replica"},
-		fields=["parent", "gpu_index"],
-		parent_doctype="Model Replica",
-	) if replicas else []
+	claimed_by = {}
+	for (server, _index), replica in holders.items():
+		claimed_by.setdefault(server, set()).add(replica)
 
-	held = {}
-	for row in pinned:
-		held.setdefault(row.parent, set()).add(int(row.gpu_index))
 	claims = {}
 	for box in boxes:
 		mine = [r for r in replicas if r.inference_server == box.name]
-		taken = {index for r in mine for index in held.get(r.name, ())}
+		taken = {index for (server, index) in holders if server == box.name}
 		on_machine = [c for c in cards if c.parent == box.machine]
 		claims[box.name] = frappe._dict(
 			free_gpus=[c for c in on_machine if int(c.gpu_index) not in taken],
 			vram_by_index={int(c.gpu_index): c.vram_gb for c in on_machine},
 			replicas=len(mine),
-			unpinned=len([r for r in mine if not held.get(r.name)]),
+			unpinned=len([r for r in mine if r.name not in claimed_by.get(box.name, ())]),
 		)
 	return claims
 

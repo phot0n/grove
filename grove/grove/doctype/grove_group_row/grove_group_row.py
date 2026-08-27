@@ -4,7 +4,10 @@
 from frappe.model.document import Document
 
 
-class UsageModelRow(Document):
+class GroveGroupRow(Document):
+	"""One Grove User Group a person belongs to. Membership is a list: every group's models
+	are unioned, and the user's own Deny still beats all of them."""
+
 	# begin: auto-generated types
 	# This code is auto-generated. Do not modify anything in this block.
 
@@ -13,15 +16,10 @@ class UsageModelRow(Document):
 	if TYPE_CHECKING:
 		from frappe.types import DF
 
-		cached_tokens: DF.Int
-		completion_tokens: DF.Int
-		model: DF.Link | None
 		parent: DF.Data
 		parentfield: DF.Data
 		parenttype: DF.Data
-		prompt_tokens: DF.Int
-		request_count: DF.Int
-		total_tokens: DF.Int
+		user_group: DF.Link
 	# end: auto-generated types
 
 	pass

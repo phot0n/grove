@@ -287,24 +287,30 @@ class TestEffectiveUsers(unittest.TestCase):
 	"""user:<name> — the record that holds everything belonging to the person rather than to a
 	credential, so a budget flip or an access edit is one push however many keys they hold."""
 
-	def users(self, users=(), rows=()):
+	def users(self, users=(), rows=(), groups=()):
+		self.calls = {}
+
 		def get_all(doctype, **kwargs):
+			self.calls[doctype] = self.calls.get(doctype, 0) + 1
 			if doctype == "Grove User":
 				return list(users)
 			if doctype == "Grove Model Row":
 				return list(rows)
+			if doctype == "Grove Group Row":
+				return list(groups)
 			raise AssertionError(f"unexpected get_all({doctype})")
 
 		with unittest.mock.patch.object(frappe, "get_all", side_effect=get_all):
 			return pathway_sync._effective_users()
 
-	def test_a_user_carries_their_group_their_deltas_and_their_budget_flag(self):
+	def test_a_user_carries_their_groups_their_deltas_and_their_budget_flag(self):
 		[user] = self.users(
-			[frappe._dict(name="GU-1", user="a@x.com", user_group="acme", rate_limited=1)],
+			[frappe._dict(name="GU-1", user="a@x.com", rate_limited=1)],
 			[
 				frappe._dict(parent="GU-1", model="qwen3-4b", parentfield="allow"),
 				frappe._dict(parent="GU-1", model="qwen3-35b", parentfield="deny"),
 			],
+			[frappe._dict(parent="GU-1", user_group="acme")],
 		)
 		self.assertEqual(user["name"], "GU-1")
 		self.assertEqual(user["email"], "a@x.com")
@@ -317,18 +323,36 @@ class TestEffectiveUsers(unittest.TestCase):
 		# The agent splits on commas (pathway, internal/domain/access.go `ModelSet`), so the
 		# join is the wire format, not a display choice.
 		[user] = self.users(
-			[frappe._dict(name="GU-1", user="a@x.com", user_group="", rate_limited=0)],
+			[frappe._dict(name="GU-1", user="a@x.com", rate_limited=0)],
 			[
 				frappe._dict(parent="GU-1", model="b", parentfield="allow"),
 				frappe._dict(parent="GU-1", model="a", parentfield="allow"),
 			],
+			[
+				frappe._dict(parent="GU-1", user_group="zeta"),
+				frappe._dict(parent="GU-1", user_group="acme"),
+			],
 		)
 		self.assertEqual(user["allow"], "a,b")
+		self.assertEqual(user["group"], "acme,zeta")
+
+	def test_the_same_group_twice_is_one_membership(self):
+		# Two rows naming one group are one grant; the wire list is a set, so the hash cannot
+		# move on a duplicate row nobody meant to add.
+		[user] = self.users(
+			[frappe._dict(name="GU-1", user="a@x.com", rate_limited=0)],
+			[],
+			[
+				frappe._dict(parent="GU-1", user_group="acme"),
+				frappe._dict(parent="GU-1", user_group="acme"),
+			],
+		)
+		self.assertEqual(user["group"], "acme")
 
 	def test_a_user_who_grants_nothing_is_still_pushed_as_blank(self):
 		# Blank overwrites what is already in Redis. Omitting the fields would leave a removed
 		# allow in force.
-		[user] = self.users([frappe._dict(name="GU-1", user="a@x.com", user_group=None, rate_limited=0)])
+		[user] = self.users([frappe._dict(name="GU-1", user="a@x.com", rate_limited=0)])
 		self.assertEqual((user["group"], user["allow"], user["deny"]), ("", "", ""))
 		self.assertIs(user["limited"], False)
 
@@ -337,15 +361,23 @@ class TestEffectiveUsers(unittest.TestCase):
 		# whatever the number of people.
 		users = self.users(
 			[
-				frappe._dict(name="GU-1", user="a@x.com", user_group="", rate_limited=0),
-				frappe._dict(name="GU-2", user="b@x.com", user_group="", rate_limited=0),
+				frappe._dict(name="GU-1", user="a@x.com", rate_limited=0),
+				frappe._dict(name="GU-2", user="b@x.com", rate_limited=0),
 			],
 			[
 				frappe._dict(parent="GU-1", model="m1", parentfield="allow"),
 				frappe._dict(parent="GU-2", model="m2", parentfield="allow"),
 			],
+			[
+				frappe._dict(parent="GU-1", user_group="acme"),
+				frappe._dict(parent="GU-2", user_group="beta"),
+			],
 		)
 		self.assertEqual([u["allow"] for u in users], ["m1", "m2"])
+		self.assertEqual([u["group"] for u in users], ["acme", "beta"])
+		# Three tables now, still three queries: membership must not become the N+1 the
+		# model rows stopped being.
+		self.assertEqual(self.calls, {"Grove User": 1, "Grove Model Row": 1, "Grove Group Row": 1})
 
 
 class TestEffectiveKeys(unittest.TestCase):

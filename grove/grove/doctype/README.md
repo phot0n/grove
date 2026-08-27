@@ -36,9 +36,10 @@ one own**, because Grove's rule is that state has exactly one owner and everythi
 
 | Doctype | Owns |
 |---|---|
-| `Grove User` | A person's policy: their group, their own allow/deny, their monthly token budget, whether they are currently over it. Belongs to the person, not the key. |
-| `Grove User Group` | A named set of models. Membership lives on `Grove User`, which links here — there is no member table. |
+| `Grove User` | A person's policy: the groups they are in, their own allow/deny, their monthly token budget, whether they are currently over it. Belongs to the person, not the key. |
+| `Grove User Group` | A named set of models. Membership lives on `Grove User`, which lists the groups it is in — there is no member table. A user reaches the union of all of them. |
 | `Grove Model Row` | One model in a grant (child). |
+| `Grove Group Row` | One group a user belongs to (child). |
 | `Grove API Key` | One credential. Its only fact of its own is whether it has been revoked. |
 | `Usage Record` | One (key, month). Totals roll up **from** the child rows, so nothing is lost. |
 | `Usage Gateway Row` | That month's tokens from one gateway (child). Summed across gateways. |

@@ -90,7 +90,7 @@ fleet gets re-pushed over row order. Order means nothing on the wire; it exists 
 | Redis key | Written by | Holds |
 |---|---|---|
 | `key:<sha256(secret)>` | state push (keys) | whose the key is |
-| `user:<name>` | state push (users) | group, own allow/deny, over-budget flag |
+| `user:<name>` | state push (users) | groups (comma list), own allow/deny, over-budget flag |
 | `group:<name>` | state push (groups) | the model grant for everyone in it |
 | `deploy:<model>` | state push (routes) | every placement of one model |
 | `catalog:public` | state push (groups) | the pooled public model list |
@@ -102,7 +102,8 @@ fleet gets re-pushed over row order. Order means nothing on the wire; it exists 
 
 Access is pushed as **three** records, one per thing that can change on its own: a group edit is one
 record however many members, a budget flip is one record however many keys, and the agent resolves
-all three at request time.
+all three at request time — unioning every group the user names before applying their own
+allow/deny.
 
 A model id is always `<provider>/<name>` (`frappe/qwen3.5-4b`). One id, one route key, one grant —
 the bare form was deliberately broken, because routing keys on `deploy:<id>` while access is matched

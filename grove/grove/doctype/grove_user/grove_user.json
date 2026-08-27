@@ -5,10 +5,10 @@
  "doctype": "DocType",
  "engine": "InnoDB",
  "field_order": [
-  "max_tokens",
   "user",
-  "user_group",
+  "user_groups",
   "column_break_head",
+  "max_tokens",
   "rate_limited",
   "section_allow",
   "allow",
@@ -27,12 +27,11 @@
    "unique": 1
   },
   {
-   "description": "Group this user belongs to. Everything the group grants, this user reaches \u2014 on top of their own Allow below.",
-   "fieldname": "user_group",
-   "fieldtype": "Link",
-   "in_list_view": 1,
-   "label": "Group",
-   "options": "Grove User Group"
+   "description": "Groups this user belongs to. Everything any of them grants, this user reaches \u2014 on top of their own Allow below.",
+   "fieldname": "user_groups",
+   "fieldtype": "Table MultiSelect",
+   "label": "Groups",
+   "options": "Grove Group Row"
   },
   {
    "fieldname": "column_break_head",
@@ -46,7 +45,6 @@
   },
   {
    "default": "0",
-   "description": "System-set: this user hit their monthly token budget, so every key they hold is rejected with 429 (pushed once, as limited on their own gateway record). Cleared by the daily grove.usage_pull.reactivate_rate_limited once current-month usage is back under budget (month rollover / raised budget); stays blocked for the rest of the month otherwise.",
    "fieldname": "rate_limited",
    "fieldtype": "Check",
    "in_list_view": 1,
@@ -66,7 +64,7 @@
    "options": "Grove Model Row"
   },
   {
-   "depends_on": "eval: doc.user_group",
+   "depends_on": "eval: doc.user_groups && doc.user_groups.length",
    "description": "Models this user may never call. Deny wins over everything \u2014 a group grant and a Public release both lose to it.",
    "fieldname": "section_deny",
    "fieldtype": "Section Break",
@@ -91,7 +89,7 @@
    "link_fieldname": "user"
   }
  ],
- "modified": "2026-08-21 12:46:25.293134",
+ "modified": "2026-08-27 18:44:59.529745",
  "modified_by": "Administrator",
  "module": "Grove",
  "name": "Grove User",

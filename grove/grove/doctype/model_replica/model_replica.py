@@ -23,6 +23,12 @@ _PORT_FREE_STATUSES = ("Terminated",)
 # Inactive is not: VRAM is not a reservation and a stopped container holds none of it, so its
 # cards are offered to siblings and Start re-checks before it puts an engine back on them.
 GPU_CLAIMING_STATUSES = ("Provisioning", "Active", "Broken")
+# What HOLDS a GPU Claim, which is the serving set plus Draft. A replica takes its cards the
+# moment its row exists, before anything is deployed — that reservation is what makes two
+# concurrent placements impossible rather than merely unlikely, since the second one cannot
+# insert the claim. The cost is that an abandoned Draft strands its cards until it is deleted,
+# which the allocation panel shows by name.
+CLAIM_HOLDING_STATUSES = ("Draft", *GPU_CLAIMING_STATUSES)
 
 
 class ModelReplica(Document):
@@ -160,7 +166,6 @@ class ModelReplica(Document):
 				r.vram_gb = gpu.vram_gb
 
 		self._validate_shape()
-		self.reject_claimed_gpus()
 
 		engine = self.engine
 		if errors := engine.placement_errors:
@@ -191,44 +196,48 @@ class ModelReplica(Document):
 				"shape that matches this box."
 			)
 
-	def reject_claimed_gpus(self):
-		"""A GPU backs one engine at a time — two vLLMs on one card split its VRAM and both
-		then OOM at a size each thought it had. Read live off the other deployments holding
-		GPUs on this box rather than a stored flag, so it always matches what is really there.
-		A stopped one does not count — its VRAM is genuinely free — so its cards are offered
-		to siblings and Start is what re-takes them. Called on save for early feedback, again
-		at deploy time and again on Start, because a sibling can move in between any two of
-		them (status moves via db.set_value, which skips validate)."""
-		declared = {int(r.gpu_index) for r in self.gpus or []}
-		if not (declared and self.inference_server):
-			return
-		siblings = frappe.get_all(
-			"Model Replica",
-			filters={
-				"inference_server": self.inference_server,
-				"name": ["!=", self.name or ""],
-				"status": ["in", GPU_CLAIMING_STATUSES],
-			},
-			pluck="name",
+	def sync_gpu_claims(self):
+		"""Make the GPU Claim rows match what this replica's status says it should hold.
+
+		The one place the claim rule lives. A claiming status takes a `GPU Claim` per pinned card,
+		whose NAME is `<box>:<index>` — so the database, not a check, is what stops two replicas
+		holding one card: the second insert cannot happen. Anything else releases.
+
+		Called after every status transition rather than from `validate`, because status moves by
+		`db.set_value`, which never runs validate."""
+		if self.status in CLAIM_HOLDING_STATUSES:
+			self.claim_gpus()
+		else:
+			self.release_gpus()
+
+	def claim_gpus(self):
+		"""Take a GPU Claim for each pinned card. Raises `frappe.DuplicateEntryError` if a sibling
+		already holds one — that is the race being lost, and the caller decides what to do about
+		it (placement moves to the next box; Start refuses on the button).
+
+		Re-taking a card this replica already holds is a no-op, so this is safe to call again on
+		a status change that did not move any cards."""
+		held = frappe.get_all(
+			"GPU Claim", filters={"model_replica": self.name}, pluck="gpu_index"
 		)
-		if not siblings:
-			return
-		clashes = {}
-		for row in frappe.get_all(
-			"Model Replica GPU",
-			filters={"parent": ["in", siblings], "parenttype": "Model Replica"},
-			fields=["parent", "gpu_index"],
-		):
-			if int(row.gpu_index) in declared:
-				clashes.setdefault(row.parent, []).append(int(row.gpu_index))
-		if clashes:
-			frappe.throw(
-				"<br>".join(
-					f"GPU {', '.join(str(i) for i in sorted(indices))} on {self.inference_server} "
-					f"is already claimed by deployment {deployment}."
-					for deployment, indices in clashes.items()
-				)
-			)
+		for row in self.gpus or []:
+			if int(row.gpu_index) in {int(index) for index in held}:
+				continue
+			frappe.get_doc(
+				{
+					"doctype": "GPU Claim",
+					"inference_server": self.inference_server,
+					"gpu_index": int(row.gpu_index),
+					"model_replica": self.name,
+				}
+			).insert(ignore_permissions=True)
+
+	def release_gpus(self):
+		"""Give this replica's cards back. Stopping releases on purpose — a stopped container
+		holds no VRAM, so the cards are genuinely free and a sibling may take them. Start is what
+		re-takes them, and fails loudly if it cannot."""
+		for name in frappe.get_all("GPU Claim", filters={"model_replica": self.name}, pluck="name"):
+			frappe.delete_doc("GPU Claim", name, ignore_permissions=True, force=True)
 
 	def _assign_engine_port(self):
 		"""Allocate a box-local vLLM port once (multi-tenant box: one port per
@@ -289,11 +298,20 @@ class ModelReplica(Document):
 
 			sync_published(self.model)
 
+	def after_insert(self):
+		"""Claim the cards as soon as the row exists, while still Draft.
+
+		Not in `validate`: a claim needs a name to hold the card with, and validate runs before
+		there is one. This is the moment that closes the race — before it, two placements reading
+		the same free list could both insert; after it, the second insert cannot happen."""
+		self.claim_gpus()
+
 	def on_trash(self):
 		# Deleting this deployment may drop the model's last Active placement.
 		# Exclude self — the row is still in the DB during on_trash.
 		from grove.grove.doctype.model.model import sync_published
 
+		self.release_gpus()
 		sync_published(self.model, exclude=self.name)
 
 	@frappe.whitelist()
@@ -337,11 +355,17 @@ class ModelReplica(Document):
 	def start(self):
 		"""Button: start the container Stop left on the box. → Active.
 
-		The GPU claim is re-checked first: Inactive released these cards, so a sibling may have
-		been placed on them while this was stopped. Nothing about `docker start` would notice —
-		two engines on one card split its VRAM and both OOM later, at a size each thought it
-		had — so this refuses on the button instead."""
-		self.reject_claimed_gpus()
+		The cards are re-taken first: Inactive released them, so a sibling may have been placed on
+		them while this was stopped. Nothing about `docker start` would notice — two engines on one
+		card split its VRAM and both OOM later, at a size each thought it had — so the claim is
+		taken on the button, where a DuplicateEntryError is something an operator can read."""
+		try:
+			self.claim_gpus()
+		except frappe.DuplicateEntryError:
+			frappe.throw(
+				f"A GPU this replica needs on {self.inference_server} was taken while it was "
+				"stopped. Free it, or place this replica somewhere else."
+			)
 		self.set_container_running(True)
 
 	def set_container_running(self, running):
@@ -540,9 +564,8 @@ def deploy_model(model_replica):
 			f"Inference Server {inf.name} is not provisioned — run its Setup "
 			"(host bootstrap) before deploying a model onto it."
 		)
-	# Re-checked here, not just on save: another deployment can have gone Active in the
-	# meantime, and status moves by db.set_value, which never runs validate.
-	md.reject_claimed_gpus()
+	# No claim check here: the cards were taken when the row was inserted and are held for
+	# every claiming status, so nothing can have moved onto them since.
 
 	# Grove owns the internal key: generate once and serve with it, so the gateway
 	# (which stores it as the deployment's internal_api_key) always matches.
@@ -572,11 +595,16 @@ def deploy_model(model_replica):
 		reference_docname=md.name,
 	)
 
-	frappe.db.set_value("Model Replica", md.name, _post_play_state(md, rc))
+	state = _post_play_state(md, rc)
+	frappe.db.set_value("Model Replica", md.name, state)
 	# db.set_value skips the controller on_update — recompute the model's
-	# published flag (Active deployment → publishable, Broken → maybe unpublish).
+	# published flag (Active deployment → publishable, Broken → maybe unpublish),
+	# and settle the GPU claims against whatever status the play left behind. The status is
+	# carried over rather than reloaded: it was just written from this same dict.
 	from grove.grove.doctype.model.model import sync_published
 
+	md.status = state["status"]
+	md.sync_gpu_claims()
 	sync_published(md.model)
 	frappe.db.commit()
 	return play_name, rc
@@ -629,7 +657,12 @@ def reconfigure_deployment(model_replica):
 		reference_docname=md.name,
 	)
 
-	frappe.db.set_value("Model Replica", md.name, _post_play_state(md, rc))
+	state = _post_play_state(md, rc)
+	frappe.db.set_value("Model Replica", md.name, state)
+	# Stopping releases the cards and Terminated gives them up for good; both arrive here as a
+	# status the controller never saw, so the claims are settled explicitly.
+	md.status = state["status"]
+	md.sync_gpu_claims()
 	frappe.db.commit()
 	return play_name, rc
 
@@ -642,8 +675,8 @@ def _post_play_state(md, rc):
 	This is also the migration. A deployment served before the engine proxy existed keeps its
 	old http://<ip>:<port> until its next Deploy or Update Engine Config — the same run that puts
 	the location on the box — so the URL never moves ahead of the route it names. Not md.save():
-	a full validate can throw on drift unrelated to this deploy (a sibling that claimed a GPU)
-	after the play already succeeded."""
+	a full validate can throw on drift unrelated to this deploy after the play already
+	succeeded."""
 	if rc != 0:
 		return {"status": "Broken"}
 	return {"status": "Active", "engine_url": md.derived_engine_url}

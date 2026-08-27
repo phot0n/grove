@@ -40,7 +40,7 @@ import requests
 
 import frappe
 
-from grove.access import model_rows
+from grove.access import group_rows, model_rows
 from grove.net import private_url
 from grove.serving.base import engine_class
 
@@ -155,7 +155,7 @@ def _public_catalog():
 
 
 def _effective_users():
-	"""Every Grove User projected for the gateway: their group, their own allow/deny, and whether
+	"""Every Grove User projected for the gateway: their groups, their own allow/deny, and whether
 	they are over their monthly budget. One record per person however many keys they hold — the
 	reason none of this is flattened onto the keys.
 
@@ -163,15 +163,15 @@ def _effective_users():
 	control plane flags here and the gateway honours as a 429. Holding it on the person is what
 	stops a blocked user minting a fresh, unblocked key."""
 	deltas = model_rows("Grove User")
-	users = frappe.get_all(
-		"Grove User", fields=["name", "user", "user_group", "rate_limited"]
-	)
+	memberships = group_rows()
+	users = frappe.get_all("Grove User", fields=["name", "user", "rate_limited"])
 	return [
 		{
 			"name": u.name,
 			"email": u.user or "",  # for humans reading Redis; no decision reads it
-			# The gateway reads group:<name> for the grant and the priority.
-			"group": u.user_group or "",
+			# One comma list, not one name: the gateway reads a group:<name> per entry and
+			# unions the grants. Sorted, so the same membership always hashes the same.
+			"group": ",".join(memberships.get(u.name, [])),
 			"allow": ",".join(deltas.get(u.name, {}).get("allow", [])),
 			"deny": ",".join(deltas.get(u.name, {}).get("deny", [])),
 			"limited": bool(u.rate_limited),

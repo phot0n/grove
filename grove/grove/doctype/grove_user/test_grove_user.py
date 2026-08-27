@@ -9,6 +9,7 @@ import frappe
 from frappe.tests import IntegrationTestCase
 
 from grove.grove.doctype.grove_user.grove_user import GROVE_USER_ROLE, register_user
+from grove.pathway_sync import _effective_users
 
 
 class IntegrationTestGroveUser(IntegrationTestCase):
@@ -33,3 +34,23 @@ class IntegrationTestGroveUser(IntegrationTestCase):
 		frappe.get_doc({"doctype": "Grove User", "user": register_user(email)}).insert()
 		with self.assertRaises(frappe.UniqueValidationError):
 			frappe.get_doc({"doctype": "Grove User", "user": email}).insert()
+
+	def test_membership_reaches_the_wire_as_one_sorted_comma_list(self):
+		# The unit tests mock the query away, so this is the only thing standing between a wrong
+		# parenttype/parentfield filter and every user projecting as ungrouped.
+		email = "grove-probe-groups@example.com"
+		for name in ("grove-probe-zeta", "grove-probe-acme"):
+			if not frappe.db.exists("Grove User Group", name):
+				frappe.get_doc({"doctype": "Grove User Group", "__newname": name}).insert()
+		grove_user = frappe.get_doc(
+			{
+				"doctype": "Grove User",
+				"user": register_user(email),
+				"user_groups": [
+					{"user_group": "grove-probe-zeta"},
+					{"user_group": "grove-probe-acme"},
+				],
+			}
+		).insert()
+		[record] = [u for u in _effective_users() if u["name"] == grove_user.name]
+		self.assertEqual(record["group"], "grove-probe-acme,grove-probe-zeta")

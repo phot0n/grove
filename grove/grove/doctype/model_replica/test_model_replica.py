@@ -14,6 +14,7 @@ import frappe
 
 from grove.serving.vllm import VllmEngine
 from grove.grove.doctype.model_replica.model_replica import (
+	CLAIM_HOLDING_STATUSES,
 	ENGINE_PORT_BASE,
 	GPU_CLAIMING_STATUSES,
 	ModelReplica,
@@ -161,66 +162,55 @@ class TestEnginePortAllocation(unittest.TestCase):
 
 
 class TestGpuClaims(unittest.TestCase):
-	"""Two engines on one card split its VRAM and both OOM at a size each thought it had. A
-	stopped deployment frees no card in the long run — Start puts an engine back on it."""
+	"""The claim IS a `GPU Claim` row named `<box>:<index>`, so two replicas cannot hold one card
+	— the primary key cannot hold one value twice. These pin WHICH statuses hold one; that the
+	second insert fails is the database's job and is proved in test_gpu_claim.py."""
 
-	def claim(self, gpu_index, siblings):
-		"""Whether a deployment on `box` may take `gpu_index`, given its siblings there."""
-		def fake_get_all(doctype, filters=None, fields=None, pluck=None):
-			if doctype == "Model Replica":
-				wanted = filters["status"][1]
-				return [s["name"] for s in siblings if s["status"] in wanted]
-			# frappe.get_all hands back attribute-access rows, not plain dicts.
-			return [
-				SimpleNamespace(parent=s["name"], gpu_index=s["gpu_index"])
-				for s in siblings
-				if s["name"] in filters["parent"][1]
-			]
+	def acted(self, status):
+		"""Which way sync_gpu_claims went for a replica in this status."""
+		doc = SimpleNamespace(status=status, calls=[])
+		doc.claim_gpus = lambda: doc.calls.append("claim")
+		doc.release_gpus = lambda: doc.calls.append("release")
+		ModelReplica.sync_gpu_claims(doc)
+		return doc.calls[0]
 
-		doc = SimpleNamespace(
-			inference_server="box", name="md-new", gpus=[SimpleNamespace(gpu_index=gpu_index)]
-		)
-		with patch.object(frappe, "get_all", fake_get_all):
-			with patch.object(frappe, "throw", side_effect=frappe.ValidationError):
-				try:
-					ModelReplica.reject_claimed_gpus(doc)
-				except frappe.ValidationError:
-					return False
-		return True
+	def test_a_draft_replica_already_holds_its_cards(self):
+		# The reservation that closes the race. Before it, two placements reading the same free
+		# list both insert; after it, the second cannot.
+		self.assertEqual(self.acted("Draft"), "claim")
 
-	def test_a_gpu_an_active_deployment_serves_on_is_refused(self):
-		self.assertFalse(self.claim(0, [{"name": "md-a", "status": "Active", "gpu_index": 0}]))
+	def test_a_deploying_replica_holds_its_cards(self):
+		# deploy_model flips to Provisioning mid-play; the cards were already claimed at insert
+		# and must stay claimed across it.
+		self.assertEqual(self.acted("Provisioning"), "claim")
 
-	def test_a_stopped_deployment_releases_its_gpu(self):
-		# A stopped container holds no VRAM, so the card is genuinely free for a sibling. What
-		# keeps that safe is Start re-checking, not this refusing.
-		self.assertTrue(self.claim(0, [{"name": "md-a", "status": "Inactive", "gpu_index": 0}]))
+	def test_a_serving_replica_holds_its_cards(self):
+		self.assertEqual(self.acted("Active"), "claim")
 
-	def test_a_deploying_sibling_already_owns_its_gpu(self):
-		# deploy_model checks the claim before it writes Provisioning, so if this status did not
-		# claim, a second deploy launched during the first one's play would pass the same check
-		# and put both engines on the card.
-		self.assertFalse(self.claim(0, [{"name": "md-a", "status": "Provisioning", "gpu_index": 0}]))
-
-	def test_a_broken_deployment_still_owns_its_gpu(self):
+	def test_a_broken_replica_still_holds_its_cards(self):
 		# --restart unless-stopped: a crash-looping engine keeps coming back onto its cards, so
-		# they are not free to hand out however dead the deployment looks.
-		self.assertFalse(self.claim(0, [{"name": "md-a", "status": "Broken", "gpu_index": 0}]))
+		# they are not free to hand out however dead the replica looks.
+		self.assertEqual(self.acted("Broken"), "claim")
 
-	def test_a_torn_down_deployment_releases_its_gpu(self):
-		self.assertTrue(self.claim(0, [{"name": "md-a", "status": "Terminated", "gpu_index": 0}]))
+	def test_a_stopped_replica_releases_its_cards(self):
+		# A stopped container holds no VRAM, so the card is genuinely free for a sibling. Start
+		# is what re-takes it, and refuses if it cannot.
+		self.assertEqual(self.acted("Inactive"), "release")
 
-	def test_the_gpu_panel_reads_the_same_list_this_check_does(self):
-		# Inference Server's GPU allocation panel used its own "Active" literal, so a Broken
-		# deployment's cards showed Free while a save onto them was refused. One list, imported.
-		from grove.grove.doctype.inference_server.inference_server import (
-			GPU_CLAIMING_STATUSES as panel_statuses,
-		)
+	def test_a_torn_down_replica_releases_its_cards(self):
+		self.assertEqual(self.acted("Terminated"), "release")
 
-		self.assertIs(panel_statuses, GPU_CLAIMING_STATUSES)
+	def test_every_status_the_doctype_offers_is_decided(self):
+		# A status nobody classified would fall through to release and quietly free a card that
+		# is still in use. Walk the Select rather than a list kept in step by hand.
+		fields = json.loads((Path(__file__).parent / "model_replica.json").read_text())["fields"]
+		[status] = [f for f in fields if f["fieldname"] == "status"]
+		for option in status["options"].split("\n"):
+			with self.subTest(option):
+				self.assertIn(self.acted(option), ("claim", "release"))
 
-	def test_a_free_gpu_on_a_busy_box_is_allowed(self):
-		self.assertTrue(self.claim(1, [{"name": "md-a", "status": "Active", "gpu_index": 0}]))
+	def test_holding_is_the_serving_set_plus_draft(self):
+		self.assertEqual(CLAIM_HOLDING_STATUSES, ("Draft", *GPU_CLAIMING_STATUSES))
 
 
 class TestGpuInventory(unittest.TestCase):
@@ -238,7 +228,6 @@ class TestGpuInventory(unittest.TestCase):
 			model_deployment="qwen3-35b-ap-south-1",
 			gpus=[row],
 			server=SimpleNamespace(gpus=on_box),
-			reject_claimed_gpus=lambda: None,
 			# One card pinned, and a deployment that asks for one — the shape check is exercised
 			# on its own in TestAReplicaMustBeTheShapeItsDeploymentDeclares.
 			deployment=SimpleNamespace(gpus_per_replica=1),
@@ -293,11 +282,14 @@ class TestReconfigureKeepsTheModelRoutable(unittest.TestCase):
 
 	def writes_during(self, rc):
 		"""Every db.set_value payload a reconfigure emits, in order."""
+		claims = []
 		md = SimpleNamespace(
 			name="MD-00007",
 			model="qwen3.5-4b",
 			derived_engine_url="https://10.0.0.9/e/md-00007",
 			get_password=lambda *args, **kwargs: "internal-key",
+			# The play's status lands on the doc, then the claims are settled against it.
+			sync_gpu_claims=lambda: claims.append(md.status),
 			server=SimpleNamespace(
 				name="INF-1",
 				is_provisioned=1,
@@ -407,21 +399,23 @@ class TestStartRechecksTheGpuClaim(unittest.TestCase):
 	both OOM later, at a size each thought it had — so Start refuses before it queues the play."""
 
 	def start(self, claimed):
-		"""What Start queued, given a GPU claim that does or does not clash."""
+		"""What Start queued, given cards a sibling did or did not take while this was stopped."""
 		queued = []
 
-		def reject_claimed_gpus():
+		def claim_gpus():
 			if claimed:
-				raise frappe.ValidationError("GPU 0 is already claimed by deployment md-a.")
+				raise frappe.DuplicateEntryError("GPU Claim", "box:0", None)
 
 		doc = SimpleNamespace(
-			reject_claimed_gpus=reject_claimed_gpus,
+			inference_server="box",
+			claim_gpus=claim_gpus,
 			set_container_running=queued.append,
 		)
-		try:
-			ModelReplica.start(doc)
-		except frappe.ValidationError:
-			pass
+		with patch.object(frappe, "throw", side_effect=frappe.ValidationError):
+			try:
+				ModelReplica.start(doc)
+			except frappe.ValidationError:
+				pass
 		return queued
 
 	def test_a_free_card_starts(self):

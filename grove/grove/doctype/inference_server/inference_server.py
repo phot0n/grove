@@ -7,7 +7,7 @@ from frappe.model.document import Document
 
 from grove import failure
 from grove.ansible import AnsibleHost
-from grove.grove.doctype.model_replica.model_replica import GPU_CLAIMING_STATUSES
+from grove.grove.doctype.gpu_claim.gpu_claim import claims_on
 from grove.monitoring import run_exporters_play
 from grove.naming import GeneratedName
 from grove.utils import validate_id_safe_name
@@ -122,32 +122,23 @@ class InferenceServer(GeneratedName, AnsibleHost, Document):
 
 	@frappe.whitelist()
 	def get_gpu_allocation(self):
-		"""The box's GPUs and which deployments hold them, computed live: the cards come
-		from the Machine, the claims from every Model Replica on this server whose status
-		still owns its cards. Nothing is stored, so it can't drift out of step with what's
-		really there — and the statuses come from the deployment module rather than a second
-		list here, so this panel and the check that refuses a clash can never disagree.
+		"""The box's GPUs and which replica holds each, computed live: the cards come from the
+		Machine, the holder from the `GPU Claim` on `<this box>:<index>`.
 
-		Two deployments naming the same CUDA index is not prevented anywhere — the row
-		reports every claimant so the clash is visible rather than silently halving VRAM."""
+		The claim IS the ownership — one row per card, and the primary key is what makes that
+		true, so this panel and the placement that refuses a taken card cannot disagree. A card
+		with no claim is genuinely free: a stopped replica released its cards on purpose, because
+		a stopped container holds no VRAM."""
 		gpus = self.gpus
-		claims = {}
-		for deployment in frappe.get_list(
-			"Model Replica",
-			filters={"inference_server": self.name, "status": ["in", GPU_CLAIMING_STATUSES]},
-			fields=["name", "model"],
-		):
-			for row in frappe.get_list(
-				"Model Replica GPU",
-				filters={"parent": deployment.name, "parenttype": "Model Replica"},
-				fields=["gpu_index"],
-				parent_doctype="Model Replica",
-			):
-				claims.setdefault(row.gpu_index, []).append(deployment)
+		holders = claims_on([self.name])
 		for gpu in gpus:
-			holders = claims.get(gpu.gpu_index, [])
-			gpu.deployments = holders
-			gpu.status = ("Allocated" if len(holders) == 1 else "Conflict") if holders else "Free"
+			replica = holders.get((self.name, int(gpu.gpu_index)))
+			gpu.deployments = (
+				[frappe.db.get_value("Model Replica", replica, ["name", "model"], as_dict=True)]
+				if replica
+				else []
+			)
+			gpu.status = "Allocated" if replica else "Free"
 		return gpus
 
 	@property

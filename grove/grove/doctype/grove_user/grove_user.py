@@ -6,7 +6,7 @@ from frappe.model.document import Document
 
 
 class GroveUser(Document):
-	"""Grove's per-user policy: their group, which models they may call, and how many tokens
+	"""Grove's per-user policy: their groups, which models they may call, and how many tokens
 	they may spend a month. All of it belongs to the person, not to any one API Key — a user's
 	keys are just credentials and share this budget. Created on demand; no doc means no group
 	and no allow, so the user reaches no models at all.
@@ -22,6 +22,7 @@ class GroveUser(Document):
 
 	if TYPE_CHECKING:
 		from frappe.types import DF
+		from grove.grove.doctype.grove_group_row.grove_group_row import GroveGroupRow
 		from grove.grove.doctype.grove_model_row.grove_model_row import GroveModelRow
 
 		allow: DF.Table[GroveModelRow]
@@ -29,7 +30,7 @@ class GroveUser(Document):
 		max_tokens: DF.Int
 		rate_limited: DF.Check
 		user: DF.Link
-		user_group: DF.Link | None
+		user_groups: DF.TableMultiSelect[GroveGroupRow]
 	# end: auto-generated types
 
 	def validate(self):

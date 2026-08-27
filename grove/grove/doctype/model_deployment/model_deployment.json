@@ -7,11 +7,11 @@
   "model",
   "engine_image",
   "engine_kind",
+  "placement_policy",
   "column_break_shape",
   "gpus_per_replica",
   "gpu_model",
   "min_vram_gb",
-  "placement_policy",
   "pipeline_parallel_size",
   "tensor_parallel_size",
   "section_tuning",
@@ -33,7 +33,7 @@
  ],
  "fields": [
   {
-   "description": "What every replica of this deployment serves. Set once — the gateway routes on it.",
+   "description": "What every replica of this deployment serves. Set once \u2014 the gateway routes on it.",
    "fieldname": "model",
    "fieldtype": "Link",
    "in_list_view": 1,
@@ -43,7 +43,7 @@
    "set_only_once": 1
   },
   {
-   "description": "The image every replica serves from. Deployment-only — a replica on a different image would answer to the same model name with a different engine.",
+   "description": "The image every replica serves from. Deployment-only \u2014 a replica on a different image would answer to the same model name with a different engine.",
    "fieldname": "engine_image",
    "fieldtype": "Link",
    "label": "Engine Image",
@@ -55,6 +55,7 @@
    "fetch_from": "engine_image.engine_kind",
    "fieldname": "engine_kind",
    "fieldtype": "Data",
+   "in_list_view": 1,
    "label": "Engine Kind",
    "read_only": 1
   },
@@ -78,18 +79,18 @@
    "label": "GPU Model"
   },
   {
-   "description": "Optional hard filter for placement, per card. Also what the weights-fit check is run against — blank skips that check rather than blocking.",
+   "description": "Optional hard filter for placement, per card. Also what the weights-fit check is run against \u2014 blank skips that check rather than blocking.",
    "fieldname": "min_vram_gb",
    "fieldtype": "Float",
    "label": "Min VRAM (GB)"
   },
   {
+   "default": "balanced",
+   "description": "Which box a new replica lands on. A policy is a list of tiebreaks applied <b>in order</b> \u2014 the next one only decides where the previous ties.<br><br><b>balanced</b> \u2014 a box already serving this model \u2192 the region running fewest of this deployment's replicas \u2192 the tightest fit, leaving whole boxes free for bigger shapes \u2192 the box running fewest replicas.<br><b>pack</b> \u2014 a box already serving this model \u2192 the tightest fit \u2192 fewest replicas. Region is not weighed at all, so replicas gather onto as few boxes as the shape allows. For batch work.<br><b>spread</b> \u2014 the region running fewest replicas, even if that means a cold box \u2192 the <i>emptiest</i> box \u2192 a warm box \u2192 fewest replicas. Maximum separation, so one region or one box going down takes the least with it.<br><br>\"Already serving this model\" means a sibling replica has the weights in that box's cache \u2014 it counts for nothing when the Model streams its weights from S3, since then no box is warmer than another.<br><br>This only <b>orders</b> boxes that can already take the replica; it never makes an unsuitable one suitable. Boxes are filtered first on the engine image's architecture, free cards, GPU Model and Min VRAM, and whether the weights fit the cards on offer. When none survives, placement names every box and why it was rejected.",
    "fieldname": "placement_policy",
    "fieldtype": "Select",
    "label": "Placement Policy",
-   "options": "balanced\npack\nspread",
-   "default": "balanced",
-   "description": "Which box a new replica lands on. A policy is a list of tiebreaks applied <b>in order</b> — the next one only decides where the previous ties.<br><br><b>balanced</b> — a box already serving this model &rarr; the region running fewest of this deployment's replicas &rarr; the tightest fit, leaving whole boxes free for bigger shapes &rarr; the box running fewest replicas.<br><b>pack</b> — a box already serving this model &rarr; the tightest fit &rarr; fewest replicas. Region is not weighed at all, so replicas gather onto as few boxes as the shape allows. For batch work.<br><b>spread</b> — the region running fewest replicas, even if that means a cold box &rarr; the <i>emptiest</i> box &rarr; a warm box &rarr; fewest replicas. Maximum separation, so one region or one box going down takes the least with it.<br><br>\"Already serving this model\" means a sibling replica has the weights in that box's cache — it counts for nothing when the Model streams its weights from S3, since then no box is warmer than another.<br><br>This only <b>orders</b> boxes that can already take the replica; it never makes an unsuitable one suitable. Boxes are filtered first on the engine image's architecture, free cards, GPU Model and Min VRAM, and whether the weights fit the cards on offer. When none survives, placement names every box and why it was rejected."
+   "options": "balanced\npack\nspread"
   },
   {
    "default": "1",
@@ -99,7 +100,7 @@
    "label": "Pipeline Parallel Size"
   },
   {
-   "description": "Derived = GPUs per Replica / pipeline parallel size. → --tensor-parallel-size.",
+   "description": "Derived = GPUs per Replica / pipeline parallel size. \u2192 --tensor-parallel-size.",
    "fieldname": "tensor_parallel_size",
    "fieldtype": "Int",
    "label": "Tensor Parallel Size",
@@ -114,7 +115,7 @@
   },
   {
    "default": "auto",
-   "description": "→ --kv-cache-dtype. fp8 halves the KV cache, which buys context on a card short of VRAM, at some accuracy.",
+   "description": "\u2192 --kv-cache-dtype. fp8 halves the KV cache, which buys context on a card short of VRAM, at some accuracy.",
    "fieldname": "kv_cache_dtype",
    "fieldtype": "Select",
    "label": "KV Cache Dtype",
@@ -122,20 +123,20 @@
   },
   {
    "default": "0.9",
-   "description": "→ --gpu-memory-utilization (0-1).",
+   "description": "\u2192 --gpu-memory-utilization (0-1).",
    "fieldname": "gpu_memory_utilization",
    "fieldtype": "Float",
    "label": "GPU Memory Utilization"
   },
   {
-   "description": "→ --max-num-batched-tokens. Blank = vLLM's own default.",
+   "description": "\u2192 --max-num-batched-tokens. Blank = vLLM's own default.",
    "fieldname": "max_num_batched_tokens",
    "fieldtype": "Int",
    "label": "Max Num Batched Tokens"
   },
   {
    "default": "1024",
-   "description": "→ --max-num-seqs, and the gateway's admission cap per replica. A replica that overrides this reports its own number to the route table; one that leaves it blank reports this one.",
+   "description": "\u2192 --max-num-seqs, and the gateway's admission cap per replica. A replica that overrides this reports its own number to the route table; one that leaves it blank reports this one.",
    "fieldname": "max_num_seqs",
    "fieldtype": "Int",
    "label": "Max Num Seqs"
@@ -152,7 +153,7 @@
    "options": "auto\nFLASH_ATTN\nXFORMERS\nFLASHINFER"
   },
   {
-   "description": "→ --max-model-len. Blank = 8192. Takes a suffix — 32k, 128k, 1m — or a plain token count.",
+   "description": "\u2192 --max-model-len. Blank = 8192. Takes a suffix \u2014 32k, 128k, 1m \u2014 or a plain token count.",
    "fieldname": "max_model_len",
    "fieldtype": "Data",
    "label": "Max Model Len"
@@ -160,13 +161,13 @@
   {
    "default": "0",
    "depends_on": "max_model_len",
-   "description": "→ VLLM_ALLOW_LONG_MAX_MODEL_LEN=1. Deployment-only: a Check cannot express 'inherit', and a wrong value gives garbage output instead of an error.",
+   "description": "\u2192 VLLM_ALLOW_LONG_MAX_MODEL_LEN=1. Deployment-only: a Check cannot express 'inherit', and a wrong value gives garbage output instead of an error.",
    "fieldname": "allow_long_max_model_len",
    "fieldtype": "Check",
    "label": "Allow Long Max Model Len"
   },
   {
-   "description": "Deployment-only, except Extra Serve Args. These decide what the service advertises and what the compile cache is keyed on — replicas differing here would answer one model name with different engines.",
+   "description": "Deployment-only, except Extra Serve Args. These decide what the service advertises and what the compile cache is keyed on \u2014 replicas differing here would answer one model name with different engines.",
    "fieldname": "section_extra",
    "fieldtype": "Section Break",
    "label": "Extra"
@@ -186,13 +187,13 @@
   },
   {
    "depends_on": "eval:doc.engine_kind != 'custom'",
-   "description": "Freeform extra `vllm serve` flags appended verbatim. A replica may append its OWN on top of these — vLLM takes the last occurrence of a repeated flag, so a replica can add to this or override one of its flags without retyping the rest.",
+   "description": "Freeform extra `vllm serve` flags appended verbatim. A replica may append its OWN on top of these \u2014 vLLM takes the last occurrence of a repeated flag, so a replica can add to this or override one of its flags without retyping the rest.",
    "fieldname": "extra_serve_args",
    "fieldtype": "Small Text",
    "label": "Extra Serve Args"
   },
   {
-   "description": "What a replica of this deployment runs, from the same builder the deploy uses. A replica that overrides a knob renders its own — this is the shape they share.",
+   "description": "What a replica of this deployment runs, from the same builder the deploy uses. A replica that overrides a knob renders its own \u2014 this is the shape they share.",
    "fieldname": "serve_command",
    "fieldtype": "Code",
    "label": "Serve Command",
@@ -213,7 +214,7 @@
   }
  ],
  "links": [],
- "modified": "2026-08-27 00:00:00.000000",
+ "modified": "2026-08-27 19:05:37.855292",
  "modified_by": "Administrator",
  "module": "Grove",
  "name": "Model Deployment",
