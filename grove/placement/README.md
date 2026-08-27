@@ -4,13 +4,15 @@ One class per preference, composed in order by a named policy. `Model Deployment
 concrete Scorer or branches on the policy string — `placement_policy` is the one place that
 dispatch happens, the same way `engine_class` is for engines.
 
-**Nothing here imports frappe.** A `Candidate` arrives already measured against one deployment's
-shape, so every test in this package is pure: no site, no mocking, no fixtures.
+**Ranking imports no frappe.** A `Candidate` arrives already measured against one deployment's
+shape, so `base.py` and `scorers.py` test pure: no site, no mocking, no fixtures. `lease.py` is the
+exception and says why below.
 
 | File | What it is |
 |---|---|
 | `base.py` | `Candidate`, the `Scorer` contract, `sort_key`, and the `placement_policy` registry. |
 | `scorers.py` | Every preference. One class, one `score`, a few lines each. |
+| `lease.py` | The Redis hint that keeps two placements off one card. Advisory; owns nothing. |
 
 ## Adding a preference
 
@@ -78,3 +80,97 @@ this box holds anything. Using it would score every box identically and mean not
 It is also false for a Model with `weights_s3_uri` set. Those weights stream from S3 the same way
 everywhere, so no box is warmer than another, and letting `WarmCache` speak would pile every
 replica onto one box for no gain.
+
+
+---
+
+# Two placements, one card
+
+Ranking decides *which* box. This decides what happens when two placements pick the same one at the
+same time. Three layers, and only the middle one is authoritative:
+
+| Layer | Where | Owns | Losing it costs |
+|---|---|---|---|
+| Lease | Redis, TTL `60s` | nothing — a hint that someone is mid-placement | a rival blocks instead of skipping; still correct |
+| **`GPU Claim`** | **MariaDB, name `<machine>:<index>`** | **the card** | **two engines on one card** |
+| `Model Replica GPU` | MariaDB, child row | which cards this replica was *given* — config for the run script | a wrong `--tensor-parallel-size` |
+
+## The claim is the mutex
+
+`GPU Claim` is named for the resource, so taking a card is `INSERT` and the primary key is what
+arbitrates. A second insert raises `DuplicateEntryError`; `add_replica` catches it and moves to the
+next box `ranked_placements()` already ranked. **No lock is taken anywhere.**
+
+Named for the **machine**, not the Inference Server: a GPU is a `Machine GPU` row and
+`Inference Server.machine` is neither unique nor checked, so two servers naming one machine would
+otherwise each claim card 0 of the same physical box.
+
+This is the Kubernetes/Nomad shape — decide on a possibly-stale view, let one authoritative write
+be the truth, requeue the loser. Nomad's docs put it plainly: schedulers run "without locking or
+reservations", and the leader rejects conflicting plans. Mesos is the counter-example worth
+knowing: it *did* lock resources into exclusive offers, deadlocked gang-scheduled jobs through
+resource hoarding, and filed MESOS-1607 to move "from mutual exclusion toward optimistic
+competition".
+
+## Why a lease exists at all
+
+Two facts about a database claim, both measured on a real bench, not assumed:
+
+1. **An uncommitted claim blocks rivals rather than rejecting them.** InnoDB locks the unique index
+   entry for an in-flight `INSERT`, so a second placement on the same card does not fail fast — it
+   waits out the winner's *entire transaction*, holding a connection. Frappe commits at the end of
+   the request, so that was once the whole of `add_replica` including `setup()`. `_place` now
+   commits immediately after claiming, before anything slow, which shrinks the window to the insert.
+2. **A committed claim is still invisible under `REPEATABLE READ`.** MariaDB's default here. A
+   transaction that read before the claim committed keeps its snapshot and re-reads free. So no
+   isolation level makes an in-flight placement visible, and `READ COMMITTED` would only help
+   *after* the commit.
+
+The lease covers both. It is written **before** the row and read outside any transaction, so a
+rival sees it immediately, skips the card, and never queues.
+
+## Authoritative versus advisory, and why the split
+
+Losing the lease is survivable; losing the claim is not. Redis here is `allkeys-lru` with
+`appendonly no` and `save ""` — any key evictable, nothing persisted. If it is flushed, placement
+degrades to the behaviour it had before leases existed: correct, just blocking. If *ownership*
+lived there, a flush would report every card in the fleet free and the next placement would
+double-book all of them, silently.
+
+So the hint lives where losing it is cheap, and ownership lives where it is durable and
+transactional with the replica that holds it.
+
+## When a claim is held
+
+`CLAIM_HOLDING_STATUSES` = `Draft` + `GPU_CLAIMING_STATUSES` (`Provisioning`, `Active`, `Broken`).
+
+`Draft` holding is the point: a replica takes its cards the moment its row exists, before anything
+is deployed. `Inactive` releases — a stopped container holds no VRAM — and `start()` re-takes them,
+failing loudly if a sibling won meanwhile. `Broken` keeps them, because `--restart unless-stopped`
+means a crash-looping engine comes back onto its cards.
+
+Status moves by `db.set_value`, which never runs `validate`, so claims are settled by
+`sync_gpu_claims()` after each transition rather than in the controller.
+
+## Failure modes
+
+| What happens | Result |
+|---|---|
+| Redis flushed or evicted | leases vanish; rivals block on the insert again; correctness unaffected |
+| Worker dies mid-placement | lease expires by TTL; the savepoint rolled the replica back |
+| Worker dies after the claim, before releasing | card stranded — `release_if_stale` frees it when someone next wants it |
+| Draft replica abandoned | cards held until it is deleted; the allocation panel names the holder |
+| Two placements, same card | one wins on the primary key; the other takes the next ranked box |
+
+## Traps
+
+- **`leased()` uses `get`, never `exists`.** `RedisWrapper` leaves `set`/`get`/`delete` as the raw
+  client but overrides `exists()` to run the name through `make_key` (which prefixes `db_name`). Mix
+  them and the lease is written and read under different keys, so every card reports free and the
+  skip does nothing. That bug passed every unit test and was only caught against live Redis.
+- **`LEASE_TTL = 60` is a guess.** It has to outlive a placement plus the stale-read window of a
+  transaction that started just before it. Nothing measures either.
+- **Lease keys are not namespaced per site.** One Grove site per bench is fine; two would share
+  these keys, and a machine name colliding across them would have one site skip the other's cards.
+- **No fairness.** Optimistic competition has no notion of it — slab 4's autoscaler placing in a
+  loop will beat an operator's button press every time. Omega's documented downside, unsolved here.
