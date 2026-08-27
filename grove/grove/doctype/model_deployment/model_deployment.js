@@ -8,13 +8,25 @@ frappe.ui.form.on('Model Deployment', {
 });
 
 // The scheduler picks the box and the cards off this deployment's placement_policy. It throws
-// naming why every box was rejected when nothing fits, so the failure is readable here rather
-// than being a silent "no capacity".
+// naming why every box was rejected when nothing fits, and that message is the whole point of
+// the button, so nothing here may swallow it.
+//
+// No confirm step, deliberately: the error dialog the throw opens lands in the same tick as the
+// confirm dialog's teardown, and the two modals fight over one backdrop — the error is shown and
+// immediately hidden again, so "nothing fits" arrived as nothing at all. The manual path has no
+// confirm either; pressing a button is already the deliberate act.
 function place_replica(frm) {
-	frappe.confirm(__('Let the scheduler choose a box for one more replica?'), () => {
-		frm.call('add_replica').then((r) => {
-			if (r.message) frappe.set_route('Form', 'Model Replica', r.message);
-		});
+	frm.call({
+		doc: frm.doc,
+		method: 'add_replica',
+		freeze: true,
+		freeze_message: __('Finding a box…'),
+	}).then((r) => {
+		// A throw already told the operator why, and left no name behind. Returning quietly here
+		// is the ONLY silent path, and it is silent because the dialog spoke.
+		if (!r || !r.message) return;
+		frappe.show_alert({ message: __('Placed on {0}', [r.message]), indicator: 'green' });
+		frappe.set_route('Form', 'Model Replica', r.message);
 	});
 }
 
