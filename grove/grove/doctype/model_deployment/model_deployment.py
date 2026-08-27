@@ -336,7 +336,7 @@ def _claims_by_box(boxes):
 		fields=["parent", "gpu_index", "gpu_model", "vram_gb"],
 		order_by="gpu_index",
 	) if machines else []
-	holders = claims_on([box.name for box in boxes])
+	holders = claims_on(machines)
 	# A replica pinning no cards claims none, so it cannot be counted from the claims — and it is
 	# exactly the case that makes a box look emptier than it is. Counted here so `_rejection` can
 	# decline the box rather than place onto cards it cannot see.
@@ -347,19 +347,19 @@ def _claims_by_box(boxes):
 		fields=["name", "inference_server"],
 	)
 	claimed_by = {}
-	for (server, _index), replica in holders.items():
-		claimed_by.setdefault(server, set()).add(replica)
+	for (machine, _index), replica in holders.items():
+		claimed_by.setdefault(machine, set()).add(replica)
 
 	claims = {}
 	for box in boxes:
 		mine = [r for r in replicas if r.inference_server == box.name]
-		taken = {index for (server, index) in holders if server == box.name}
+		taken = {index for (machine, index) in holders if machine == box.machine}
 		on_machine = [c for c in cards if c.parent == box.machine]
 		claims[box.name] = frappe._dict(
 			free_gpus=[c for c in on_machine if int(c.gpu_index) not in taken],
 			vram_by_index={int(c.gpu_index): c.vram_gb for c in on_machine},
 			replicas=len(mine),
-			unpinned=len([r for r in mine if r.name not in claimed_by.get(box.name, ())]),
+			unpinned=len([r for r in mine if r.name not in claimed_by.get(box.machine, ())]),
 		)
 	return claims
 

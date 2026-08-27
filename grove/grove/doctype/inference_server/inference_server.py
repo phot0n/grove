@@ -123,16 +123,17 @@ class InferenceServer(GeneratedName, AnsibleHost, Document):
 	@frappe.whitelist()
 	def get_gpu_allocation(self):
 		"""The box's GPUs and which replica holds each, computed live: the cards come from the
-		Machine, the holder from the `GPU Claim` on `<this box>:<index>`.
+		Machine, the holder from the `GPU Claim` on `<this machine>:<index>` — named for the
+		machine because that is what the card belongs to.
 
 		The claim IS the ownership — one row per card, and the primary key is what makes that
 		true, so this panel and the placement that refuses a taken card cannot disagree. A card
 		with no claim is genuinely free: a stopped replica released its cards on purpose, because
 		a stopped container holds no VRAM."""
 		gpus = self.gpus
-		holders = claims_on([self.name])
+		holders = claims_on([self.machine])
 		for gpu in gpus:
-			replica = holders.get((self.name, int(gpu.gpu_index)))
+			replica = holders.get((self.machine, int(gpu.gpu_index)))
 			gpu.deployments = (
 				[frappe.db.get_value("Model Replica", replica, ["name", "model"], as_dict=True)]
 				if replica

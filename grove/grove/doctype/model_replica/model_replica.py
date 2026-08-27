@@ -8,6 +8,7 @@ import frappe
 from frappe.model.document import Document
 
 from grove import failure
+from grove.grove.doctype.gpu_claim.gpu_claim import claim_name, release_if_stale
 from grove.naming import next_replica_name
 from grove.utils import is_env_key, is_env_value
 
@@ -212,22 +213,28 @@ class ModelReplica(Document):
 
 	def claim_gpus(self):
 		"""Take a GPU Claim for each pinned card. Raises `frappe.DuplicateEntryError` if a sibling
-		already holds one — that is the race being lost, and the caller decides what to do about
+		genuinely holds one — that is the race being lost, and the caller decides what to do about
 		it (placement moves to the next box; Start refuses on the button).
 
-		Re-taking a card this replica already holds is a no-op, so this is safe to call again on
-		a status change that did not move any cards."""
-		held = frappe.get_all(
-			"GPU Claim", filters={"model_replica": self.name}, pluck="gpu_index"
-		)
+		A claim left behind by a replica that is no longer entitled to it is cleared first. Stored
+		ownership can drift where the derived kind could not — a worker dying between the status
+		flip and the release strands the card forever — so the moment someone else wants it is
+		where that gets repaired."""
+		machine = self.server.machine
+		held = set(frappe.get_all("GPU Claim", filters={"model_replica": self.name}, pluck="gpu_index"))
 		for row in self.gpus or []:
-			if int(row.gpu_index) in {int(index) for index in held}:
+			index = int(row.gpu_index)
+			if index in {int(i) for i in held}:
 				continue
+			name = claim_name(machine, index)
+			if frappe.db.exists("GPU Claim", name):
+				release_if_stale(name)
 			frappe.get_doc(
 				{
 					"doctype": "GPU Claim",
+					"machine": machine,
 					"inference_server": self.inference_server,
-					"gpu_index": int(row.gpu_index),
+					"gpu_index": index,
 					"model_replica": self.name,
 				}
 			).insert(ignore_permissions=True)
