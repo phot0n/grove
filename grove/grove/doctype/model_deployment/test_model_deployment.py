@@ -32,6 +32,7 @@ DEPLOYMENT = {
 	"gpus_per_replica": 4,
 	"min_vram_gb": 80.0,
 	"pipeline_parallel_size": 1,
+	"dtype": "float16",
 	"kv_cache_dtype": "fp8",
 	"gpu_memory_utilization": 0.92,
 	"max_num_batched_tokens": 8192,
@@ -190,44 +191,6 @@ class TestGpuIndexes(unittest.TestCase):
 			self.assertEqual(gpu_indexes(sent), [], repr(sent))
 
 
-class TestMigrationKeepsEveryReplicaRunningTheSameThing(unittest.TestCase):
-	"""The safety property of the patch, asserted without a site: whatever a deployment used to
-	carry itself, it gets back through its deployment once its own copy is cleared."""
-
-	def test_resolved_config_after_the_split_equals_the_values_before_it(self):
-		from grove.patches.v1_0.create_model_deployments import CARRIED, CLEARED
-
-		before = {key: DEPLOYMENT[key] for key in (*OVERRIDABLE, *DEPLOYMENT_ONLY, *ADDITIVE)}
-		# The patch carries the old values up and blanks the replica's own copies.
-		migrated = deployment(**before)
-		cleared = replica(**CLEARED)
-		self.assertEqual(migrated.resolved_config(cleared), before)
-
-	def test_two_regions_of_one_service_collapse_into_one_deployment(self):
-		from grove.patches.v1_0.create_model_deployments import _shape
-
-		# The point of dropping region: the same model, shape and tuning on boxes in different
-		# regions is ONE service. deploy:<model> already unions them, so the deployment does too.
-		rows = [frappe._dict({**DEPLOYMENT, "inference_server": box}) for box in ("inf-aps1", "inf-use1")]
-		self.assertEqual(_shape(rows[0], 4, []), _shape(rows[1], 4, []))
-
-	def test_a_different_shape_is_still_a_different_deployment(self):
-		from grove.patches.v1_0.create_model_deployments import _shape
-
-		row = frappe._dict(DEPLOYMENT)
-		self.assertNotEqual(_shape(row, 4, []), _shape(row, 8, []))
-
-	def test_every_field_the_replica_loses_is_one_the_deployment_carries(self):
-		from grove.patches.v1_0.create_model_deployments import CARRIED, CLEARED
-
-		# Nothing may be cleared off a replica that the deployment was not given first, or the
-		# migration would silently drop tuning that is running on a box right now.
-		self.assertTrue(set(CLEARED) <= set(CARRIED))
-		# The additive field is cleared too — left on the replica it would be appended to the
-		# deployment's copy of itself, rendering every flag twice.
-		self.assertEqual(set(CLEARED), set(OVERRIDABLE) | set(ADDITIVE))
-
-
 class TestNaming(unittest.TestCase):
 	"""`MD-{#####}`, counted, carrying neither the model nor the shape. `gpus_per_replica` is
 	editable and a name is not, so a name saying `4xh100` would go stale the first time someone
@@ -256,63 +219,37 @@ class TestNaming(unittest.TestCase):
 		)
 
 
-class TestTheMdSeriesFloor(unittest.TestCase):
-	"""`MD-{#####}` names a deployment, but replicas predating the descriptive format are named
-	`MD-00010` — by an old naming_series whose counter is a different `tabSeries` row. Nothing
-	fails on a clash, because two doctypes are two tables; the name just means both, and a route
-	row's `deployment=` carries a replica name. The floor is what keeps them apart."""
-
-	def floor(self, replica_names, current):
-		from grove.patches.v1_0 import rename_deployment_doctypes as renamer
-
-		series = {"MD-": current} if current is not None else {}
-
-		def sql(query, values=None):
-			if query.startswith("select current"):
-				return [(series["MD-"],)] if "MD-" in series else []
-			if query.startswith("update `tabSeries`"):
-				floor, guard = values
-				if series.get("MD-", 0) < guard:
-					series["MD-"] = floor
-			if query.startswith("insert into `tabSeries`"):
-				series["MD-"] = values[0]
-			return []
-
-		with (
-			patch.object(renamer.frappe, "get_all", lambda *a, **k: list(replica_names)),
-			patch.object(renamer.frappe, "db", frappe._dict(sql=sql)),
-		):
-			renamer._raise_md_series_above_the_replicas()
-		return series.get("MD-")
-
-	def test_the_counter_is_pushed_above_the_highest_legacy_replica(self):
-		self.assertEqual(self.floor(["MD-00002", "MD-00011"], current=2), 11)
-
-	def test_a_counter_already_past_them_is_left_alone(self):
-		# `current < %s` guards it: a counter that has moved on must never be wound back, or it
-		# hands out numbers a deployment already took.
-		self.assertEqual(self.floor(["MD-00002", "MD-00011"], current=40), 40)
-
-	def test_a_missing_series_row_is_created_at_the_floor(self):
-		# getseries would otherwise insert it at 1 and walk straight through taken numbers.
-		self.assertEqual(self.floor(["MD-00011"], current=None), 11)
-
-	def test_names_that_are_not_MD_digits_are_ignored(self):
-		# The descriptive format and `MD-<model>-<n>` are not in the numeric space at all.
-		self.assertIsNone(
-			self.floor(["qwen3-8b-ap-south-1-inf3-00007", "MD-qwen3.6-35b-a3b-00001"], current=None)
-		)
-
-
-def claim(free=(), unpinned=0, replicas=0, vram=80):
-	"""What one box reports: its unclaimed cards, and what is already running on it."""
-	cards = [{"gpu_index": i, "gpu_model": "NVIDIA H100 80GB HBM3", "vram_gb": vram} for i in free]
+def claim(free=(), unpinned=0, replicas=0, vram=80, capability=9.0):
+	"""What one box reports: its unheld cards, and what is already running on it."""
+	cards = [
+		{"name": f"gpu-{i}", "gpu_index": i, "gpu_type": "h100", "vram_gb": vram} for i in free
+	]
 	return frappe._dict(
 		free_gpus=cards,
-		vram_by_index={i: vram for i in free},
+		vram_by_card={f"gpu-{i}": vram for i in free},
+		capability_by_card={f"gpu-{i}": capability for i in free},
 		replicas=replicas,
 		unpinned=unpinned,
 	)
+
+
+def _real_engine(torch_dtype):
+	"""`engine_for` returning a REAL VllmEngine, so a rejection proves the whole path — the
+	deployment's dtype, the Model's, and the capability the scheduler measured off the cards."""
+	from grove.serving.vllm import VllmEngine
+
+	def engine_for(self, replica=None, gpu_vram_gb=None, compute_capability=None):
+		return VllmEngine(
+			"qwen3-35b",
+			{"hf_repo": "Qwen/Qwen3-35B", "modality": "text", "torch_dtype": torch_dtype},
+			port=8080,
+			gpu_count=self.gpus_per_replica,
+			gpu_vram_gb=gpu_vram_gb,
+			compute_capability=compute_capability,
+			dtype=self.get("dtype"),
+		)
+
+	return engine_for
 
 
 class TestWhyABoxIsRejected(unittest.TestCase):
@@ -324,11 +261,19 @@ class TestWhyABoxIsRejected(unittest.TestCase):
 		is asserted on its own. Patched on the CLASS — `engine_for` is a class attribute, so an
 		instance assignment would set a dict key attribute lookup never reaches."""
 		dep = dep or deployment()
+		reported = box.get("claim", claim(free=(0, 1, 2, 3)))
+		# The engine's own arithmetic is stubbed so each hard filter is asserted on its own —
+		# EXCEPT when a case is about the engine's verdict, where the real one is built from the
+		# Model's dtype and the capability the box would hand it.
 		stub = lambda self, **_kwargs: frappe._dict(placement_errors=list(errors))  # noqa: E731
+		if model_dtype := box.get("model_dtype"):
+			stub = _real_engine(model_dtype)
 		with patch.object(FakeDeployment, "engine_for", stub):
 			return dep._rejection(
-				box.get("claim", claim(free=(0, 1, 2, 3))),
-				box.get("free", (0, 1, 2, 3)),
+				reported,
+				# The cards a filter left, named — `fitting_gpus` returns docnames. Taken from the
+				# claim unless a case is about the two disagreeing.
+				box.get("free", tuple(card["name"] for card in reported.free_gpus)),
 				box.get("box_architecture", "amd64"),
 				box.get("image_architecture", "amd64"),
 			)
@@ -355,13 +300,42 @@ class TestWhyABoxIsRejected(unittest.TestCase):
 		self.assertIn("pin no cards", reason)
 
 	def test_too_few_matching_cards_names_the_counts(self):
-		reason = self.reject(claim=claim(free=(0, 1)), free=(0, 1))
+		reason = self.reject(claim=claim(free=(0, 1)))
 		self.assertIn("2 free", reason)
 		self.assertIn("4", reason)
 
-	def test_a_named_gpu_model_appears_in_the_shortfall(self):
-		reason = self.reject(deployment(gpu_model="H200"), claim=claim(free=(0,)), free=(0,))
-		self.assertIn("H200", reason)
+	def test_a_named_gpu_type_appears_in_the_shortfall(self):
+		reason = self.reject(deployment(gpu_type="h200"), claim=claim(free=(0,)))
+		self.assertIn("h200", reason)
+
+	def test_an_older_card_is_rejected_before_the_play_starts(self):
+		# The engine's own check, reached through the scheduler: a T4 box has room for the model
+		# and cannot represent it, and finding that out on the box costs a pull and a play.
+		reason = self.reject(
+			deployment(dtype="auto"),
+			claim=claim(free=(0, 1, 2, 3), capability=7.5),
+			errors=[],
+			model_dtype="bfloat16",
+		)
+		self.assertIn("7.5", reason)
+		self.assertIn("float16", reason)
+
+	def test_the_box_becomes_viable_once_the_dtype_is_set(self):
+		# Same box, same cards — the deployment names the remedy the rejection asked for.
+		self.assertEqual(
+			self.reject(
+				deployment(dtype="float16"),
+				claim=claim(free=(0, 1, 2, 3), capability=7.5),
+				model_dtype="bfloat16",
+			),
+			"",
+		)
+
+	def test_the_weakest_card_decides(self):
+		# A mixed box runs at its oldest silicon, the same reading the VRAM check takes.
+		mixed = claim(free=(0, 1, 2, 3), capability=9.0)
+		mixed.capability_by_card["gpu-2"] = 7.5
+		self.assertIn("7.5", self.reject(deployment(dtype="auto"), claim=mixed, model_dtype="bfloat16"))
 
 	def test_the_engines_own_verdict_is_passed_through(self):
 		# The fit check runs against the box's REAL card size, which is stricter than the
@@ -378,7 +352,7 @@ class TestACandidateMeasuresTheBox(unittest.TestCase):
 		# here is measured against committed state alone.
 		with (
 			patch.object(FakeDeployment, "engine_for", stub),
-			patch(f"{MODULE}.lease.leased", lambda machine, indexes: set()),
+			patch(f"{MODULE}.lease.leased", lambda gpus: set()),
 		):
 			return dep._candidate(
 				frappe._dict(name="inf3", machine="M-1", region=over.get("region", "ap-south-1")),

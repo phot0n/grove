@@ -51,7 +51,9 @@ class TestParseNvidiaSmi(unittest.TestCase):
 		self.assertEqual(gpus[0]["gpu_index"], 0)
 		self.assertEqual(gpus[0]["gpu_model"], "NVIDIA RTX PRO 6000 Blackwell Workstation Edition")
 		self.assertEqual(gpus[0]["vram_gb"], 96)  # 97887 MiB rounds up to the marketed 96 GB
-		self.assertTrue(gpus[1]["gpu_uuid"].startswith("GPU-6666"))
+		# The UUID becomes the device id — what CUDA_VISIBLE_DEVICES is given, and what survives
+		# a reseat that shuffles the index.
+		self.assertTrue(gpus[1]["device_id"].startswith("GPU-6666"))
 
 	def test_vram_rounds_not_truncates(self):
 		# 81559 MiB is an 80 GB A100; truncating would call it 79.
@@ -64,9 +66,11 @@ class TestParseNvidiaSmi(unittest.TestCase):
 		self.assertEqual(len(gpus), 1)
 		self.assertEqual(gpus[0]["gpu_model"], "Tesla T4")
 
-	def test_missing_uuid_column(self):
+	def test_missing_uuid_falls_back_to_the_index(self):
+		# A driver that answered without a UUID still has to be addressable, so the index stands
+		# in until a scan that does report one replaces it.
 		gpus = parse_nvidia_smi("0, Tesla T4, 15360")
-		self.assertEqual(gpus[0]["gpu_uuid"], "")
+		self.assertEqual(gpus[0]["device_id"], "0")
 
 	def test_unreadable_memory_does_not_crash(self):
 		# nvidia-smi prints [N/A] when a card can't report memory.
@@ -146,14 +150,21 @@ class TestParseGpus(unittest.TestCase):
 		gpus = parse_gpus(G6_12XLARGE)
 		self.assertEqual([gpu["gpu_index"] for gpu in gpus], [0, 1, 2, 3])
 		self.assertEqual(gpus[0]["gpu_model"], "L4")
-		self.assertEqual(gpus[0]["gpu_uuid"], "", "AWS has no UUID to report")
+		# AWS has no UUID to report, so the index is the device id until a real scan runs.
+		self.assertEqual(gpus[0]["device_id"], "0")
 
 	def test_indexes_run_across_several_entries(self):
 		info = {"GpuInfo": {"Gpus": [
 			{"Name": "A", "Count": 2, "MemoryInfo": {"SizeInMiB": 16384}},
 			{"Name": "B", "Count": 1, "MemoryInfo": {"SizeInMiB": 16384}},
 		]}}
-		self.assertEqual([gpu["gpu_index"] for gpu in parse_gpus(info)], [0, 1, 2])
+		gpus = parse_gpus(info)
+		self.assertEqual([gpu["gpu_index"] for gpu in gpus], [0, 1, 2])
+		# The placeholder id IS the slot: `plan_reconcile` upgrades a card by matching them, so a
+		# card whose id names a different slot would take its neighbour's identity on first scan.
+		self.assertEqual(
+			[gpu["device_id"] for gpu in gpus], [str(gpu["gpu_index"]) for gpu in gpus]
+		)
 
 	def test_cpu_only_type_has_no_gpus(self):
 		self.assertEqual(parse_gpus({"InstanceType": "m7i.large"}), [])
@@ -553,7 +564,7 @@ class TestNetworkResolution(IntegrationTestCase):
 	def test_proxy_role_picks_proxy_security_groups(self):
 		machine = frappe.get_doc({
 			"doctype": "Machine", "machine_name": "test-net-role-proxy", "cloud_provider": self.provider.name,
-			"network": self.network.name, "machine_type": "Gateway Server",
+			"network": self.network.name, "machine_type": "Gateway",
 		}).insert(ignore_permissions=True)
 		self.addCleanup(machine.delete, ignore_permissions=True)
 		self.assertEqual(machine.get_security_group_ids(machine.network_doc), ["sg-proxy"])
@@ -561,7 +572,7 @@ class TestNetworkResolution(IntegrationTestCase):
 	def test_inference_role_picks_inference_security_groups(self):
 		machine = frappe.get_doc({
 			"doctype": "Machine", "machine_name": "test-net-role-inference", "cloud_provider": self.provider.name,
-			"network": self.network.name, "machine_type": "Inference Server",
+			"network": self.network.name, "machine_type": "Inference",
 		}).insert(ignore_permissions=True)
 		self.addCleanup(machine.delete, ignore_permissions=True)
 		self.assertEqual(machine.get_security_group_ids(machine.network_doc), ["sg-inference"])

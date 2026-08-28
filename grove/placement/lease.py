@@ -2,8 +2,8 @@
 # For license information, please see license.txt
 """A short-lived note in Redis saying "someone is taking this card right now".
 
-Advisory only. The `GPU Claim` row is what OWNS a card — durable, transactional with the replica
-that holds it, and arbitrated by its primary key. A lease owns nothing and is safe to lose: if
+Advisory only. `GPU.held_by` is what OWNS a card — durable, transactional with the replica that
+holds it, and arbitrated by the compare-and-swap that sets it. A lease owns nothing and is safe to lose: if
 Redis is flushed or evicted (`allkeys-lru`, no persistence), placement falls back to the behaviour
 it had before leases existed. Correct, just slower. That asymmetry is the whole reason ownership
 stays in the database and only the HINT lives here.
@@ -26,44 +26,47 @@ import frappe
 LEASE_TTL = 60
 
 
-def _key(machine, gpu_index):
+def _key(gpu):
+	# Keyed on the GPU's docname, which is unique across the fleet — so no machine prefix, and
+	# nothing here can be confused by a CUDA index moving between the ranking and the placement.
+	#
 	# Not run through frappe.cache.make_key, which is what prefixes db_name and separates one
 	# site's cache from another's — the raw client is used below for SET NX, and raw calls skip
-	# that. Fine while a bench serves one Grove site; two would share these keys, and a machine
-	# name colliding across them would have one site's placement skip the other's cards.
-	return f"grove:gpu_lease:{machine}:{int(gpu_index)}"
+	# that. Fine while a bench serves one Grove site; two would share these keys, and a card name
+	# colliding across them would have one site's placement skip the other's cards.
+	return f"grove:gpu_lease:{gpu}"
 
 
-def leased(machine, gpu_indexes):
+def leased(gpus):
 	"""Which of these cards someone else is currently taking.
 
 	`get`, never `exists`. RedisWrapper leaves `set`/`get`/`delete` as the raw client but
 	OVERRIDES `exists` to run the name through `make_key` first — so a lease written by `set`
 	would be looked up under a different, db_name-prefixed key, always come back missing, and
 	this would silently report every card free."""
-	return {index for index in gpu_indexes if frappe.cache.get(_key(machine, index)) is not None}
+	return {gpu for gpu in gpus if frappe.cache.get(_key(gpu)) is not None}
 
 
-def take(machine, gpu_indexes, holder):
+def take(gpus, holder):
 	"""Announce that `holder` is taking these cards. True if every one of them was free.
 
 	All or nothing: a partial lease would leave a card marked busy that nobody goes on to claim,
 	so anything taken is handed back before returning False."""
 	taken = []
-	for index in gpu_indexes:
-		if frappe.cache.set(_key(machine, index), holder, nx=True, ex=LEASE_TTL):
-			taken.append(index)
+	for gpu in gpus:
+		if frappe.cache.set(_key(gpu), holder, nx=True, ex=LEASE_TTL):
+			taken.append(gpu)
 			continue
-		release(machine, taken)
+		release(taken)
 		return False
 	return True
 
 
-def release(machine, gpu_indexes):
+def release(gpus):
 	"""Hand cards back before the TTL — used when a placement failed, never when it succeeded.
 
-	A successful placement leaves its lease to expire on its own: the `GPU Claim` is committed by
+	A successful placement leaves its lease to expire on its own: `held_by` is committed by
 	then, but a rival whose snapshot predates that commit still cannot see it, and the lease is
 	what keeps that rival off the card until its snapshot catches up."""
-	for index in gpu_indexes:
-		frappe.cache.delete(_key(machine, index))
+	for gpu in gpus:
+		frappe.cache.delete(_key(gpu))

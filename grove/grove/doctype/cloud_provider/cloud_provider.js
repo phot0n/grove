@@ -14,7 +14,7 @@ frappe.ui.form.on('Cloud Provider', {
 
 // Render the cached gpu_types JSON (refreshed by the Fetch GPU Types bg job) into the
 // read-only HTML field, with a client-side filter. IDs go into a Machine GPU row's
-// gpu_model / a Pod's gpu_type_id.
+// GPU Type / a Pod's gpu_type_id.
 function render_gpu_types(frm) {
 	const field = frm.fields_dict.gpu_types_html;
 	if (!field) return;
@@ -53,7 +53,7 @@ function render_gpu_types(frm) {
 
 	wrap.html(`
 		<div class="text-muted" style="margin-bottom:6px">
-			${__('Put the ID into a Machine GPU row (gpu_model) or a Pod (gpu_type_id).')}
+			${__('Put the ID into a Pod (gpu_type_id). A Machine gets its cards from a scan.')}
 			<span style="float:right">${esc(updated)}</span>
 		</div>
 		<input class="form-control gpu-filter" placeholder="${__('Filter…')}" style="margin-bottom:8px">

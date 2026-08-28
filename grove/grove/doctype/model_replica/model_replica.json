@@ -14,6 +14,7 @@
   "engine_url",
   "internal_api_key",
   "section_tuning",
+  "dtype",
   "kv_cache_dtype",
   "gpu_memory_utilization",
   "max_num_batched_tokens",
@@ -106,6 +107,13 @@
    "fieldname": "section_tuning",
    "fieldtype": "Section Break",
    "label": "Tuning Overrides"
+  },
+  {
+   "description": "\u2192 --dtype, the format the WEIGHTS are served in. Blank inherits the deployment's. The one knob that is genuinely per-box: a T4 cannot do bfloat16 at all (it needs compute capability 8.0), so float16 HERE is how one older box runs a model the rest of the fleet serves in bfloat16.",
+   "fieldname": "dtype",
+   "fieldtype": "Select",
+   "label": "Dtype",
+   "options": "\nauto\nbfloat16\nfloat16"
   },
   {
    "default": "auto",

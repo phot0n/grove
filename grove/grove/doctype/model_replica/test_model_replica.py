@@ -13,6 +13,7 @@ from unittest.mock import patch
 import frappe
 
 from grove.serving.vllm import VllmEngine
+from grove.grove.doctype.gpu.gpu import GPUUnavailable
 from grove.grove.doctype.model_replica.model_replica import (
 	CLAIM_HOLDING_STATUSES,
 	ENGINE_PORT_BASE,
@@ -162,9 +163,9 @@ class TestEnginePortAllocation(unittest.TestCase):
 
 
 class TestGpuClaims(unittest.TestCase):
-	"""The claim IS a `GPU Claim` row named `<box>:<index>`, so two replicas cannot hold one card
-	— the primary key cannot hold one value twice. These pin WHICH statuses hold one; that the
-	second insert fails is the database's job and is proved in test_gpu_claim.py."""
+	"""The claim IS `GPU.held_by`, taken by compare-and-swap, so two replicas cannot hold one card
+	— only one caller can see the column empty. These pin WHICH statuses hold one; that the second
+	swap loses is the database's job — see `gpu.claim`."""
 
 	def acted(self, status):
 		"""Which way sync_gpu_claims went for a replica in this status."""
@@ -214,20 +215,19 @@ class TestGpuClaims(unittest.TestCase):
 
 
 class TestGpuInventory(unittest.TestCase):
-	"""Pinned GPUs are checked and their display columns filled from the Inference Server's
-	inventory — a deployment never reads a Machine itself."""
+	"""A pinned card has to be on THIS replica's box.
 
-	def fill(self, gpu_index, on_box, max_model_len=None):
-		"""The deployment's GPU row after validation against the box's cards."""
-		return self.validated(gpu_index, on_box, max_model_len).gpus[0]
+	The display columns look after themselves now — `gpu_index`, `gpu_type` and `vram_gb` are
+	`fetch_from` the linked GPU, so validation no longer copies them and they cannot drift. What
+	validation still owes is the check a Link field will not make: the picker offers every card in
+	the fleet, and only this box's are legal."""
 
-	def validated(self, gpu_index, on_box, max_model_len=None):
-		row = SimpleNamespace(gpu_index=gpu_index, gpu_model=None, vram_gb=None)
+	def validated(self, pinned, on_machine, max_model_len=None):
 		doc = SimpleNamespace(
 			inference_server="box",
 			model_deployment="qwen3-35b-ap-south-1",
-			gpus=[row],
-			server=SimpleNamespace(gpus=on_box),
+			gpus=[SimpleNamespace(gpu=name) for name in pinned],
+			server=SimpleNamespace(machine="mc-1"),
 			# One card pinned, and a deployment that asks for one — the shape check is exercised
 			# on its own in TestAReplicaMustBeTheShapeItsDeploymentDeclares.
 			deployment=SimpleNamespace(gpus_per_replica=1),
@@ -241,26 +241,32 @@ class TestGpuInventory(unittest.TestCase):
 			),
 		)
 		doc._validate_shape = lambda: ModelReplica._validate_shape(doc)
-		with patch.object(frappe, "throw", side_effect=frappe.ValidationError):
+		cards = [SimpleNamespace(name=n) for n in on_machine]
+		with (
+			patch.object(frappe, "throw", side_effect=frappe.ValidationError),
+			patch(f"{MODULE}.cards_on", lambda machines: cards),
+		):
 			ModelReplica._validate_gpus(doc)
 		return doc
 
 	def test_a_context_length_suffix_is_stored_as_tokens(self):
 		# Same rule the Pod side keeps: what the field holds after a save is what the engine ran
 		# with, so nothing downstream parses it a second time.
-		card = SimpleNamespace(gpu_index=0, gpu_model="H100", vram_gb=80)
-		self.assertEqual(self.validated(0, [card], "128k").max_model_len, "131072")
-		self.assertIsNone(self.validated(0, [card]).max_model_len)
+		self.assertEqual(self.validated(["gpu-a"], ["gpu-a"], "128k").max_model_len, "131072")
+		self.assertIsNone(self.validated(["gpu-a"], ["gpu-a"]).max_model_len)
 
-	def test_display_columns_come_from_the_box(self):
-		card = SimpleNamespace(gpu_index=1, gpu_model="H100", vram_gb=80)
-		row = self.fill(1, [SimpleNamespace(gpu_index=0, gpu_model="H100", vram_gb=80), card])
-		self.assertEqual((row.gpu_model, row.vram_gb), ("H100", 80))
+	def test_a_card_on_this_box_is_accepted(self):
+		self.assertEqual(self.validated(["gpu-b"], ["gpu-a", "gpu-b"]).gpus[0].gpu, "gpu-b")
 
-	def test_a_gpu_the_box_does_not_have_is_refused(self):
-		card = SimpleNamespace(gpu_index=0, gpu_model="H100", vram_gb=80)
+	def test_a_card_on_another_box_is_refused(self):
+		# The Link field offers every GPU in the fleet, so this is the only thing standing between
+		# an operator and a replica pinned to hardware it cannot reach.
 		with self.assertRaises(frappe.ValidationError):
-			self.fill(3, [card])
+			self.validated(["gpu-elsewhere"], ["gpu-a"])
+
+	def test_the_same_card_twice_is_refused(self):
+		with self.assertRaises(frappe.ValidationError):
+			self.validated(["gpu-a", "gpu-a"], ["gpu-a"])
 
 
 class TestReconfigureKeepsTheModelRoutable(unittest.TestCase):
@@ -346,6 +352,8 @@ class TestExtraVarsFollowTheEngineKind(unittest.TestCase):
 		md = SimpleNamespace(
 			name="MD-00007", model="qwen3-35b", gpus=[], env=[], engine=engine,
 			deployment=deployment(engine_image="img"),
+			# No pinned cards, so CUDA_VISIBLE_DEVICES is empty and the box exposes whatever it has.
+			gpu_records=[],
 		)
 		inf = SimpleNamespace(data_path="/opt/vllm", hf_home="/opt/vllm/hf")
 		settings = SimpleNamespace(
@@ -393,10 +401,11 @@ class TestExtraVarsFollowTheEngineKind(unittest.TestCase):
 		self.assertEqual(vars["vllm_cache_bucket"], "grove-weights")
 
 
-class TestStartRechecksTheGpuClaim(unittest.TestCase):
+class TestStartRetakesTheCards(unittest.TestCase):
 	"""Inactive releases its cards, so between Stop and Start a sibling can be placed on them.
 	`docker start` would put a second engine on the card regardless — they split its VRAM and
-	both OOM later, at a size each thought it had — so Start refuses before it queues the play."""
+	both OOM later, at a size each thought it had — so Start re-takes them before it queues the
+	play, and refuses on the button when it cannot."""
 
 	def start(self, claimed):
 		"""What Start queued, given cards a sibling did or did not take while this was stopped."""
@@ -404,18 +413,17 @@ class TestStartRechecksTheGpuClaim(unittest.TestCase):
 
 		def claim_gpus():
 			if claimed:
-				raise frappe.DuplicateEntryError("GPU Claim", "box:0", None)
+				raise GPUUnavailable("GPU 0 on box was taken by md-a first.")
 
 		doc = SimpleNamespace(
 			inference_server="box",
 			claim_gpus=claim_gpus,
 			set_container_running=queued.append,
 		)
-		with patch.object(frappe, "throw", side_effect=frappe.ValidationError):
-			try:
-				ModelReplica.start(doc)
-			except frappe.ValidationError:
-				pass
+		try:
+			ModelReplica.start(doc)
+		except GPUUnavailable:
+			pass
 		return queued
 
 	def test_a_free_card_starts(self):

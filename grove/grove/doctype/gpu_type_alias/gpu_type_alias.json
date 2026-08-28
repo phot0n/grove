@@ -1,0 +1,22 @@
+{
+ "actions": [],
+ "creation": "2026-08-28 00:00:00",
+ "doctype": "DocType",
+ "editable_grid": 1,
+ "engine": "InnoDB",
+ "istable": 1,
+ "field_order": ["alias"],
+ "fields": [
+  {"fieldname": "alias", "fieldtype": "Data", "label": "Reported As", "reqd": 1, "in_list_view": 1, "columns": 8, "description": "A spelling some source reports this card as, verbatim — 'Tesla T4', 'NVIDIA H100 80GB HBM3'. Add one by hand when the derived id cannot reach it."}
+ ],
+ "links": [],
+ "modified": "2026-08-28 00:00:00",
+ "modified_by": "Administrator",
+ "module": "Grove",
+ "name": "GPU Type Alias",
+ "owner": "Administrator",
+ "permissions": [],
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": []
+}

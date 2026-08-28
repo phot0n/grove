@@ -140,36 +140,47 @@ class TestAPolicyIsItsOrder(unittest.TestCase):
 
 
 class TestFittingGpus(unittest.TestCase):
+	# Deliberately named so that docname order and index order DISAGREE: `cards_on` sorts by CUDA
+	# index and "take the first N" means that order, so sorting the names would pin other cards.
 	CARDS = [
-		{"gpu_index": 2, "gpu_model": "NVIDIA H100 80GB HBM3", "vram_gb": 80},
-		{"gpu_index": 0, "gpu_model": "NVIDIA L40S", "vram_gb": 48},
-		{"gpu_index": 1, "gpu_model": "NVIDIA H100 80GB HBM3", "vram_gb": 80},
+		{"name": "aaa", "gpu_index": 2, "gpu_type": "h100", "vram_gb": 80},
+		{"name": "zzz", "gpu_index": 0, "gpu_type": "l40s", "vram_gb": 48},
+		{"name": "mmm", "gpu_index": 1, "gpu_type": "h100", "vram_gb": 80},
 	]
 
-	def test_indices_come_back_sorted(self):
-		# find_placement takes the first N, so the order here decides which cards are pinned.
-		self.assertEqual(fitting_gpus(self.CARDS), (0, 1, 2))
+	def test_cards_come_back_in_the_order_they_were_given(self):
+		# find_placement takes the first N, so this order decides which cards are pinned. The
+		# caller hands them over index-ordered; sorting docnames here would order them by a hash.
+		self.assertEqual(fitting_gpus(self.CARDS), ("aaa", "zzz", "mmm"))
 
-	def test_the_model_filter_matches_on_substring_not_equality(self):
-		# Both sides are unvalidated free text — a Machine GPU says "NVIDIA H100 80GB HBM3" and
-		# an operator types "h100". Equality would match nothing and reject the whole fleet.
-		self.assertEqual(fitting_gpus(self.CARDS, gpu_model="h100"), (1, 2))
-		self.assertEqual(fitting_gpus(self.CARDS, gpu_model="NVIDIA H100 80GB HBM3"), (1, 2))
+	def test_a_card_is_named_not_numbered(self):
+		# The point of the whole change: an index has to be resolved against the box a second
+		# time, and a scan landing in between resolves it onto different silicon.
+		self.assertEqual(fitting_gpus([self.CARDS[0]]), ("aaa",))
 
-	def test_a_model_nothing_matches_returns_nothing(self):
-		self.assertEqual(fitting_gpus(self.CARDS, gpu_model="mi300"), ())
+	def test_the_type_filter_is_exact(self):
+		# It used to be a substring test, because both sides were unvalidated free text —
+		# nvidia-smi said "Tesla T4" where AWS said "T4". Both resolve to one GPU Type now, so
+		# equality is finally safe and there is nothing left to guess at.
+		self.assertEqual(fitting_gpus(self.CARDS, gpu_type="h100"), ("aaa", "mmm"))
+		self.assertEqual(fitting_gpus(self.CARDS, gpu_type="l40s"), ("zzz",))
+
+	def test_a_type_nothing_matches_returns_nothing(self):
+		self.assertEqual(fitting_gpus(self.CARDS, gpu_type="mi300"), ())
 
 	def test_min_vram_drops_the_small_card(self):
-		self.assertEqual(fitting_gpus(self.CARDS, min_vram_gb=80), (1, 2))
+		self.assertEqual(fitting_gpus(self.CARDS, min_vram_gb=80), ("aaa", "mmm"))
 
 	def test_a_blank_filter_keeps_everything(self):
 		# Blank is "any card", not "no card" — the field's own description says so.
-		self.assertEqual(fitting_gpus(self.CARDS, gpu_model="", min_vram_gb=0), (0, 1, 2))
+		self.assertEqual(fitting_gpus(self.CARDS, gpu_type="", min_vram_gb=0), ("aaa", "zzz", "mmm"))
 
-	def test_a_card_with_no_model_recorded_is_not_matched_by_a_named_filter(self):
-		cards = [{"gpu_index": 0, "gpu_model": None, "vram_gb": 80}]
-		self.assertEqual(fitting_gpus(cards, gpu_model="h100"), ())
-		self.assertEqual(fitting_gpus(cards), (0,))
+	def test_a_card_with_no_type_resolved_is_not_matched_by_a_named_filter(self):
+		# A card whose type could not be resolved must not satisfy a filter that names one —
+		# placing on it would be guessing at hardware nobody identified.
+		cards = [{"name": "aaa", "gpu_index": 0, "gpu_type": None, "vram_gb": 80}]
+		self.assertEqual(fitting_gpus(cards, gpu_type="h100"), ())
+		self.assertEqual(fitting_gpus(cards), ("aaa",))
 
 
 if __name__ == "__main__":

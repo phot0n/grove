@@ -82,14 +82,14 @@ function show_gpu_allocation(dialog) {
 			.map((gpu) => {
 				const held = (gpu.deployments || []).map((d) => d.name).join(', ');
 				return `<tr><td>${gpu.gpu_index}</td><td>${frappe.utils.escape_html(
-					gpu.gpu_model || ''
+					gpu.gpu_type || ''
 				)}</td><td>${gpu.vram_gb || ''}</td><td>${gpu.status}</td>
 				<td class="text-muted small">${frappe.utils.escape_html(held)}</td></tr>`;
 			})
 			.join('');
 		field.$wrapper.html(
 			`<table class="table table-bordered small"><thead><tr>
-			<th>${__('Index')}</th><th>${__('Model')}</th><th>${__('VRAM')}</th>
+			<th>${__('Index')}</th><th>${__('Type')}</th><th>${__('VRAM')}</th>
 			<th>${__('Status')}</th><th>${__('Held by')}</th></tr></thead>
 			<tbody>${rows}</tbody></table>`
 		);

@@ -5,18 +5,16 @@
  "editable_grid": 1,
  "engine": "InnoDB",
  "istable": 1,
- "field_order": [
-  "gpu_index",
-  "gpu_model",
-  "vram_gb"
- ],
+ "field_order": ["gpu", "gpu_index", "gpu_type", "vram_gb", "compute_capability"],
  "fields": [
-  {"fieldname": "gpu_index", "fieldtype": "Int", "label": "CUDA Index", "reqd": 1, "in_list_view": 1, "columns": 2, "description": "CUDA index of a GPU on this deployment's box (see the Machine's GPU table). Must be Free (or already held by this deployment)."},
-  {"fieldname": "gpu_model", "fieldtype": "Data", "label": "GPU Model", "read_only": 1, "in_list_view": 1, "columns": 3, "description": "Filled from the Machine GPU on save."},
-  {"fieldname": "vram_gb", "fieldtype": "Int", "label": "VRAM (GB)", "read_only": 1, "in_list_view": 1, "columns": 2}
+  {"fieldname": "gpu", "fieldtype": "Link", "label": "GPU", "options": "GPU", "reqd": 1, "in_list_view": 1, "columns": 3, "description": "The card itself. Pick one on this replica's box that nothing else holds — the link opens the record, which shows what is really on the machine and who has it."},
+  {"fieldname": "gpu_index", "fieldtype": "Int", "label": "CUDA Index", "fetch_from": "gpu.gpu_index", "read_only": 1, "in_list_view": 1, "columns": 2, "description": "The card's index on its box. Display only: the run script addresses the card by its Device ID, because a MIG slice has no index and an index moves on a reseat."},
+  {"fieldname": "gpu_type", "fieldtype": "Data", "label": "GPU Type", "fetch_from": "gpu.gpu_type", "read_only": 1, "in_list_view": 1, "columns": 3},
+  {"fieldname": "vram_gb", "fieldtype": "Int", "label": "VRAM (GB)", "fetch_from": "gpu.vram_gb", "read_only": 1, "in_list_view": 1, "columns": 2},
+  {"fieldname": "compute_capability", "fieldtype": "Float", "precision": "1", "label": "Compute", "fetch_from": "gpu.compute_capability", "read_only": 1}
  ],
  "links": [],
- "modified": "2026-07-07 00:00:00",
+ "modified": "2026-08-28 00:00:00",
  "modified_by": "Administrator",
  "module": "Grove",
  "name": "Model Replica GPU",

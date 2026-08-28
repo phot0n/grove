@@ -10,11 +10,12 @@
   "placement_policy",
   "column_break_shape",
   "gpus_per_replica",
-  "gpu_model",
+  "gpu_type",
   "min_vram_gb",
   "pipeline_parallel_size",
   "tensor_parallel_size",
   "section_tuning",
+  "dtype",
   "kv_cache_dtype",
   "gpu_memory_utilization",
   "max_num_batched_tokens",
@@ -33,7 +34,7 @@
  ],
  "fields": [
   {
-   "description": "What every replica of this deployment serves. Set once \u2014 the gateway routes on it.",
+   "description": "What every replica of this deployment serves. Set once — the gateway routes on it.",
    "fieldname": "model",
    "fieldtype": "Link",
    "in_list_view": 1,
@@ -43,7 +44,7 @@
    "set_only_once": 1
   },
   {
-   "description": "The image every replica serves from. Deployment-only \u2014 a replica on a different image would answer to the same model name with a different engine.",
+   "description": "The image every replica serves from. Deployment-only — a replica on a different image would answer to the same model name with a different engine.",
    "fieldname": "engine_image",
    "fieldtype": "Link",
    "label": "Engine Image",
@@ -73,20 +74,21 @@
    "reqd": 1
   },
   {
-   "description": "Optional hard filter for placement, matched against the Machine's GPU inventory (e.g. NVIDIA H100 80GB HBM3). Blank places on any card.",
-   "fieldname": "gpu_model",
-   "fieldtype": "Data",
-   "label": "GPU Model"
+   "description": "Optional hard filter for placement: only cards of this type are considered. Blank places on any card. Matched exactly — every source's spelling resolves to one GPU Type, so there is nothing to guess at.",
+   "fieldname": "gpu_type",
+   "fieldtype": "Link",
+   "label": "GPU Type",
+   "options": "GPU Type"
   },
   {
-   "description": "Optional hard filter for placement, per card. Also what the weights-fit check is run against \u2014 blank skips that check rather than blocking.",
+   "description": "Optional hard filter for placement, per card. Also what the weights-fit check is run against — blank skips that check rather than blocking.",
    "fieldname": "min_vram_gb",
    "fieldtype": "Float",
    "label": "Min VRAM (GB)"
   },
   {
    "default": "balanced",
-   "description": "Which box a new replica lands on. A policy is a list of tiebreaks applied <b>in order</b> \u2014 the next one only decides where the previous ties.<br><br><b>balanced</b> \u2014 a box already serving this model \u2192 the region running fewest of this deployment's replicas \u2192 the tightest fit, leaving whole boxes free for bigger shapes \u2192 the box running fewest replicas.<br><b>pack</b> \u2014 a box already serving this model \u2192 the tightest fit \u2192 fewest replicas. Region is not weighed at all, so replicas gather onto as few boxes as the shape allows. For batch work.<br><b>spread</b> \u2014 the region running fewest replicas, even if that means a cold box \u2192 the <i>emptiest</i> box \u2192 a warm box \u2192 fewest replicas. Maximum separation, so one region or one box going down takes the least with it.<br><br>\"Already serving this model\" means a sibling replica has the weights in that box's cache \u2014 it counts for nothing when the Model streams its weights from S3, since then no box is warmer than another.<br><br>This only <b>orders</b> boxes that can already take the replica; it never makes an unsuitable one suitable. Boxes are filtered first on the engine image's architecture, free cards, GPU Model and Min VRAM, and whether the weights fit the cards on offer. When none survives, placement names every box and why it was rejected.",
+   "description": "Which box a new replica lands on. A policy is a list of tiebreaks applied <b>in order</b> — the next one only decides where the previous ties.<br><br><b>balanced</b> — a box already serving this model → the region running fewest of this deployment's replicas → the tightest fit, leaving whole boxes free for bigger shapes → the box running fewest replicas.<br><b>pack</b> — a box already serving this model → the tightest fit → fewest replicas. Region is not weighed at all, so replicas gather onto as few boxes as the shape allows. For batch work.<br><b>spread</b> — the region running fewest replicas, even if that means a cold box → the <i>emptiest</i> box → a warm box → fewest replicas. Maximum separation, so one region or one box going down takes the least with it.<br><br>\"Already serving this model\" means a sibling replica has the weights in that box's cache — it counts for nothing when the Model streams its weights from S3, since then no box is warmer than another.<br><br>This only <b>orders</b> boxes that can already take the replica; it never makes an unsuitable one suitable. Boxes are filtered first on the engine image's architecture, free cards, GPU Model and Min VRAM, and whether the weights fit the cards on offer. When none survives, placement names every box and why it was rejected.",
    "fieldname": "placement_policy",
    "fieldtype": "Select",
    "label": "Placement Policy",
@@ -100,7 +102,7 @@
    "label": "Pipeline Parallel Size"
   },
   {
-   "description": "Derived = GPUs per Replica / pipeline parallel size. \u2192 --tensor-parallel-size.",
+   "description": "Derived = GPUs per Replica / pipeline parallel size. → --tensor-parallel-size.",
    "fieldname": "tensor_parallel_size",
    "fieldtype": "Int",
    "label": "Tensor Parallel Size",
@@ -115,7 +117,15 @@
   },
   {
    "default": "auto",
-   "description": "\u2192 --kv-cache-dtype. fp8 halves the KV cache, which buys context on a card short of VRAM, at some accuracy.",
+   "description": "→ --dtype, the format the WEIGHTS are served in. auto lets vLLM read torch_dtype off the repo, which is right nearly always. Set float16 when the cards cannot do bfloat16: that needs compute capability 8.0, so a T4 (7.5) hard-raises on a repo asking for it. Placement rejects such a box and names this field.",
+   "fieldname": "dtype",
+   "fieldtype": "Select",
+   "label": "Dtype",
+   "options": "auto\nbfloat16\nfloat16"
+  },
+  {
+   "default": "auto",
+   "description": "→ --kv-cache-dtype. fp8 halves the KV cache, which buys context on a card short of VRAM, at some accuracy. fp8 arithmetic needs compute capability 8.9, so an older card is rejected rather than left to fail on the box.",
    "fieldname": "kv_cache_dtype",
    "fieldtype": "Select",
    "label": "KV Cache Dtype",
@@ -123,20 +133,20 @@
   },
   {
    "default": "0.9",
-   "description": "\u2192 --gpu-memory-utilization (0-1).",
+   "description": "→ --gpu-memory-utilization (0-1).",
    "fieldname": "gpu_memory_utilization",
    "fieldtype": "Float",
    "label": "GPU Memory Utilization"
   },
   {
-   "description": "\u2192 --max-num-batched-tokens. Blank = vLLM's own default.",
+   "description": "→ --max-num-batched-tokens. Blank = vLLM's own default.",
    "fieldname": "max_num_batched_tokens",
    "fieldtype": "Int",
    "label": "Max Num Batched Tokens"
   },
   {
    "default": "1024",
-   "description": "\u2192 --max-num-seqs, and the gateway's admission cap per replica. A replica that overrides this reports its own number to the route table; one that leaves it blank reports this one.",
+   "description": "→ --max-num-seqs, and the gateway's admission cap per replica. A replica that overrides this reports its own number to the route table; one that leaves it blank reports this one.",
    "fieldname": "max_num_seqs",
    "fieldtype": "Int",
    "label": "Max Num Seqs"
@@ -153,7 +163,7 @@
    "options": "auto\nFLASH_ATTN\nXFORMERS\nFLASHINFER"
   },
   {
-   "description": "\u2192 --max-model-len. Blank = 8192. Takes a suffix \u2014 32k, 128k, 1m \u2014 or a plain token count.",
+   "description": "→ --max-model-len. Blank = 8192. Takes a suffix — 32k, 128k, 1m — or a plain token count.",
    "fieldname": "max_model_len",
    "fieldtype": "Data",
    "label": "Max Model Len"
@@ -161,13 +171,13 @@
   {
    "default": "0",
    "depends_on": "max_model_len",
-   "description": "\u2192 VLLM_ALLOW_LONG_MAX_MODEL_LEN=1. Deployment-only: a Check cannot express 'inherit', and a wrong value gives garbage output instead of an error.",
+   "description": "→ VLLM_ALLOW_LONG_MAX_MODEL_LEN=1. Deployment-only: a Check cannot express 'inherit', and a wrong value gives garbage output instead of an error.",
    "fieldname": "allow_long_max_model_len",
    "fieldtype": "Check",
    "label": "Allow Long Max Model Len"
   },
   {
-   "description": "Deployment-only, except Extra Serve Args. These decide what the service advertises and what the compile cache is keyed on \u2014 replicas differing here would answer one model name with different engines.",
+   "description": "Deployment-only, except Extra Serve Args. These decide what the service advertises and what the compile cache is keyed on — replicas differing here would answer one model name with different engines.",
    "fieldname": "section_extra",
    "fieldtype": "Section Break",
    "label": "Extra"
@@ -187,13 +197,13 @@
   },
   {
    "depends_on": "eval:doc.engine_kind != 'custom'",
-   "description": "Freeform extra `vllm serve` flags appended verbatim. A replica may append its OWN on top of these \u2014 vLLM takes the last occurrence of a repeated flag, so a replica can add to this or override one of its flags without retyping the rest.",
+   "description": "Freeform extra `vllm serve` flags appended verbatim. A replica may append its OWN on top of these — vLLM takes the last occurrence of a repeated flag, so a replica can add to this or override one of its flags without retyping the rest.",
    "fieldname": "extra_serve_args",
    "fieldtype": "Small Text",
    "label": "Extra Serve Args"
   },
   {
-   "description": "What a replica of this deployment runs, from the same builder the deploy uses. A replica that overrides a knob renders its own \u2014 this is the shape they share.",
+   "description": "What a replica of this deployment runs, from the same builder the deploy uses. A replica that overrides a knob renders its own — this is the shape they share.",
    "fieldname": "serve_command",
    "fieldtype": "Code",
    "label": "Serve Command",

@@ -7,7 +7,7 @@ import frappe
 from frappe.model.document import Document
 
 from grove.grove.doctype.engine_image.engine_image import engine_tuning
-from grove.grove.doctype.gpu_claim.gpu_claim import claims_on
+from grove.grove.doctype.gpu.gpu import GPUUnavailable, cards_on
 from grove.grove.doctype.model.model import launch_config
 from grove.grove.doctype.model_replica.model_replica import GPU_CLAIMING_STATUSES
 from grove.naming import next_deployment_name
@@ -20,6 +20,7 @@ from grove.serving.base import DEFAULT_PORT, build_engine
 # a legal value, which is what lets one column carry both "unset" and a real number — the same
 # reading `engine_port = 0` already has.
 OVERRIDABLE = (
+	"dtype",
 	"kv_cache_dtype",
 	"gpu_memory_utilization",
 	"max_num_batched_tokens",
@@ -59,9 +60,10 @@ class ModelDeployment(Document):
 		env: DF.Table[PodEnv]
 		extra_serve_args: DF.SmallText | None
 		gpu_memory_utilization: DF.Float
-		gpu_model: DF.Data | None
+		gpu_type: DF.Link | None
 		gpus_per_replica: DF.Int
 		health_path: DF.Data | None
+		dtype: DF.Literal["auto", "bfloat16", "float16"]
 		kv_cache_dtype: DF.Literal["auto", "fp8"]
 		max_model_len: DF.Data | None
 		max_num_batched_tokens: DF.Int
@@ -126,14 +128,16 @@ class ModelDeployment(Document):
 			)
 		return config
 
-	def engine_for(self, replica=None, gpu_vram_gb=None):
+	def engine_for(self, replica=None, gpu_vram_gb=None, compute_capability=None):
 		"""The Engine a replica of this deployment runs — the one place either doc builds one.
 
 		`replica=None` is the deployment's own preview, off its declared shape rather than a box's:
 		gpus_per_replica for the GPU count and min_vram_gb for the fit check.
 
 		`gpu_vram_gb` is what the scheduler hands in — the card size a candidate box would really
-		give it, which is stricter than the declared min_vram_gb and is the point of asking."""
+		give it, which is stricter than the declared min_vram_gb and is the point of asking.
+		`compute_capability` is the same idea for what those cards can DO: a box can have room for
+		the weights and still be unable to represent them."""
 		kind, image_tuning = engine_tuning(self.engine_image)
 		return build_engine(
 			kind,
@@ -142,6 +146,9 @@ class ModelDeployment(Document):
 			port=(replica.engine_port if replica else 0) or DEFAULT_PORT,
 			gpu_count=len(replica.gpus or []) if replica else self.gpus_per_replica,
 			gpu_vram_gb=gpu_vram_gb or (replica.gpu_vram_gb if replica else None) or self.min_vram_gb,
+		compute_capability=(
+			compute_capability or (replica.gpu_compute_capability if replica else None) or 0
+		),
 			**self.resolved_config(replica),
 			**image_tuning,
 		)
@@ -163,7 +170,7 @@ class ModelDeployment(Document):
 
 	@frappe.whitelist()
 	def find_placement(self):
-		"""`(inference_server, [gpu_index, ...])` for one more replica of this deployment.
+		"""`(inference_server, [gpu, ...])` for one more replica of this deployment, cards named.
 
 		Chooses only among boxes that can actually take it — the policy orders viable boxes and
 		cannot make an invalid one viable. With none, throws naming why EVERY box was rejected:
@@ -211,9 +218,10 @@ class ModelDeployment(Document):
 		]
 
 	def _candidate(self, box, claim, box_architecture, image_architecture, siblings, per_region):
-		free = fitting_gpus(claim.free_gpus, self.gpu_model, self.min_vram_gb)
+		free = fitting_gpus(claim.free_gpus, self.gpu_type, self.min_vram_gb)
 		# Cards a placement in flight has announced, which no committed row shows yet.
-		free = tuple(index for index in free if index not in lease.leased(box.machine, free))
+		busy = lease.leased(free)
+		free = tuple(card for card in free if card not in busy)
 		return Candidate(
 			inference_server=box.name,
 			region=box.region or "",
@@ -240,13 +248,19 @@ class ModelDeployment(Document):
 		if len(free) < self.gpus_per_replica:
 			return (
 				f"{len(free)} free card(s) match this shape, and it needs {self.gpus_per_replica}"
-				f"{f' of {self.gpu_model}' if self.gpu_model else ''}"
+				f"{f' of {self.gpu_type}' if self.gpu_type else ''}"
 			)
 		# The engine's own arithmetic, against the cards this box would actually give it — a
 		# stricter check than the deployment's declared min_vram_gb, and it catches weights that
 		# do not fit before a play starts.
-		vram = min(claim.vram_by_index[index] for index in free[: self.gpus_per_replica])
-		if errors := self.engine_for(gpu_vram_gb=vram).placement_errors:
+		taking = free[: self.gpus_per_replica]
+		vram = min(claim.vram_by_card[card] for card in taking)
+		# The weakest card decides both: a mixed box is capped by its smallest VRAM and by its
+		# oldest silicon. 0 from an unscanned card means unknown, and an unknown skips the check.
+		capability = min(claim.capability_by_card[card] for card in taking)
+		if errors := self.engine_for(
+			gpu_vram_gb=vram, compute_capability=capability
+		).placement_errors:
 			return "; ".join(errors)
 		return ""
 
@@ -282,10 +296,13 @@ class ModelDeployment(Document):
 		path. `gpus` is the CUDA indices to pin, as a list or a comma-separated string; none
 		means single-GPU unpinned, which is what a deployment naming no GPU rows already is.
 
+		Indices are what an operator reads off nvidia-smi, so this is where they are typed — and
+		the ONLY place they are resolved. Everything past here addresses the card itself.
+
 		With no box named, the scheduler picks one — and if a sibling takes those cards first,
 		moves to the next box it already ranked rather than failing the request."""
 		if inference_server:
-			return self._place(inference_server, gpu_indexes(gpus))
+			return self._place(inference_server, cards_at(inference_server, gpu_indexes(gpus)))
 
 		candidates = self.ranked_placements()
 		if not candidates:
@@ -296,7 +313,7 @@ class ModelDeployment(Document):
 					candidate.inference_server,
 					list(candidate.fitting_gpus[: self.gpus_per_replica]),
 				)
-			except frappe.DuplicateEntryError:
+			except GPUUnavailable:
 				continue  # a sibling won these cards; the next box is already ranked
 		frappe.throw(
 			f"Every box that could take a replica of {self.name} lost its cards to another "
@@ -304,19 +321,19 @@ class ModelDeployment(Document):
 		)
 
 	def _place(self, inference_server, gpus):
-		"""Create the replica and take its cards, or neither.
+		"""Create the replica and take its cards, or neither. `gpus` are GPU docnames.
 
-		The lease goes first and is what keeps a rival from BLOCKING. A `GPU Claim` is invisible
-		until it commits, and InnoDB locks the unique index entry meanwhile — so a rival trying
-		the same card waits out this whole transaction rather than failing fast. A lease is
-		visible the moment it is written, so the rival skips the card instead of queueing.
+		The lease goes first and is what keeps a rival from BLOCKING. A claim is invisible until it
+		commits, and the row it takes is locked meanwhile — so a rival trying the same card waits
+		out this whole transaction rather than failing fast. A lease is visible the moment it is
+		written, so the rival skips the card instead of queueing.
 
 		One savepoint, because the claim is what can fail: without it a lost race would leave a
 		replica behind holding nothing, which the next scan would count as an unpinned box and
 		refuse to place on."""
 		machine = frappe.db.get_value("Inference Server", inference_server, "machine")
-		if not lease.take(machine, gpus, self.name):
-			raise frappe.DuplicateEntryError("GPU Claim", f"{machine}:{gpus}", None)
+		if not lease.take(gpus, self.name):
+			raise GPUUnavailable(f"A placement already in flight holds a card on {machine}.")
 		frappe.db.savepoint("place_replica")
 		try:
 			replica = frappe.get_doc(
@@ -324,12 +341,12 @@ class ModelDeployment(Document):
 					"doctype": "Model Replica",
 					"model_deployment": self.name,
 					"inference_server": inference_server,
-					"gpus": [{"gpu_index": index} for index in gpus],
+					"gpus": [{"gpu": gpu} for gpu in gpus],
 				}
 			).insert()
 		except Exception:
 			frappe.db.rollback(save_point="place_replica")
-			lease.release(machine, gpus)
+			lease.release(gpus)
 			raise
 		# Published before anything slow. Until this commits, the claim is invisible AND its index
 		# entry is locked, so a rival blocks for however long the rest of this request takes —
@@ -342,18 +359,11 @@ class ModelDeployment(Document):
 def _claims_by_box(boxes):
 	"""What each box is running and which of its cards nothing holds.
 
-	Cards come from the Machine, holders from `GPU Claim` — the same one owner the allocation
-	panel reads, so the scheduler and the panel cannot disagree about what is free. Three queries
-	for the whole fleet rather than the per-box walk `get_gpu_allocation` does."""
+	Cards and holders arrive together — `held_by` is a column on the card — so this and the
+	allocation panel read the same rows and cannot disagree about what is free."""
 	machines = sorted({box.machine for box in boxes if box.machine})
-	cards = frappe.get_all(
-		"Machine GPU",
-		filters={"parent": ("in", machines), "parenttype": "Machine"},
-		fields=["parent", "gpu_index", "gpu_model", "vram_gb"],
-		order_by="gpu_index",
-	) if machines else []
-	holders = claims_on(machines)
-	# A replica pinning no cards claims none, so it cannot be counted from the claims — and it is
+	cards = cards_on(machines)
+	# A replica pinning no cards holds none, so it cannot be counted from the cards — and it is
 	# exactly the case that makes a box look emptier than it is. Counted here so `_rejection` can
 	# decline the box rather than place onto cards it cannot see.
 	replicas = frappe.get_all(
@@ -362,20 +372,18 @@ def _claims_by_box(boxes):
 		         "status": ("in", GPU_CLAIMING_STATUSES)},
 		fields=["name", "inference_server"],
 	)
-	claimed_by = {}
-	for (machine, _index), replica in holders.items():
-		claimed_by.setdefault(machine, set()).add(replica)
+	holding = {card.held_by for card in cards if card.held_by}
 
 	claims = {}
 	for box in boxes:
 		mine = [r for r in replicas if r.inference_server == box.name]
-		taken = {index for (machine, index) in holders if machine == box.machine}
-		on_machine = [c for c in cards if c.parent == box.machine]
+		on_machine = [c for c in cards if c.machine == box.machine]
 		claims[box.name] = frappe._dict(
-			free_gpus=[c for c in on_machine if int(c.gpu_index) not in taken],
-			vram_by_index={int(c.gpu_index): c.vram_gb for c in on_machine},
+			free_gpus=[c for c in on_machine if not c.held_by],
+			vram_by_card={c.name: c.vram_gb for c in on_machine},
+			capability_by_card={c.name: c.compute_capability for c in on_machine},
 			replicas=len(mine),
-			unpinned=len([r for r in mine if r.name not in claimed_by.get(box.machine, ())]),
+			unpinned=len([r for r in mine if r.name not in holding]),
 		)
 	return claims
 
@@ -390,6 +398,23 @@ def _machine_architectures(machine_names):
 			fields=["name", "cpu_architecture"],
 		)
 	}
+
+
+def cards_at(inference_server, indexes):
+	"""The cards at these CUDA indices on a box, or throw naming the ones it does not have.
+
+	The one translation from what an operator typed to what everything else addresses. A bad index
+	is an input error, so it is caught here rather than deeper in a placement that has already
+	taken a lease."""
+	machine = frappe.db.get_value("Inference Server", inference_server, "machine")
+	cards = {int(card.gpu_index): card.name for card in cards_on([machine])}
+	missing = [index for index in indexes if index not in cards]
+	if missing:
+		frappe.throw(
+			f"{machine} has no card at CUDA index {', '.join(str(index) for index in missing)}. "
+			"Re-scan the box."
+		)
+	return [cards[index] for index in indexes]
 
 
 def gpu_indexes(gpus):

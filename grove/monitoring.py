@@ -210,7 +210,7 @@ def front_boxes(agent):
 def _with_gpu_flag(servers):
 	"""Whether each box has GPUs, from the Machine's own scanned rows rather than a flag
 	somebody has to remember to set."""
-	gpu_machines = set(frappe.get_all("Machine GPU", pluck="parent"))
+	gpu_machines = set(frappe.get_all("GPU", pluck="machine"))
 	return [{**server, "has_gpu": server["machine"] in gpu_machines} for server in servers]
 
 

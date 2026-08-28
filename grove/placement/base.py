@@ -27,7 +27,10 @@ class Candidate:
 
 	inference_server: str
 	region: str = ""
-	# Free cards meeting the deployment's gpu_model / min_vram_gb, lowest index first.
+	# Free cards meeting the deployment's gpu_type / min_vram_gb, as GPU docnames, lowest
+	# index first. Names rather than CUDA indices because a MIG slice has no index, and because
+	# a number has to be resolved against the box again later — by which time a scan may have
+	# renumbered it onto other silicon.
 	fitting_gpus: tuple = ()
 	# Spare cards left over if this replica lands here. Negative means it does not fit.
 	surplus: int = 0
@@ -84,20 +87,24 @@ def placement_policy(policy):
 	return scorers
 
 
-def fitting_gpus(free_gpus, gpu_model="", min_vram_gb=0):
-	"""Which of a box's free cards meet a deployment's hard filters, lowest index first.
+def fitting_gpus(free_gpus, gpu_type="", min_vram_gb=0):
+	"""Which of a box's free cards meet a deployment's hard filters, as GPU docnames.
 
-	`free_gpus` is rows carrying `gpu_index`, `gpu_model` and `vram_gb`.
+	`free_gpus` is rows carrying `name`, `gpu_type` and `vram_gb`.
 
-	`gpu_model` is matched case-insensitively on substring, not equality. Both sides are free text
-	with no validation — a Machine GPU says `NVIDIA H100 80GB HBM3` and an operator types `h100` —
-	so equality would silently match nothing and reject the whole fleet."""
-	wanted = (gpu_model or "").strip().lower()
+	Returned in the order they were GIVEN, not sorted: `cards_on` orders by CUDA index, which is
+	what "take the first N" should mean, and sorting docnames would order by a hash instead.
+
+	`gpu_type` is matched for EQUALITY. It used to be a case-insensitive substring test on a free
+	text model name, because both sides were unvalidated — nvidia-smi said `Tesla T4` where AWS
+	said `T4`, so equality matched nothing. Both now resolve to one `GPU Type`, so the guess is
+	gone: a deployment asking for `T4` matches a T4 whichever source found it."""
+	wanted = (gpu_type or "").strip()
 	matches = []
 	for gpu in free_gpus:
-		if wanted and wanted not in (gpu.get("gpu_model") or "").lower():
+		if wanted and (gpu.get("gpu_type") or "") != wanted:
 			continue
 		if min_vram_gb and (gpu.get("vram_gb") or 0) < min_vram_gb:
 			continue
-		matches.append(int(gpu["gpu_index"]))
-	return tuple(sorted(matches))
+		matches.append(gpu["name"])
+	return tuple(matches)

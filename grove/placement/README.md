@@ -14,6 +14,11 @@ exception and says why below.
 | `scorers.py` | Every preference. One class, one `score`, a few lines each. |
 | `lease.py` | The Redis hint that keeps two placements off one card. Advisory; owns nothing. |
 
+Cards are addressed by **GPU docname** throughout — `fitting_gpus` returns them, a `Candidate`
+carries them, the lease keys on them and a replica pins them. A CUDA index is operator vocabulary
+and is resolved exactly once, in `cards_at`, where someone typed it. Why that split exists, and why
+a rented box identifies its cards by slot: `grove/grove/doctype/gpu/README.md`.
+
 ## Adding a preference
 
 One class in `scorers.py`, and name it in whichever policies want it. Lower wins. It may read
@@ -29,7 +34,7 @@ Select option, verbatim and lowercase. `find_placement` does not change.
 ## Scoring orders; it does not admit
 
 A policy ranks boxes that can **already** take the replica. What makes a box viable — the engine
-image's architecture, enough free cards, the deployment's `gpu_model` and `min_vram_gb`, and the
+image's architecture, enough free cards, the deployment's `gpu_type` and `min_vram_gb`, and the
 engine's own `placement_errors` — is decided in `ModelDeployment._rejection` and is deliberately
 not pluggable.
 
@@ -91,19 +96,27 @@ same time. Three layers, and only the middle one is authoritative:
 
 | Layer | Where | Owns | Losing it costs |
 |---|---|---|---|
-| Lease | Redis, TTL `60s` | nothing — a hint that someone is mid-placement | a rival blocks instead of skipping; still correct |
-| **`GPU Claim`** | **MariaDB, name `<machine>:<index>`** | **the card** | **two engines on one card** |
+| Lease | Redis, `grove:gpu_lease:<gpu>`, TTL `60s` | nothing — a hint that someone is mid-placement | a rival blocks instead of skipping; still correct |
+| **`GPU.held_by`** | **MariaDB, a column on the card** | **the card** | **two engines on one card** |
 | `Model Replica GPU` | MariaDB, child row | which cards this replica was *given* — config for the run script | a wrong `--tensor-parallel-size` |
 
-## The claim is the mutex
+## The claim is a compare-and-swap
 
-`GPU Claim` is named for the resource, so taking a card is `INSERT` and the primary key is what
-arbitrates. A second insert raises `DuplicateEntryError`; `add_replica` catches it and moves to the
-next box `ranked_placements()` already ranked. **No lock is taken anywhere.**
+The card owns its claim, so taking one is a single conditional `UPDATE`:
 
-Named for the **machine**, not the Inference Server: a GPU is a `Machine GPU` row and
-`Inference Server.machine` is neither unique nor checked, so two servers naming one machine would
-otherwise each claim card 0 of the same physical box.
+```sql
+update `tabGPU` set held_by = %(replica)s where name = %(gpu)s and (held_by is null or held_by = '')
+```
+
+`UPDATE` reads CURRENT rows rather than the transaction's snapshot, so only one caller can see
+`held_by` empty however stale its own view is. The read-back that follows says who won.
+`add_replica` treats a `False` as "the card went to someone else" and moves to the next box
+`ranked_placements()` already ranked. **No lock is taken anywhere.**
+
+The claim is a column rather than a row of its own because a row would have to be NAMED after the
+card it holds — and a UUID makes an unreadable docname, a CUDA index cannot express a MIG slice,
+and a truncated UUID trades a silent, data-dependent collision for brevity. A column needs no name,
+cannot outlive the card, and goes when a scan prunes it.
 
 This is the Kubernetes/Nomad shape — decide on a possibly-stale view, let one authoritative write
 be the truth, requeue the loser. Nomad's docs put it plainly: schedulers run "without locking or
@@ -160,7 +173,7 @@ Status moves by `db.set_value`, which never runs `validate`, so claims are settl
 | Worker dies mid-placement | lease expires by TTL; the savepoint rolled the replica back |
 | Worker dies after the claim, before releasing | card stranded — `release_if_stale` frees it when someone next wants it |
 | Draft replica abandoned | cards held until it is deleted; the allocation panel names the holder |
-| Two placements, same card | one wins on the primary key; the other takes the next ranked box |
+| Two placements, same card | one wins the compare-and-swap; the other takes the next ranked box |
 
 ## Traps
 
@@ -170,7 +183,8 @@ Status moves by `db.set_value`, which never runs `validate`, so claims are settl
   skip does nothing. That bug passed every unit test and was only caught against live Redis.
 - **`LEASE_TTL = 60` is a guess.** It has to outlive a placement plus the stale-read window of a
   transaction that started just before it. Nothing measures either.
-- **Lease keys are not namespaced per site.** One Grove site per bench is fine; two would share
-  these keys, and a machine name colliding across them would have one site skip the other's cards.
+- **Lease keys are not namespaced per site.** Keyed on the card's docname, which is unique across
+  a fleet but not across benches: one Grove site per bench is fine, two would share these keys and a
+  name colliding across them would have one site skip the other's cards.
 - **No fairness.** Optimistic competition has no notion of it — slab 4's autoscaler placing in a
   loop will beat an operator's button press every time. Omega's documented downside, unsolved here.

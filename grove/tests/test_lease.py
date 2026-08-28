@@ -37,36 +37,38 @@ class TestTheLeaseAnnouncesIntent(unittest.TestCase):
 		self.addCleanup(patcher.stop)
 
 	def test_a_free_card_can_be_taken(self):
-		self.assertTrue(lease.take("mc-x", [0, 1], "MD-1"))
+		self.assertTrue(lease.take(["gpu-a", "gpu-b"], "MD-1"))
 
 	def test_a_second_taker_is_refused_immediately(self):
-		# The point: no waiting. A GPU Claim insert would block on the winner's open transaction.
-		lease.take("mc-x", [0], "MD-1")
-		self.assertFalse(lease.take("mc-x", [0], "MD-2"))
+		# The point: no waiting. A claim taken inside the winner's open transaction would block a rival.
+		lease.take(["gpu-a"], "MD-1")
+		self.assertFalse(lease.take(["gpu-a"], "MD-2"))
 
 	def test_a_partial_lease_is_handed_back_whole(self):
-		# Card 1 is gone, so the lease on card 0 must not survive — a card marked busy that
+		# gpu-b is gone, so the lease on gpu-a must not survive — a card marked busy that
 		# nobody goes on to claim is a card stranded until its TTL.
-		lease.take("mc-x", [1], "MD-1")
-		self.assertFalse(lease.take("mc-x", [0, 1], "MD-2"))
-		self.assertEqual(lease.leased("mc-x", [0]), set())
+		lease.take(["gpu-b"], "MD-1")
+		self.assertFalse(lease.take(["gpu-a", "gpu-b"], "MD-2"))
+		self.assertEqual(lease.leased(["gpu-a"]), set())
 
 	def test_leased_reports_only_what_is_taken(self):
-		lease.take("mc-x", [1], "MD-1")
-		self.assertEqual(lease.leased("mc-x", [0, 1, 2]), {1})
+		lease.take(["gpu-b"], "MD-1")
+		self.assertEqual(lease.leased(["gpu-a", "gpu-b", "gpu-c"]), {"gpu-b"})
 
 	def test_release_frees_the_card_again(self):
-		lease.take("mc-x", [0], "MD-1")
-		lease.release("mc-x", [0])
-		self.assertTrue(lease.take("mc-x", [0], "MD-2"))
+		lease.take(["gpu-a"], "MD-1")
+		lease.release(["gpu-a"])
+		self.assertTrue(lease.take(["gpu-a"], "MD-2"))
 
-	def test_machines_do_not_share_a_lease(self):
-		lease.take("mc-x", [0], "MD-1")
-		self.assertTrue(lease.take("mc-y", [0], "MD-2"))
+	def test_two_cards_do_not_share_a_lease(self):
+		# Card 0 of one box and card 0 of another are different records, so nothing has to say
+		# which machine they are on — that is the point of keying on the card's own name.
+		lease.take(["gpu-a"], "MD-1")
+		self.assertTrue(lease.take(["gpu-b"], "MD-2"))
 
-	def test_the_key_names_the_machine_and_the_card(self):
-		lease.take("mc-x", [0], "MD-1")
-		self.assertEqual(next(iter(self.redis.store)), "grove:gpu_lease:mc-x:0")
+	def test_the_key_names_the_card(self):
+		lease.take(["gpu-a"], "MD-1")
+		self.assertEqual(next(iter(self.redis.store)), "grove:gpu_lease:gpu-a")
 
 
 if __name__ == "__main__":

@@ -7,7 +7,7 @@ from frappe.model.document import Document
 
 from grove import failure
 from grove.ansible import AnsibleHost
-from grove.grove.doctype.gpu_claim.gpu_claim import claims_on
+from grove.grove.doctype.gpu.gpu import cards_on
 from grove.monitoring import run_exporters_play
 from grove.naming import GeneratedName
 from grove.utils import validate_id_safe_name
@@ -102,15 +102,13 @@ class InferenceServer(GeneratedName, AnsibleHost, Document):
 
 	@property
 	def gpus(self):
-		"""The cards on this box (Machine GPU rows), in CUDA index order."""
+		"""The cards on this box (GPU records), in CUDA index order.
+
+		`gpu_type` is the catalogue record every source's spelling resolves to, and `vram_gb` is
+		fetched off it — nvidia-smi's `Tesla T4` and AWS's `T4` are one type with one VRAM figure."""
 		if not self.machine:
 			return []
-		return frappe.get_all(
-			"Machine GPU",
-			filters={"parent": self.machine, "parenttype": "Machine"},
-			fields=["gpu_index", "gpu_model", "vram_gb"],
-			order_by="gpu_index",
-		)
+		return cards_on([self.machine])
 
 	def run_command(self, command, timeout=60):
 		"""Run one argv on this server's box over SSH and return what it printed."""
@@ -122,24 +120,20 @@ class InferenceServer(GeneratedName, AnsibleHost, Document):
 
 	@frappe.whitelist()
 	def get_gpu_allocation(self):
-		"""The box's GPUs and which replica holds each, computed live: the cards come from the
-		Machine, the holder from the `GPU Claim` on `<this machine>:<index>` — named for the
-		machine because that is what the card belongs to.
+		"""The box's GPUs and which replica holds each.
 
-		The claim IS the ownership — one row per card, and the primary key is what makes that
-		true, so this panel and the placement that refuses a taken card cannot disagree. A card
-		with no claim is genuinely free: a stopped replica released its cards on purpose, because
-		a stopped container holds no VRAM."""
+		One query — the holder is a column on the card, so this panel and the placement that
+		refuses a taken card read the same row and cannot disagree. A card with a blank `held_by`
+		is genuinely free: a stopped replica released its cards on purpose, because a stopped
+		container holds no VRAM."""
 		gpus = self.gpus
-		holders = claims_on([self.machine])
 		for gpu in gpus:
-			replica = holders.get((self.machine, int(gpu.gpu_index)))
 			gpu.deployments = (
-				[frappe.db.get_value("Model Replica", replica, ["name", "model"], as_dict=True)]
-				if replica
+				[frappe.db.get_value("Model Replica", gpu.held_by, ["name", "model"], as_dict=True)]
+				if gpu.held_by
 				else []
 			)
-			gpu.status = "Allocated" if replica else "Free"
+			gpu.status = "Allocated" if gpu.held_by else "Free"
 		return gpus
 
 	@property

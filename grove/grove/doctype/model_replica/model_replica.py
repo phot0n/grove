@@ -8,7 +8,13 @@ import frappe
 from frappe.model.document import Document
 
 from grove import failure
-from grove.grove.doctype.gpu_claim.gpu_claim import claim_name, release_if_stale
+from grove.grove.doctype.gpu.gpu import (
+	GPUUnavailable,
+	cards_on,
+	claim,
+	release,
+	release_if_stale,
+)
 from grove.naming import next_replica_name
 from grove.utils import is_env_key, is_env_value
 
@@ -24,10 +30,10 @@ _PORT_FREE_STATUSES = ("Terminated",)
 # Inactive is not: VRAM is not a reservation and a stopped container holds none of it, so its
 # cards are offered to siblings and Start re-checks before it puts an engine back on them.
 GPU_CLAIMING_STATUSES = ("Provisioning", "Active", "Broken")
-# What HOLDS a GPU Claim, which is the serving set plus Draft. A replica takes its cards the
+# What HOLDS a card, which is the serving set plus Draft. A replica takes its cards the
 # moment its row exists, before anything is deployed — that reservation is what makes two
 # concurrent placements impossible rather than merely unlikely, since the second one cannot
-# insert the claim. The cost is that an abandoned Draft strands its cards until it is deleted,
+# win the swap. The cost is that an abandoned Draft strands its cards until it is deleted,
 # which the allocation panel shows by name.
 CLAIM_HOLDING_STATUSES = ("Draft", *GPU_CLAIMING_STATUSES)
 
@@ -52,6 +58,7 @@ class ModelReplica(Document):
 		gpus: DF.Table[ModelReplicaGPU]
 		inference_server: DF.Link
 		internal_api_key: DF.Password | None
+		dtype: DF.Literal["", "auto", "bfloat16", "float16"]
 		kv_cache_dtype: DF.Literal["", "auto", "fp8"]
 		log_lines: DF.Int
 		max_model_len: DF.Data | None
@@ -139,32 +146,40 @@ class ModelReplica(Document):
 	@property
 	def gpu_vram_gb(self):
 		"""VRAM per pinned GPU, taken as the smallest of them — a mixed box is capped by its
-		smallest card. None until the box's GPU inventory carries a VRAM figure."""
+		smallest card. None until the cards' GPU Type carries a VRAM figure."""
 		sizes = [row.vram_gb for row in self.gpus or [] if row.vram_gb]
 		return min(sizes) if sizes else None
 
+	@property
+	def gpu_compute_capability(self):
+		"""What the weakest pinned card can do, taken as the smallest of them — the same reading
+		`gpu_vram_gb` takes, and for the same reason: a mixed box runs at its oldest card. None
+		until the cards' GPU Type carries a figure, which reads as "do not check"."""
+		levels = [row.compute_capability for row in self.gpus or [] if row.compute_capability]
+		return min(levels) if levels else None
+
 	def _validate_gpus(self):
-		"""Reject duplicate, unknown or off-shape GPUs, fill each row's display columns from the
-		box's GPU inventory, and rebuild the serve command preview."""
+		"""Reject duplicate or off-box cards, and rebuild the serve command preview.
+
+		The display columns fill themselves — `gpu_index`, `gpu_type` and `vram_gb` are
+		`fetch_from` the linked `GPU`, so they cannot drift from the card the way copied values
+		did. What still has to be checked is that the card is on THIS replica's box: the Link
+		field will happily accept one from any machine in the fleet."""
 		seen = set()
 		for r in self.gpus or []:
-			if r.gpu_index in seen:
-				frappe.throw(f"GPU index {r.gpu_index} is listed twice.")
-			seen.add(r.gpu_index)
+			if r.gpu in seen:
+				frappe.throw(f"GPU {r.gpu} is listed twice.")
+			seen.add(r.gpu)
 
-		# Fill the display columns first — the placement check reads vram_gb off these rows.
-		# No box yet → the reqd check on inference_server flags it; the split is still checked.
+		# No box yet → the reqd check on inference_server flags it; the shape split is still checked.
 		if self.gpus and self.inference_server:
-			on_box = {int(gpu.gpu_index): gpu for gpu in self.server.gpus}
+			mine = {card.name for card in cards_on([self.server.machine])}
 			for r in self.gpus:
-				gpu = on_box.get(int(r.gpu_index))
-				if not gpu:
+				if r.gpu not in mine:
 					frappe.throw(
-						f"Inference Server {self.inference_server} has no GPU with CUDA "
-						f"index {r.gpu_index}."
+						f"GPU {r.gpu} is not on {self.inference_server}'s machine. Pick a card "
+						"from this box."
 					)
-				r.gpu_model = gpu.gpu_model
-				r.vram_gb = gpu.vram_gb
 
 		self._validate_shape()
 
@@ -198,11 +213,10 @@ class ModelReplica(Document):
 			)
 
 	def sync_gpu_claims(self):
-		"""Make the GPU Claim rows match what this replica's status says it should hold.
+		"""Make the cards this replica holds match what its status says it should.
 
-		The one place the claim rule lives. A claiming status takes a `GPU Claim` per pinned card,
-		whose NAME is `<box>:<index>` — so the database, not a check, is what stops two replicas
-		holding one card: the second insert cannot happen. Anything else releases.
+		The one place the claim rule lives. A holding status takes `GPU.held_by` on each pinned
+		card; anything else gives them back.
 
 		Called after every status transition rather than from `validate`, because status moves by
 		`db.set_value`, which never runs validate."""
@@ -212,40 +226,56 @@ class ModelReplica(Document):
 			self.release_gpus()
 
 	def claim_gpus(self):
-		"""Take a GPU Claim for each pinned card. Raises `frappe.DuplicateEntryError` if a sibling
-		genuinely holds one — that is the race being lost, and the caller decides what to do about
-		it (placement moves to the next box; Start refuses on the button).
+		"""Take each pinned card, or throw naming the one that was lost.
 
-		A claim left behind by a replica that is no longer entitled to it is cleared first. Stored
-		ownership can drift where the derived kind could not — a worker dying between the status
-		flip and the release strands the card forever — so the moment someone else wants it is
-		where that gets repaired."""
-		machine = self.server.machine
-		held = set(frappe.get_all("GPU Claim", filters={"model_replica": self.name}, pluck="gpu_index"))
-		for row in self.gpus or []:
-			index = int(row.gpu_index)
-			if index in {int(i) for i in held}:
+		A compare-and-swap per card: `held_by` moves only if it was empty, so two replicas cannot
+		both win one. A card held by a replica no longer entitled to it is cleared first — stored
+		ownership drifts when a worker dies between a status flip and its release, and the moment
+		someone else wants the card is where that gets repaired.
+
+		All or nothing: a card taken before the one that failed is handed back, or a replica would
+		sit on cards it is not going to use."""
+		taken = []
+		for gpu in self.gpu_records:
+			if gpu.held_by == self.name:
+				continue  # already ours, from an earlier transition
+			if gpu.held_by:
+				release_if_stale(gpu.name)
+			if claim(gpu.name, self.name):
+				taken.append(gpu.name)
 				continue
-			name = claim_name(machine, index)
-			if frappe.db.exists("GPU Claim", name):
-				release_if_stale(name)
-
-			frappe.get_doc(
-				{
-					"doctype": "GPU Claim",
-					"machine": machine,
-					"inference_server": self.inference_server,
-					"gpu_index": index,
-					"model_replica": self.name,
-				}
-			).insert(ignore_permissions=True)
+			for name in taken:
+				release(name, self.name)
+			frappe.throw(
+				f"GPU {gpu.gpu_index} on {self.inference_server} was taken by "
+				f"{frappe.db.get_value('GPU', gpu.name, 'held_by')} first.",
+				GPUUnavailable,
+			)
 
 	def release_gpus(self):
 		"""Give this replica's cards back. Stopping releases on purpose — a stopped container
 		holds no VRAM, so the cards are genuinely free and a sibling may take them. Start is what
 		re-takes them, and fails loudly if it cannot."""
-		for name in frappe.get_all("GPU Claim", filters={"model_replica": self.name}, pluck="name"):
-			frappe.delete_doc("GPU Claim", name, ignore_permissions=True, force=True)
+		for name in frappe.get_all("GPU", filters={"held_by": self.name}, pluck="name"):
+			release(name, self.name)
+
+	@property
+	def gpu_records(self):
+		"""The `GPU` rows this replica pins, in the order it named them.
+
+		A direct read of the links now — the child row IS the reference, so there is nothing to
+		match on and nothing that can point at a card that no longer exists."""
+		names = [row.gpu for row in (self.gpus or []) if row.gpu]
+		if not names:
+			return []
+		cards = {
+			card.name: card
+			for card in frappe.get_all(
+				"GPU", filters={"name": ("in", names)},
+				fields=["name", "gpu_index", "device_id", "held_by"],
+			)
+		}
+		return [cards[name] for name in names if name in cards]
 
 	def _assign_engine_port(self):
 		"""Allocate a box-local vLLM port once (multi-tenant box: one port per
@@ -366,14 +396,8 @@ class ModelReplica(Document):
 		The cards are re-taken first: Inactive released them, so a sibling may have been placed on
 		them while this was stopped. Nothing about `docker start` would notice — two engines on one
 		card split its VRAM and both OOM later, at a size each thought it had — so the claim is
-		taken on the button, where a DuplicateEntryError is something an operator can read."""
-		try:
-			self.claim_gpus()
-		except frappe.DuplicateEntryError:
-			frappe.throw(
-				f"A GPU this replica needs on {self.inference_server} was taken while it was "
-				"stopped. Free it, or place this replica somewhere else."
-			)
+		taken on the button, where the refusal is something an operator can read."""
+		self.claim_gpus()
 		self.set_container_running(True)
 
 	def set_container_running(self, running):
@@ -501,7 +525,10 @@ def _vllm_extravars(md, m, inf, key):
 	# GPU pinning: the deployment names CUDA indices on its box (md.gpus). N GPUs →
 	# tensor-parallel across exactly those, with CUDA_VISIBLE_DEVICES so vLLM only
 	# sees them. No rows → single-GPU, unpinned (whatever the box exposes).
-	gpu_indexes = sorted(int(r.gpu_index) for r in (md.gpus or []))
+	# What CUDA is actually given: `GPU-<uuid>` for a whole card, `MIG-<uuid>` for a slice, or the
+	# bare index on a cloud box seeded before any driver existed. A MIG slice HAS no index, so an
+	# index here would address nothing.
+	devices = [card.device_id for card in md.gpu_records]
 
 	hf_token = frappe.conf.get("hf_token", "")
 	vllm_home = inf.data_path
@@ -521,7 +548,7 @@ def _vllm_extravars(md, m, inf, key):
 		"vllm_instance": _instance_slug(md.name),
 		"vllm_port": serve.port,
 		"vllm_api_key": key,
-		"vllm_cuda_visible_devices": ",".join(str(i) for i in gpu_indexes),
+		"vllm_cuda_visible_devices": ",".join(devices),
 		"vllm_env": _engine_env(md, serve, hf_token, settings.weights_s3_engine_environment),
 		"vllm_hf_token": hf_token,
 		# Weights/caches on the mounted data volume, or the instance-store NVMe if opted in.
