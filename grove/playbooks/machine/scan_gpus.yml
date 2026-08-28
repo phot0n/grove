@@ -14,6 +14,6 @@
     # the same output for its dialog.
     - name: query nvidia-smi
       ansible.builtin.command:
-        cmd: nvidia-smi --query-gpu=index,name,memory.total,uuid,memory.used,memory.free --format=csv,noheader,nounits
+        cmd: nvidia-smi --query-gpu=index,name,memory.total,uuid,memory.used,memory.free,compute_cap --format=csv,noheader,nounits
       register: nvidia_smi
       changed_when: false

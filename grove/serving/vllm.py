@@ -12,6 +12,14 @@ import shlex
 from grove.serving.base import Engine
 
 
+# Compute capability a card needs to run these. bfloat16 is Ampere and up; vLLM does not fall back
+# to float16, it raises `Bfloat16 is only supported on GPUs with compute capability of at least
+# 8.0` and exits. fp8 arithmetic is Ada/Hopper and up, which is what an fp8 KV cache needs.
+BF16_MIN_COMPUTE_CAPABILITY = 8.0
+FP8_MIN_COMPUTE_CAPABILITY = 8.9
+BF16 = ("bfloat16", "torch.bfloat16", "bf16")
+
+
 class VllmEngine(Engine):
 	"""An image whose entrypoint takes `vllm serve` arguments, so a placement derives them from
 	the Model."""
@@ -56,6 +64,18 @@ class VllmEngine(Engine):
 		return self.model.get("modality") == "embedding"
 
 	@property
+	def weight_dtype(self):
+		"""What the weights will actually be served in: the placement's override, or what the
+		repo's config.json asks for when it states nothing.
+
+		`auto` is not a third answer — it is vLLM reading `torch_dtype` off the repo, which is why
+		the Model carries it. Blank on both sides means nobody knows, and an unknown is not
+		checked."""
+		if self.dtype != "auto":
+			return self.dtype
+		return (self.model.get("torch_dtype") or "").strip()
+
+	@property
 	def placement_errors(self):
 		"""Why this GPU split cannot start, empty when it can. Checked before a deploy so
 		vLLM does not fail minutes in, on the box. Shape fields left blank on the Model skip
@@ -74,6 +94,30 @@ class VllmEngine(Engine):
 				f"{self.model_name} has {heads} attention heads, which cannot be sharded across "
 				f"tensor-parallel size {self.tensor_parallel_size} — vLLM needs an even split. "
 				f"Use a GPU count whose tensor-parallel size divides {heads}."
+			)
+		# Capability, not capacity: a card can have room for the weights and still be unable to
+		# represent them. Skipped whenever either side is unknown, which is what a box nobody has
+		# scanned and a Model nobody has fetched an architecture for both read as.
+		if (
+			self.compute_capability
+			and self.weight_dtype.lower() in BF16
+			and self.compute_capability < BF16_MIN_COMPUTE_CAPABILITY
+		):
+			errors.append(
+				f"{self.model_name} is served in {self.weight_dtype}, which needs a GPU of compute "
+				f"capability {BF16_MIN_COMPUTE_CAPABILITY} or better — these are "
+				f"{self.compute_capability}. Set dtype to float16 on the deployment (or on one "
+				f"replica) to run it here, or place it on a newer card."
+			)
+		if (
+			self.compute_capability
+			and self.kv_cache_dtype.startswith("fp8")
+			and self.compute_capability < FP8_MIN_COMPUTE_CAPABILITY
+		):
+			errors.append(
+				f"An fp8 KV cache needs a GPU of compute capability "
+				f"{FP8_MIN_COMPUTE_CAPABILITY} or better — these are {self.compute_capability}. "
+				f"Clear kv_cache_dtype, or place this on a newer card."
 			)
 		if self.usable_vram_gb and self.weights_gb > self.usable_vram_gb:
 			errors.append(
@@ -134,8 +178,13 @@ class VllmEngine(Engine):
 		]
 		if self.pipeline_parallel_size > 1:
 			args += ["--pipeline-parallel-size", str(self.pipeline_parallel_size)]
-		# Weight dtype is left to vLLM (it reads the repo's config.json); only the KV cache is
-		# worth overriding per box — fp8 halves it and buys context on a card that is short of it.
+		# Weight dtype is left to vLLM (it reads the repo's config.json) until a card cannot run
+		# what the repo asks for — a T4 cannot do bfloat16 at all, and `--dtype float16` is the
+		# remedy `placement_errors` names.
+		if self.dtype != "auto":
+			args += ["--dtype", self.dtype]
+		# Only the KV cache is worth overriding per box otherwise — fp8 halves it and buys context
+		# on a card that is short of it.
 		if self.kv_cache_dtype != "auto":
 			args += ["--kv-cache-dtype", self.kv_cache_dtype]
 		if self.max_num_batched_tokens:

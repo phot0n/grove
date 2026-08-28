@@ -74,6 +74,8 @@ class Engine(ABC):
 		gpu_count=1,
 		pipeline_parallel_size=1,
 		gpu_vram_gb=None,
+		compute_capability=None,
+		dtype=None,
 		kv_cache_dtype=None,
 		gpu_memory_utilization=None,
 		max_model_len=None,
@@ -93,6 +95,11 @@ class Engine(ABC):
 		self.gpu_count = int(gpu_count or 1)
 		self.pipeline_parallel_size = int(pipeline_parallel_size or 1)
 		self.gpu_vram_gb = gpu_vram_gb
+		# What the box's weakest card can do, 0 when nothing has scanned it. 0 means "unknown",
+		# and an unknown skips the capability checks rather than failing them — the same reading
+		# a blank CPU architecture gets.
+		self.compute_capability = float(compute_capability or 0)
+		self.dtype = dtype or "auto"
 		self.kv_cache_dtype = kv_cache_dtype or "auto"
 		self.gpu_memory_utilization = gpu_memory_utilization or DEFAULT_GPU_MEMORY_UTILIZATION
 		self.max_model_len = parse_context_length(max_model_len) or DEFAULT_MAX_MODEL_LEN

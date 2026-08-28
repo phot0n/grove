@@ -40,6 +40,7 @@ class Model(Document):
 		reasoning_parser: DF.Data | None
 		thinking: DF.Check
 		tool_call_parser: DF.Data | None
+		torch_dtype: DF.Data | None
 		upstream_model_id: DF.Data | None
 		weights_gb: DF.Float
 		weights_s3_uri: DF.Data | None
@@ -133,6 +134,8 @@ class Model(Document):
 		if not (heads and layers):
 			frappe.throw(f"{self.hf_repo}'s config.json has no head/layer count to read.")
 		values = {"attention_heads": heads, "hidden_layers": layers}
+		if dtype := config_dtype(config, shape):
+			values["torch_dtype"] = dtype
 		if weights_gb := self.get_weights_gb():
 			values["weights_gb"] = weights_gb
 		self.db_set(values)
@@ -295,8 +298,21 @@ def vendor_base_url(model, provider=None):
 LAUNCH_FIELDS = (
 	"hf_repo", "weights_s3_uri", "modality", "enable_prefix_caching",
 	"enable_auto_tool_choice", "tool_call_parser", "thinking", "reasoning_parser",
-	"attention_heads", "weights_gb",
+	"attention_heads", "weights_gb", "torch_dtype",
 )
+
+
+def config_dtype(config, shape=None):
+	"""What vLLM will serve these weights in when nothing overrides it, off the repo's config.json.
+
+	Two spellings and two places. transformers renamed `torch_dtype` to `dtype` in 4.57, and a
+	multimodal repo states it on the LANGUAGE model rather than at the top level — Qwen3.5-4B has
+	`text_config.dtype: bfloat16` and nothing above it. Reading only the top level finds nothing,
+	which reads as "unknown" and silently skips the capability check that this exists to feed."""
+	for source in (shape or {}, config):
+		if dtype := (source.get("torch_dtype") or source.get("dtype") or ""):
+			return dtype
+	return ""
 
 
 def launch_config(model):

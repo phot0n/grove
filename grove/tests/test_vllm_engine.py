@@ -56,6 +56,71 @@ class TestVllmPlacementErrors(unittest.TestCase):
 		self.assertEqual(serve(gpu_count=6).placement_errors, [])  # no heads on Model
 
 
+class TestWhatTheCardCanRun(unittest.TestCase):
+	"""Capability, not capacity. A T4 has room for a small model and still cannot represent it:
+	vLLM does not quietly fall back to float16, it raises `Bfloat16 is only supported on GPUs with
+	compute capability of at least 8.0` and exits — minutes into a play, on the box. Every other
+	hard filter is checked before a deploy; this is the one that was not."""
+
+	BF16 = dict(CHAT_MODEL, torch_dtype="bfloat16")
+
+	def test_a_t4_cannot_serve_a_bfloat16_repo(self):
+		errors = serve(self.BF16, compute_capability=7.5).placement_errors
+		self.assertEqual(len(errors), 1)
+		self.assertIn("bfloat16", errors[0])
+		self.assertIn("7.5", errors[0])
+		# The remedy has to be IN the message: a scheduler that only says no is the useless kind.
+		self.assertIn("float16", errors[0])
+
+	def test_the_remedy_actually_works(self):
+		# The half a refusal-only test would leave unproven — setting the knob the error names
+		# must make the box viable, and must reach vLLM as --dtype.
+		engine = serve(self.BF16, compute_capability=7.5, dtype="float16")
+		self.assertEqual(engine.placement_errors, [])
+		self.assertEqual(engine.args[engine.args.index("--dtype") + 1], "float16")
+
+	def test_ampere_is_the_boundary_and_it_is_inclusive(self):
+		# 8.0 is exactly what bfloat16 needs, so an A100 must not be rejected by an off-by-one.
+		self.assertEqual(serve(self.BF16, compute_capability=8.0).placement_errors, [])
+		self.assertTrue(serve(self.BF16, compute_capability=7.9).placement_errors)
+
+	def test_an_unscanned_box_is_not_judged(self):
+		# 0 is "nobody has asked this card", not "it cannot". Refusing here would make every
+		# provider-seeded box unplaceable until someone SSHed into it.
+		self.assertEqual(serve(self.BF16).placement_errors, [])
+		self.assertEqual(serve(self.BF16, compute_capability=0).placement_errors, [])
+
+	def test_a_model_with_no_dtype_recorded_is_not_judged(self):
+		# Nobody has fetched the architecture, so what it will be served in is unknown.
+		self.assertEqual(serve(CHAT_MODEL, compute_capability=7.5).placement_errors, [])
+
+	def test_an_override_beats_what_the_repo_asks_for(self):
+		# The deployment says float16, so the repo's bfloat16 never reaches the card — and the
+		# reverse: asking for bfloat16 on a T4 is refused even when the repo said float16.
+		self.assertEqual(
+			serve(dict(CHAT_MODEL, torch_dtype="float16"), compute_capability=7.5,
+			      dtype="bfloat16").placement_errors[0].count("bfloat16"), 1
+		)
+		self.assertEqual(
+			serve(self.BF16, compute_capability=7.5, dtype="float16").placement_errors, []
+		)
+
+	def test_an_fp8_kv_cache_needs_ada_or_newer(self):
+		# fp8 arithmetic is 8.9 and up. An L40S is exactly 8.9; an A100 is 8.0 and is not.
+		self.assertEqual(
+			serve(CHAT_MODEL, compute_capability=8.9, kv_cache_dtype="fp8").placement_errors, []
+		)
+		errors = serve(CHAT_MODEL, compute_capability=8.0, kv_cache_dtype="fp8").placement_errors
+		self.assertEqual(len(errors), 1)
+		self.assertIn("8.9", errors[0])
+		self.assertIn("kv_cache_dtype", errors[0])
+
+	def test_dtype_auto_sends_no_flag(self):
+		# Grove states nothing by default: vLLM reads the repo, which is the better answer until
+		# a card cannot run it.
+		self.assertNotIn("--dtype", serve(self.BF16).args)
+
+
 class TestVramFit(unittest.TestCase):
 	# DeepSeek-V4-Flash's real figures: 148 GB of weights, 64 heads.
 	BIG = dict(CHAT_MODEL, weights_gb=148.0, attention_heads=64)
