@@ -13,7 +13,7 @@ from unittest.mock import patch
 
 import frappe
 
-from grove.naming import next_deployment_name, next_server_name
+from grove.naming import next_replica_name, next_server_name
 from grove.utils import is_id_safe, is_label_under, slugify
 
 ZONE = "grove.example.com"
@@ -106,7 +106,7 @@ class TestDeploymentNaming(unittest.TestCase):
 		self.series = FakeSeries()
 
 	def name(self, model="frappe/qwen3-8b", server="inf3-ap-south-1", region="ap-south-1"):
-		return next_deployment_name(model, server, region, counter=self.series)
+		return next_replica_name(model, server, region, counter=self.series)
 
 	def test_the_name_says_what_where_and_which_box(self):
 		self.assertEqual(self.name(), "qwen3-8b-ap-south-1-inf3-00001")

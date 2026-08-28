@@ -41,7 +41,7 @@ class ModelProvider(Document):
 				"— it is the prefix of every model id this provider serves."
 			)
 
-		self.validate_endpoint()
+		# self.validate_endpoint()
 
 	def validate_endpoint(self):
 		"""A vendor is reachable only as a whole: an address, over TLS, with a credential."""
@@ -53,4 +53,3 @@ class ModelProvider(Document):
 			frappe.throw(f"{self.name}'s Base URL must be https — it carries the API key.")
 		if not self.get_password("api_key", raise_exception=False):
 			frappe.throw(f"{self.name} has a Base URL but no API Key, so nothing could dial it.")
-

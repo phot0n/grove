@@ -49,7 +49,6 @@
   "attention_backend",
   "pipeline_parallel_size",
   "section_extra",
-  "aliases",
   "extra_serve_args",
   "serve_command",
   "tab_logs",
@@ -310,12 +309,6 @@
    "fieldname": "section_extra",
    "fieldtype": "Section Break",
    "label": "Extra"
-  },
-  {
-   "description": "Extra --served-model-name values (comma/space separated); old client model-names keep working.",
-   "fieldname": "aliases",
-   "fieldtype": "Small Text",
-   "label": "Aliases"
   },
   {
    "description": "Freeform extra `vllm serve` flags appended verbatim, e.g. --kv-cache-dtype fp8 --max-num-seqs 64.",

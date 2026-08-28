@@ -1,0 +1,72 @@
+{
+ "actions": [],
+ "allow_rename": 1,
+ "autoname": "prompt",
+ "creation": "2026-08-28 00:00:00",
+ "doctype": "DocType",
+ "engine": "InnoDB",
+ "field_order": [
+  "vram_gb",
+  "column_break_lprc",
+  "compute_capability",
+  "section_aliases",
+  "aliases"
+ ],
+ "fields": [
+  {
+   "description": "Per card, and THE number for this type \u2014 every GPU of it fetches this, so nvidia-smi's 15 and AWS's 16 for one T4 stop disagreeing. Seeded by whichever scan resolved it first and never overwritten after; correct it here and the whole fleet follows.",
+   "fieldname": "vram_gb",
+   "fieldtype": "Int",
+   "in_list_view": 1,
+   "label": "VRAM (GB)"
+  },
+  {
+   "description": "What the card can do, from nvidia-smi's compute_cap: 7.5 is a T4, 8.0 an A100, 8.9 an L40S, 12.0 a Blackwell. bfloat16 needs 8.0 and an fp8 KV cache needs 8.9, so this is what says a box can run a model's dtype before a play starts. 0 means never scanned \u2014 the check is skipped rather than failed, the same reading a blank CPU architecture gets.",
+   "fieldname": "compute_capability",
+   "fieldtype": "Float",
+   "in_list_view": 1,
+   "label": "Compute Capability",
+   "precision": "1"
+  },
+  {
+   "fieldname": "section_aliases",
+   "fieldtype": "Section Break"
+  },
+  {
+   "description": "Every string a source has reported for this card. Filled by scanning, so it learns. Matched before the name is derived, so an alias added here beats what would be derived \u2014 which is the only way 'NVIDIA H100 80GB HBM3' reaches H100.",
+   "fieldname": "aliases",
+   "fieldtype": "Table",
+   "label": "Aliases",
+   "options": "GPU Type Alias"
+  },
+  {
+   "fieldname": "column_break_lprc",
+   "fieldtype": "Column Break"
+  }
+ ],
+ "links": [],
+ "modified": "2026-08-29 02:16:09.044811",
+ "modified_by": "Administrator",
+ "module": "Grove",
+ "name": "GPU Type",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "System Manager",
+   "share": 1,
+   "write": 1
+  }
+ ],
+ "row_format": "Dynamic",
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": [],
+ "track_changes": 1
+}

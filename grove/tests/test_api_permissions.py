@@ -12,7 +12,7 @@ from grove import api
 from grove.grove.doctype.grove_api_key.grove_api_key import KEY_PREFIX
 
 PROBE = "control-probe@example.com"
-WITHHELD = ("Machine", "Inference Server", "Model Deployment", "Monitoring Agent")
+WITHHELD = ("Machine", "Inference Server", "Model Replica", "Monitoring Agent")
 
 
 class TestTheControlRoleReachesOnlyWhatItServes(IntegrationTestCase):

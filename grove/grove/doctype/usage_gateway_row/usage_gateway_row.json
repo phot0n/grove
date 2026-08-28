@@ -4,32 +4,70 @@
  "doctype": "DocType",
  "editable_grid": 1,
  "engine": "InnoDB",
- "istable": 1,
  "field_order": [
   "gateway_server",
   "prompt_tokens",
   "completion_tokens",
-  "total_tokens",
   "cached_tokens",
+  "total_tokens",
   "request_count",
   "last_pulled"
  ],
  "fields": [
-  {"fieldname": "gateway_server", "fieldtype": "Link", "label": "Gateway Server", "options": "Gateway Server", "in_list_view": 1, "columns": 3},
-  {"fieldname": "prompt_tokens", "fieldtype": "Int", "label": "Prompt Tokens", "in_list_view": 1},
-  {"fieldname": "completion_tokens", "fieldtype": "Int", "label": "Completion Tokens", "in_list_view": 1},
-  {"fieldname": "total_tokens", "fieldtype": "Int", "label": "Total Tokens", "in_list_view": 1},
-  {"fieldname": "cached_tokens", "fieldtype": "Int", "label": "Cached Tokens", "in_list_view": 1},
-  {"fieldname": "request_count", "fieldtype": "Int", "label": "Requests", "in_list_view": 1},
-  {"fieldname": "last_pulled", "fieldtype": "Datetime", "label": "Last Pulled", "description": "Cumulative this month for this gateway; incremented each drain."}
+  {
+   "columns": 3,
+   "fieldname": "gateway_server",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "Gateway Server",
+   "options": "Gateway Server"
+  },
+  {
+   "fieldname": "prompt_tokens",
+   "fieldtype": "Int",
+   "in_list_view": 1,
+   "label": "Prompt Tokens"
+  },
+  {
+   "fieldname": "completion_tokens",
+   "fieldtype": "Int",
+   "in_list_view": 1,
+   "label": "Completion Tokens"
+  },
+  {
+   "fieldname": "total_tokens",
+   "fieldtype": "Int",
+   "in_list_view": 1,
+   "label": "Total Tokens"
+  },
+  {
+   "fieldname": "cached_tokens",
+   "fieldtype": "Int",
+   "in_list_view": 1,
+   "label": "Cached Tokens"
+  },
+  {
+   "fieldname": "request_count",
+   "fieldtype": "Int",
+   "in_list_view": 1,
+   "label": "Requests"
+  },
+  {
+   "description": "Cumulative this month for this gateway; incremented each drain.",
+   "fieldname": "last_pulled",
+   "fieldtype": "Datetime",
+   "label": "Last Pulled"
+  }
  ],
+ "istable": 1,
  "links": [],
- "modified": "2026-07-01 00:00:00",
+ "modified": "2026-08-27 19:06:34.421093",
  "modified_by": "Administrator",
  "module": "Grove",
  "name": "Usage Gateway Row",
  "owner": "Administrator",
  "permissions": [],
+ "row_format": "Dynamic",
  "sort_field": "modified",
  "sort_order": "DESC",
  "states": []

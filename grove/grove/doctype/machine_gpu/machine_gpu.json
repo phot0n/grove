@@ -1,29 +1,74 @@
 {
  "actions": [],
- "creation": "2026-07-07 00:00:00",
+ "creation": "2026-08-28 00:00:00",
  "doctype": "DocType",
- "editable_grid": 1,
  "engine": "InnoDB",
- "istable": 1,
  "field_order": [
   "gpu_index",
-  "gpu_model",
+  "gpu_type",
   "vram_gb",
-  "gpu_uuid"
+  "gpu",
+  "device_id"
  ],
  "fields": [
-  {"fieldname": "gpu_index", "fieldtype": "Int", "label": "CUDA Index", "reqd": 1, "in_list_view": 1, "columns": 1, "description": "Physical CUDA index on this box (nvidia-smi order). Identity within the machine; used for CUDA_VISIBLE_DEVICES."},
-  {"fieldname": "gpu_model", "fieldtype": "Data", "label": "GPU Model", "in_list_view": 1, "columns": 3, "description": "For a cloud machine, the provider's GPU id (e.g. 'NVIDIA L40S') — used to request the pod."},
-  {"fieldname": "vram_gb", "fieldtype": "Int", "label": "VRAM (GB)", "in_list_view": 1, "columns": 1},
-  {"fieldname": "gpu_uuid", "fieldtype": "Data", "label": "UUID", "columns": 2, "description": "Optional nvidia GPU UUID (nvidia-smi -L)."}
+  {
+   "columns": 2,
+   "description": "The card record. Open it for its full history and what holds it.",
+   "fieldname": "gpu",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "GPU",
+   "options": "GPU",
+   "read_only": 1,
+   "reqd": 1
+  },
+  {
+   "columns": 1,
+   "fetch_from": "gpu.gpu_index",
+   "fieldname": "gpu_index",
+   "fieldtype": "Int",
+   "in_list_view": 1,
+   "label": "CUDA",
+   "read_only": 1
+  },
+  {
+   "columns": 3,
+   "fetch_from": "gpu.gpu_type",
+   "fieldname": "gpu_type",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Type",
+   "read_only": 1
+  },
+  {
+   "columns": 1,
+   "fetch_from": "gpu.vram_gb",
+   "fieldname": "vram_gb",
+   "fieldtype": "Int",
+   "in_list_view": 1,
+   "label": "VRAM (GB)",
+   "read_only": 1
+  },
+  {
+   "columns": 2,
+   "description": "What CUDA_VISIBLE_DEVICES is given.",
+   "fetch_from": "gpu.device_id",
+   "fieldname": "device_id",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Device",
+   "read_only": 1
+  }
  ],
+ "istable": 1,
  "links": [],
- "modified": "2026-07-07 00:00:00",
+ "modified": "2026-08-29 00:05:51.847682",
  "modified_by": "Administrator",
  "module": "Grove",
  "name": "Machine GPU",
  "owner": "Administrator",
  "permissions": [],
+ "row_format": "Dynamic",
  "sort_field": "modified",
  "sort_order": "DESC",
  "states": []

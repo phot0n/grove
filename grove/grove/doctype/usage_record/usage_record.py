@@ -10,6 +10,28 @@ from grove.grove.doctype.grove_user.grove_user import monthly_budget, set_rate_l
 
 
 class UsageRecord(Document):
+	# begin: auto-generated types
+	# This code is auto-generated. Do not modify anything in this block.
+
+	from typing import TYPE_CHECKING
+
+	if TYPE_CHECKING:
+		from frappe.types import DF
+		from grove.grove.doctype.usage_gateway_row.usage_gateway_row import UsageGatewayRow
+		from grove.grove.doctype.usage_model_row.usage_model_row import UsageModelRow
+
+		api_key: DF.Link
+		cached_tokens: DF.Int
+		completion_tokens: DF.Int
+		gateway_usage: DF.Table[UsageGatewayRow]
+		model_usage: DF.Table[UsageModelRow]
+		month: DF.Data
+		prompt_tokens: DF.Int
+		request_count: DF.Int
+		total_tokens: DF.Int
+		user: DF.Link | None
+	# end: auto-generated types
+
 	def on_update(self):
 		# TODO: a lot of usage records will do this at probably the same time
 		self._enforce_budget()

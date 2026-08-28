@@ -57,12 +57,13 @@ class TestPrivateURL(unittest.TestCase):
 class FakeQuery:
 	"""Stands in for frappe.get_all over the four doctypes _replicas_for_ingress reads."""
 
-	def __init__(self, servers, machines, deployments, models):
+	def __init__(self, servers, machines, replicas, models, deployments=()):
 		self.tables = {
 			"Inference Server": servers,
 			"Machine": machines,
-			"Model Deployment": deployments,
+			"Model Replica": replicas,
 			"Model": models,
+			"Model Deployment": list(deployments),
 		}
 
 	def __call__(self, doctype, filters=None, fields=None, pluck=None, **kwargs):
@@ -70,7 +71,7 @@ class FakeQuery:
 		filters = dict(filters or {})
 		if doctype == "Inference Server" and "ingress" in filters:
 			rows = [r for r in rows if r.get("ingress") == filters["ingress"]]
-		if doctype == "Model Deployment":
+		if doctype == "Model Replica":
 			wanted = filters.get("inference_server")
 			names = list(wanted[1]) if wanted else []
 			rows = [r for r in rows if r["status"] == "Active" and r["inference_server"] in names]
@@ -95,7 +96,7 @@ MACHINES = [
 	{"name": "M-noprivate", "network": "Mumbai", "private_ip": ""},
 	{"name": "M-direct", "network": "Mumbai", "private_ip": "10.0.1.9"},
 ]
-DEPLOYMENTS = [
+REPLICAS = [
 	{"name": "MD-1", "model": "qwen3-35b", "engine_url": "https://203.0.113.7/e/md-1",
 	 "status": "Active", "inference_server": "INF-local", "max_num_seqs": 8},
 	{"name": "MD-2", "model": "llama-70b", "engine_url": "https://203.0.113.8/e/md-2",
@@ -110,10 +111,10 @@ DEPLOYMENTS = [
 
 
 class TestReplicasForIngress(unittest.TestCase):
-	def routes(self, ingress="ING-1"):
+	def routes(self, ingress="ING-1", replicas=REPLICAS, deployments=()):
 		from grove import pathway_sync
 
-		query = FakeQuery(SERVERS, MACHINES, DEPLOYMENTS, MODELS)
+		query = FakeQuery(SERVERS, MACHINES, replicas, MODELS, deployments)
 		with (
 			patch.object(frappe, "get_all", side_effect=query),
 			patch.object(
@@ -207,3 +208,39 @@ class TestIngressSnapshot(unittest.TestCase):
 		one = self.snapshot({"m": []})["routes"]["hash"]
 		two = self.snapshot({"m": [], "n": []})["routes"]["hash"]
 		self.assertNotEqual(one, two)
+
+
+class TestTheIngressGateResolvesThroughTheDeployment(unittest.TestCase):
+	"""The gateway's capacity is advisory — it sums it to choose BETWEEN ingresses. This one is
+	authoritative: the ingress applies the exact per-replica gate and 429s the excess. So a blank
+	`max_num_seqs` left unresolved here is worse than in the gateway table: the two planes would
+	disagree about one engine's cap, and the ingress would refuse traffic the gateway sent it."""
+
+	def capacity(self, max_num_seqs, deployment_max_num_seqs):
+		replica = {
+			"name": "MD-1", "model": "qwen3-35b", "engine_url": "https://203.0.113.7/e/md-1",
+			"status": "Active", "inference_server": "INF-local",
+			"max_num_seqs": max_num_seqs, "model_deployment": "T1",
+		}
+		[route] = TestReplicasForIngress().routes(
+			replicas=[replica],
+			deployments=[{"name": "T1", "max_num_seqs": deployment_max_num_seqs, "engine_image": None}],
+		)["qwen3-35b"]
+		return route["capacity"]
+
+	def test_a_replica_that_overrides_nothing_is_gated_at_its_deployments_cap(self):
+		self.assertEqual(self.capacity(0, 256), 256)
+
+	def test_a_replica_that_overrides_is_gated_at_its_own(self):
+		self.assertEqual(self.capacity(32, 256), 32)
+
+	def test_the_two_planes_agree_on_the_same_replica(self):
+		# The property that matters: whatever number the gateway advertises for a replica is the
+		# number the ingress will hold it to. Both read _capacity off a deployment-resolved row, so
+		# this asserts they cannot drift apart.
+		from grove import pathway_sync
+
+		row = {"model_deployment": "T1", "max_num_seqs": 0}
+		deployments = {"T1": {"engine_image": None, "max_num_seqs": 256}}
+		resolved = pathway_sync._resolve_deployment(dict(row), deployments)
+		self.assertEqual(pathway_sync._capacity(resolved, {}), self.capacity(0, 256))

@@ -110,16 +110,16 @@ class TestTheDecoratorReportsAndReraises(unittest.TestCase):
 		self.assertEqual([("Gateway Server", "gw-1")], rec.statuses)
 
 	def test_a_module_level_job_names_its_doctype(self):
-		# The Model Deployment jobs are functions taking a docname, not methods with a self.
-		@failure.reports_failure(doctype="Model Deployment")
-		def deploy_model(model_deployment):
+		# The Model Replica jobs are functions taking a docname, not methods with a self.
+		@failure.reports_failure(doctype="Model Replica")
+		def deploy_model(model_replica):
 			raise ValueError("engine did not come up")
 
 		with Recorder() as rec:
 			with self.assertRaises(ValueError):
 				deploy_model("MD-00007")
 		doctype, name, title, _ = rec.toasts[0]
-		self.assertEqual(("Model Deployment", "MD-00007"), (doctype, name))
+		self.assertEqual(("Model Replica", "MD-00007"), (doctype, name))
 		self.assertEqual("Deploy model failed", title)
 
 	def test_a_leading_underscore_does_not_reach_the_operator(self):

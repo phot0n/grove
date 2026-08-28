@@ -179,7 +179,7 @@ class MonitoringAgent(AnsibleHost, Document):
 		return play_name, rc
 
 	@frappe.whitelist()
-	def rotate_metrics_token(self, token):
+	def rotate_metrics_token(self, token: str):
 		"""Button: replace the bearer token this agent pushes with, here and on its box. The two
 		move together — the box keeps pushing with whatever file it holds, so a token changed
 		only here would silently start being rejected at the ingestion service."""

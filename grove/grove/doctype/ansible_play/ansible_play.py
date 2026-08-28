@@ -42,10 +42,10 @@ class AnsiblePlay(Document):
 
 	@frappe.whitelist()
 	def cleanup(self):
-		"""Button: tear down what this play was deploying. Only a Model Deployment play has
+		"""Button: tear down what this play was deploying. Only a Model Replica play has
 		per-instance state to remove — a box provision has none."""
-		if self.reference_doctype != "Model Deployment":
-			frappe.throw("Only a Model Deployment play has an instance to tear down.")
+		if self.reference_doctype != "Model Replica":
+			frappe.throw("Only a Model Replica play has an instance to tear down.")
 		if self.status in ("Pending", "Running", "Stopping"):
 			frappe.throw(f"This play is still {self.status} — stop it before cleaning up.")
-		frappe.get_doc("Model Deployment", self.reference_docname).teardown()
+		frappe.get_doc("Model Replica", self.reference_docname).teardown()

@@ -7,7 +7,7 @@ from frappe.model.document import Document
 
 from grove import failure
 from grove.ansible import AnsibleHost
-from grove.grove.doctype.model_deployment.model_deployment import GPU_CLAIMING_STATUSES
+from grove.grove.doctype.gpu.gpu import cards_on
 from grove.monitoring import run_exporters_play
 from grove.naming import GeneratedName
 from grove.utils import validate_id_safe_name
@@ -82,7 +82,7 @@ class InferenceServer(GeneratedName, AnsibleHost, Document):
 		validate_id_safe_name(self.doctype, new_name)
 
 	# ── The box ───────────────────────────────────────────────────────────────
-	# Everything that reaches the hardware goes through here: a Model Deployment talks to
+	# Everything that reaches the hardware goes through here: a Model Replica talks to
 	# its Inference Server, and the Server is the only side that knows about a Machine.
 
 	@property
@@ -102,15 +102,13 @@ class InferenceServer(GeneratedName, AnsibleHost, Document):
 
 	@property
 	def gpus(self):
-		"""The cards on this box (Machine GPU rows), in CUDA index order."""
+		"""The cards on this box (GPU records), in CUDA index order.
+
+		`gpu_type` is the catalogue record every source's spelling resolves to, and `vram_gb` is
+		fetched off it — nvidia-smi's `Tesla T4` and AWS's `T4` are one type with one VRAM figure."""
 		if not self.machine:
 			return []
-		return frappe.get_all(
-			"Machine GPU",
-			filters={"parent": self.machine, "parenttype": "Machine"},
-			fields=["gpu_index", "gpu_model", "vram_gb"],
-			order_by="gpu_index",
-		)
+		return cards_on([self.machine])
 
 	def run_command(self, command, timeout=60):
 		"""Run one argv on this server's box over SSH and return what it printed."""
@@ -122,33 +120,31 @@ class InferenceServer(GeneratedName, AnsibleHost, Document):
 
 	@frappe.whitelist()
 	def get_gpu_allocation(self):
-		"""The box's GPUs and which deployments hold them, computed live: the cards come
-		from the Machine, the claims from every Model Deployment on this server whose status
-		still owns its cards. Nothing is stored, so it can't drift out of step with what's
-		really there — and the statuses come from the deployment module rather than a second
-		list here, so this panel and the check that refuses a clash can never disagree.
+		"""The box's GPUs and which replica holds each.
 
-		Two deployments naming the same CUDA index is not prevented anywhere — the row
-		reports every claimant so the clash is visible rather than silently halving VRAM."""
+		One query — the holder is a column on the card, so this panel and the placement that
+		refuses a taken card read the same row and cannot disagree. A card with a blank `held_by`
+		is genuinely free: a stopped replica released its cards on purpose, because a stopped
+		container holds no VRAM."""
 		gpus = self.gpus
-		claims = {}
-		for deployment in frappe.get_list(
-			"Model Deployment",
-			filters={"inference_server": self.name, "status": ["in", GPU_CLAIMING_STATUSES]},
-			fields=["name", "model"],
-		):
-			for row in frappe.get_list(
-				"Model Deployment GPU",
-				filters={"parent": deployment.name, "parenttype": "Model Deployment"},
-				fields=["gpu_index"],
-				parent_doctype="Model Deployment",
-			):
-				claims.setdefault(row.gpu_index, []).append(deployment)
 		for gpu in gpus:
-			holders = claims.get(gpu.gpu_index, [])
-			gpu.deployments = holders
-			gpu.status = ("Allocated" if len(holders) == 1 else "Conflict") if holders else "Free"
+			gpu.deployments = (
+				[frappe.db.get_value("Model Replica", gpu.held_by, ["name", "model"], as_dict=True)]
+				if gpu.held_by
+				else []
+			)
+			gpu.status = "Allocated" if gpu.held_by else "Free"
 		return gpus
+
+	@property
+	def free_gpus(self):
+		"""The cards on this box nothing currently claims — `get_gpu_allocation` read the other
+		way round. Live, like the panel it inverts, so it cannot drift from what is really there.
+
+		A replica pinning no cards claims none, so it does NOT show here: a box running one looks
+		emptier than it is, which is why the scheduler declines such a box rather than trusting
+		this."""
+		return [gpu for gpu in self.get_gpu_allocation() if gpu.status == "Free"]
 
 	@frappe.whitelist()
 	def install_exporters(self):

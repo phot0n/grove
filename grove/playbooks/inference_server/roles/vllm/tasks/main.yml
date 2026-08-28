@@ -7,7 +7,7 @@
     that: vllm_image | length > 0
     fail_msg: >-
       vllm_image is empty. This role serves from a container image — set Engine Image on the
-      Model Deployment.
+      Model Replica.
 
 - name: Verify an NVIDIA driver is present and working
   ansible.builtin.command: nvidia-smi

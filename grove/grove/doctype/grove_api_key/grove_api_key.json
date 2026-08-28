@@ -8,8 +8,8 @@
   "user",
   "status",
   "key_hash",
-  "api_secret",
-  "column_break_pcmc"
+  "column_break_pcmc",
+  "api_secret"
  ],
  "fields": [
   {
@@ -51,7 +51,7 @@
   }
  ],
  "links": [],
- "modified": "2026-08-08 03:28:04.721819",
+ "modified": "2026-08-27 18:41:43.399443",
  "modified_by": "Administrator",
  "module": "Grove",
  "name": "Grove API Key",

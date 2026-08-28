@@ -56,7 +56,7 @@ class FakeQuery:
 		filters = dict(filters or {})
 		rows = {
 			"Model": MODELS,
-			"Model Deployment": DEPLOYMENTS,
+			"Model Replica": DEPLOYMENTS,
 			"Pod": PODS,
 			"Ingress Server": INGRESSES,
 			"Inference Server": SERVERS,

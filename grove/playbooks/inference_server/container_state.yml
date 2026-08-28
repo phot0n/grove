@@ -1,6 +1,6 @@
 ---
 # Start or stop ONE vLLM instance's container on a multi-tenant box. Run by
-# model_deployment.set_container_state with extra-vars vllm_instance and vllm_container_running.
+# model_replica.set_container_state with extra-vars vllm_instance and vllm_container_running.
 #
 # Everything else stays: the run script, the env file, the key, the port and the GPU claims. That
 # is the whole difference from teardown.yml — a stop here is resumable, and Start brings the same

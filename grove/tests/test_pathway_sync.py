@@ -20,11 +20,17 @@ from grove import pathway_sync
 from grove.serving.vllm import VllmEngine
 
 
-def deployment(name, model="qwen3-35b", server="INF-1", status="Active", max_num_seqs=0):
+def replica(name, model="qwen3-35b", server="INF-1", status="Active", max_num_seqs=0,
+	model_deployment=None):
 	return frappe._dict(
 		name=name, model=model, engine_url=f"https://10.0.0.9/e/{name.lower()}",
 		status=status, inference_server=server, max_num_seqs=max_num_seqs,
+		model_deployment=model_deployment,
 	)
+
+
+def deployment(name="qwen3-35b-ap-south-1", max_num_seqs=0, engine_image=None):
+	return frappe._dict(name=name, max_num_seqs=max_num_seqs, engine_image=engine_image)
 
 
 def pod(name, model="qwen3-35b", max_num_seqs=0):
@@ -34,7 +40,7 @@ def pod(name, model="qwen3-35b", max_num_seqs=0):
 
 
 class TestGatewayRoutes(unittest.TestCase):
-	def routes(self, deployments=(), pods=(), models=("qwen3-35b",)):
+	def routes(self, replicas=(), pods=(), models=("qwen3-35b",), deployments=()):
 		"""_gateway_routes against mocked docs. get_all is dispatched on doctype because the
 		function reads several of them, and get_doc only ever supplies the internal key.
 
@@ -43,13 +49,15 @@ class TestGatewayRoutes(unittest.TestCase):
 		rows have their own file: test_gateway_routes."""
 
 		def get_all(doctype, filters=None, **kwargs):
-			if doctype == "Model Deployment":
+			if doctype == "Model Replica":
 				# The Active filter moved into the query, so the mock honours it.
-				return [d for d in deployments if d.status == (filters or {}).get("status")]
+				return [r for r in replicas if r.status == (filters or {}).get("status")]
 			if doctype == "Model":
 				return [frappe._dict(name=m, modality="text") for m in models]
 			if doctype == "Pod":
 				return list(pods)
+			if doctype == "Model Deployment":
+				return list(deployments)
 			if doctype in ("Ingress Server", "Inference Server", "Model Provider"):
 				# No third party in this suite: every model here is one we run ourselves.
 				return []
@@ -71,7 +79,7 @@ class TestGatewayRoutes(unittest.TestCase):
 			return pathway_sync._gateway_routes()
 
 	def test_an_active_deployment_names_itself_and_its_box(self):
-		[route] = self.routes([deployment("MD-00007")])["qwen3-35b"]
+		[route] = self.routes([replica("MD-00007")])["qwen3-35b"]
 		self.assertEqual(route["deployment"], "MD-00007")
 		self.assertEqual(route["server"], "INF-1")
 		self.assertEqual(route["engine_url"], "https://10.0.0.9/e/md-00007")
@@ -80,7 +88,7 @@ class TestGatewayRoutes(unittest.TestCase):
 		# The case the whole field exists for: `server` is identical, so it cannot name an engine,
 		# and neither can the access log's $upstream_addr now that both sit behind the box's
 		# engine proxy on :443.
-		routes = self.routes([deployment("MD-00007"), deployment("MD-00008")])["qwen3-35b"]
+		routes = self.routes([replica("MD-00007"), replica("MD-00008")])["qwen3-35b"]
 		self.assertEqual([r["deployment"] for r in routes], ["MD-00007", "MD-00008"])
 		self.assertEqual({r["server"] for r in routes}, {"INF-1"})
 		self.assertEqual(len({r["engine_url"] for r in routes}), 2)
@@ -95,7 +103,7 @@ class TestGatewayRoutes(unittest.TestCase):
 	def test_only_active_deployments_are_routed(self):
 		# A Broken engine still holds its port and its doc; routing to it would 502 every request
 		# instead of the 503 that a model with nowhere to go actually means.
-		self.assertEqual(self.routes([deployment("MD-00007", status="Broken")]), {})
+		self.assertEqual(self.routes([replica("MD-00007", status="Broken")]), {})
 
 	def test_a_model_with_no_engine_is_absent_not_sent_empty(self):
 		# The push is the whole table and absence prunes, so an unpublished model's deploy key
@@ -105,13 +113,13 @@ class TestGatewayRoutes(unittest.TestCase):
 	def test_the_rows_are_ordered_by_deployment(self):
 		# The snapshot hash is over the serialized table, so a query returning the same rows in
 		# a different order must not read as drift and re-push the fleet.
-		routes = self.routes([deployment("MD-00008"), deployment("MD-00007")])["qwen3-35b"]
+		routes = self.routes([replica("MD-00008"), replica("MD-00007")])["qwen3-35b"]
 		self.assertEqual([r["deployment"] for r in routes], ["MD-00007", "MD-00008"])
 
 	def test_a_route_carries_the_engines_concurrency_cap(self):
 		# --max-num-seqs is what the engine runs at once; past it vLLM queues where the gateway
 		# can neither see the wait nor spend it on a replica. So it is admission control too.
-		[route] = self.routes([deployment("MD-00007", max_num_seqs=64)])["qwen3-35b"]
+		[route] = self.routes([replica("MD-00007", max_num_seqs=64)])["qwen3-35b"]
 		self.assertEqual(route["capacity"], 64)
 
 	def test_a_pod_carries_its_own_cap(self):
@@ -123,7 +131,7 @@ class TestGatewayRoutes(unittest.TestCase):
 		# hold the engine to something. It is an ASSUMPTION though — the serve command passes no
 		# --max-num-seqs when the placement names none, so vLLM sizes its own and the two can
 		# differ. A placement that needs them identical sets max_num_seqs, which pins both.
-		[route] = self.routes([deployment("MD-00007")])["qwen3-35b"]
+		[route] = self.routes([replica("MD-00007")])["qwen3-35b"]
 		self.assertEqual(route["capacity"], VllmEngine.default_concurrency)
 
 
@@ -134,12 +142,12 @@ class TestRouteModality(unittest.TestCase):
 	would mean a new namespace for one short string. The gateway refuses a request for a surface
 	the modality does not cover, so a wrong value here is a 404 on a working model."""
 
-	def routes(self, models, deployments=(), pods=()):
+	def routes(self, models, replicas=(), pods=()):
 		def get_all(doctype, **kwargs):
 			if doctype == "Model":
 				return [frappe._dict(name=n, modality=m) for n, m in models.items()]
-			if doctype == "Model Deployment":
-				return list(deployments)
+			if doctype == "Model Replica":
+				return list(replicas)
 			if doctype == "Pod":
 				return list(pods)
 			return []
@@ -157,12 +165,12 @@ class TestRouteModality(unittest.TestCase):
 	def test_a_deployment_row_carries_its_models_modality(self):
 		routes = self.routes(
 			{"qwen3-4b": "text"},
-			deployments=[deployment("MD-1", model="qwen3-4b")],
+			replicas=[replica("MD-1", model="qwen3-4b")],
 		)
 		self.assertEqual(routes["qwen3-4b"][0]["modality"], "text")
 
 	def test_a_pod_row_carries_it_too(self):
-		# The ASR container is a Pod, never a Model Deployment — the path that actually matters here.
+		# The ASR container is a Pod, never a Model Replica — the path that actually matters here.
 		routes = self.routes(
 			{"nemotron-asr": "audio"},
 			pods=[pod("test-nemo-asr", model="nemotron-asr")],
@@ -173,7 +181,7 @@ class TestRouteModality(unittest.TestCase):
 		# The gateway reads blank as unrestricted. None would serialise as null and read as a value.
 		routes = self.routes(
 			{"qwen3-4b": None},
-			deployments=[deployment("MD-1", model="qwen3-4b")],
+			replicas=[replica("MD-1", model="qwen3-4b")],
 		)
 		self.assertEqual(routes["qwen3-4b"][0]["modality"], "")
 
@@ -279,24 +287,30 @@ class TestEffectiveUsers(unittest.TestCase):
 	"""user:<name> — the record that holds everything belonging to the person rather than to a
 	credential, so a budget flip or an access edit is one push however many keys they hold."""
 
-	def users(self, users=(), rows=()):
+	def users(self, users=(), rows=(), groups=()):
+		self.calls = {}
+
 		def get_all(doctype, **kwargs):
+			self.calls[doctype] = self.calls.get(doctype, 0) + 1
 			if doctype == "Grove User":
 				return list(users)
 			if doctype == "Grove Model Row":
 				return list(rows)
+			if doctype == "Grove Group Row":
+				return list(groups)
 			raise AssertionError(f"unexpected get_all({doctype})")
 
 		with unittest.mock.patch.object(frappe, "get_all", side_effect=get_all):
 			return pathway_sync._effective_users()
 
-	def test_a_user_carries_their_group_their_deltas_and_their_budget_flag(self):
+	def test_a_user_carries_their_groups_their_deltas_and_their_budget_flag(self):
 		[user] = self.users(
-			[frappe._dict(name="GU-1", user="a@x.com", user_group="acme", rate_limited=1)],
+			[frappe._dict(name="GU-1", user="a@x.com", rate_limited=1)],
 			[
 				frappe._dict(parent="GU-1", model="qwen3-4b", parentfield="allow"),
 				frappe._dict(parent="GU-1", model="qwen3-35b", parentfield="deny"),
 			],
+			[frappe._dict(parent="GU-1", user_group="acme")],
 		)
 		self.assertEqual(user["name"], "GU-1")
 		self.assertEqual(user["email"], "a@x.com")
@@ -309,18 +323,36 @@ class TestEffectiveUsers(unittest.TestCase):
 		# The agent splits on commas (pathway, internal/domain/access.go `ModelSet`), so the
 		# join is the wire format, not a display choice.
 		[user] = self.users(
-			[frappe._dict(name="GU-1", user="a@x.com", user_group="", rate_limited=0)],
+			[frappe._dict(name="GU-1", user="a@x.com", rate_limited=0)],
 			[
 				frappe._dict(parent="GU-1", model="b", parentfield="allow"),
 				frappe._dict(parent="GU-1", model="a", parentfield="allow"),
 			],
+			[
+				frappe._dict(parent="GU-1", user_group="zeta"),
+				frappe._dict(parent="GU-1", user_group="acme"),
+			],
 		)
 		self.assertEqual(user["allow"], "a,b")
+		self.assertEqual(user["group"], "acme,zeta")
+
+	def test_the_same_group_twice_is_one_membership(self):
+		# Two rows naming one group are one grant; the wire list is a set, so the hash cannot
+		# move on a duplicate row nobody meant to add.
+		[user] = self.users(
+			[frappe._dict(name="GU-1", user="a@x.com", rate_limited=0)],
+			[],
+			[
+				frappe._dict(parent="GU-1", user_group="acme"),
+				frappe._dict(parent="GU-1", user_group="acme"),
+			],
+		)
+		self.assertEqual(user["group"], "acme")
 
 	def test_a_user_who_grants_nothing_is_still_pushed_as_blank(self):
 		# Blank overwrites what is already in Redis. Omitting the fields would leave a removed
 		# allow in force.
-		[user] = self.users([frappe._dict(name="GU-1", user="a@x.com", user_group=None, rate_limited=0)])
+		[user] = self.users([frappe._dict(name="GU-1", user="a@x.com", rate_limited=0)])
 		self.assertEqual((user["group"], user["allow"], user["deny"]), ("", "", ""))
 		self.assertIs(user["limited"], False)
 
@@ -329,15 +361,23 @@ class TestEffectiveUsers(unittest.TestCase):
 		# whatever the number of people.
 		users = self.users(
 			[
-				frappe._dict(name="GU-1", user="a@x.com", user_group="", rate_limited=0),
-				frappe._dict(name="GU-2", user="b@x.com", user_group="", rate_limited=0),
+				frappe._dict(name="GU-1", user="a@x.com", rate_limited=0),
+				frappe._dict(name="GU-2", user="b@x.com", rate_limited=0),
 			],
 			[
 				frappe._dict(parent="GU-1", model="m1", parentfield="allow"),
 				frappe._dict(parent="GU-2", model="m2", parentfield="allow"),
 			],
+			[
+				frappe._dict(parent="GU-1", user_group="acme"),
+				frappe._dict(parent="GU-2", user_group="beta"),
+			],
 		)
 		self.assertEqual([u["allow"] for u in users], ["m1", "m2"])
+		self.assertEqual([u["group"] for u in users], ["acme", "beta"])
+		# Three tables now, still three queries: membership must not become the N+1 the
+		# model rows stopped being.
+		self.assertEqual(self.calls, {"Grove User": 1, "Grove Model Row": 1, "Grove Group Row": 1})
 
 
 class TestEffectiveKeys(unittest.TestCase):
@@ -700,3 +740,61 @@ class TestTheTickIsTheOnlyAutomaticPush(unittest.TestCase):
 
 if __name__ == "__main__":
 	unittest.main()
+
+
+class TestCapacityResolvesThroughTheDeployment(unittest.TestCase):
+	"""`max_num_seqs` IS the gateway's admission cap, and it moved to the deployment with a
+	blank-means-inherit override left on the replica. So the route table has to resolve it.
+
+	Unresolved, a blank replica would advertise `default_concurrency` while its engine actually
+	runs the deployment's number — the gateway would admit against a cap the engine never had, and
+	the ingress's authoritative per-replica gate would 429 traffic the gateway thought it had
+	room for. That is a silent wrong number, not a crash, which is why it is asserted here."""
+
+	def capacity(self, replicas, deployments):
+		routes = TestGatewayRoutes().routes(replicas, deployments=deployments)
+		return [route["capacity"] for route in routes["qwen3-35b"]]
+
+	def test_a_replica_that_overrides_nothing_reports_its_deployments_cap(self):
+		self.assertEqual(
+			self.capacity(
+				[replica("MD-00007", model_deployment="T1")],
+				[deployment("T1", max_num_seqs=256)],
+			),
+			[256],
+		)
+
+	def test_a_replica_that_overrides_reports_its_own(self):
+		self.assertEqual(
+			self.capacity(
+				[replica("MD-00007", max_num_seqs=64, model_deployment="T1")],
+				[deployment("T1", max_num_seqs=256)],
+			),
+			[64],
+		)
+
+	def test_siblings_of_one_deployment_are_capped_independently(self):
+		# Two replicas of one deployment, one of which was turned down for its box. The gateway
+		# holds each to its own number rather than to the deployment's for both.
+		self.assertEqual(
+			sorted(
+				self.capacity(
+					[
+						replica("MD-00007", model_deployment="T1"),
+						replica("MD-00008", max_num_seqs=32, model_deployment="T1"),
+					],
+					[deployment("T1", max_num_seqs=256)],
+				)
+			),
+			[32, 256],
+		)
+
+	def test_a_deployment_that_names_no_cap_still_leaves_a_number_on_the_route(self):
+		# Blank all the way up is not "no cap": the gate has to hold the engine to something, and
+		# the engine's own default is what the serve command leaves it running at.
+		self.assertEqual(
+			self.capacity(
+				[replica("MD-00007", model_deployment="T1")], [deployment("T1")]
+			),
+			[VllmEngine.default_concurrency],
+		)

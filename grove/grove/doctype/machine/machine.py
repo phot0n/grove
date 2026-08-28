@@ -70,6 +70,16 @@ class Machine(AnsibleHost, Document):
 		frappe.msgprint(f"Scanning {self.name}'s GPUs — watch its Ansible Plays, then reload.", alert=True)
 
 	@frappe.whitelist()
+	def get_gpus(self):
+		"""This box's cards, with whatever holds each. What the form's GPU panel renders.
+
+		Read live off the `GPU` records rather than a stored summary, so the panel cannot drift
+		from what placement sees — they run the same query."""
+		from grove.grove.doctype.gpu.gpu import cards_on
+
+		return cards_on([self.name])
+
+	@frappe.whitelist()
 	def gpu_memory(self):
 		"""Button: what each GPU on this box is using right now. Nothing is stored — the
 		numbers are stale the moment they arrive, so they go straight to the dialog."""
@@ -150,7 +160,7 @@ class Machine(AnsibleHost, Document):
 			frappe.throw(f"Set a Machine Type on Machine {self.name} to pick its security groups.")
 		return (
 			network.proxy_security_group_id_list
-			if self.machine_type in ("Gateway Server", "Ingress Server")
+			if self.machine_type in ("Gateway", "Ingress")
 			else network.inference_security_group_id_list
 		)
 
@@ -338,7 +348,7 @@ class Machine(AnsibleHost, Document):
 		preflight as well as after launch — it reads the type, never the instance — so the
 		architecture and the boot timeout are known before anything needs them.
 
-		The GPU table is only seeded when EMPTY — a scanned table is nvidia-smi's answer and is
+		GPUs are only seeded when the box has NONE — a scanned card is nvidia-smi's answer and is
 		never overwritten by the provider's coarser one."""
 		if not self.instance_type:
 			return
@@ -350,11 +360,11 @@ class Machine(AnsibleHost, Document):
 			"instance_store_disks": store["disks"],
 			"instance_store_gb": store["total_gb"],
 		})
-		if self.gpus:
+		from grove.grove.doctype.gpu.gpu import cards_on
+
+		if cards_on([self.name]):
 			return
-		for gpu in info["gpus"]:
-			self.append("gpus", gpu)
-		self.save(ignore_permissions=True)
+		reconcile_gpus(self.name, info["gpus"])
 		frappe.db.commit()
 
 	@frappe.whitelist()
@@ -499,9 +509,8 @@ class Machine(AnsibleHost, Document):
 
 
 def scan_machine_gpus(machine_name):
-	"""Job: run scan_gpus.yml, parse nvidia-smi's CSV out of the task result, and replace the
-	Machine's GPU rows with what the box actually reports. nvidia-smi is the truth here — the
-	rows are rewritten rather than merged, so a swapped or removed card can't linger."""
+	"""Job: run scan_gpus.yml and reconcile this Machine's `GPU` records against what the box
+	reports. nvidia-smi is the truth about which cards exist."""
 	machine = frappe.get_doc("Machine", machine_name)
 	play_name, rc = machine.run_playbook("scan_gpus.yml")
 	result = _scan_result(play_name)
@@ -514,15 +523,161 @@ def scan_machine_gpus(machine_name):
 	gpus = parse_nvidia_smi(result.get("stdout"))
 	if not gpus:
 		frappe.throw(
-			f"nvidia-smi reported no GPUs on {machine.name} — GPU rows left alone. "
+			f"nvidia-smi reported no GPUs on {machine.name} — GPU records left alone. "
 			f"It said: {_scan_message(result)}"
 		)
-	machine.gpus = []
-	for gpu in gpus:
-		machine.append("gpus", gpu)
-	machine.save(ignore_permissions=True)
+	reconcile_gpus(machine.name, gpus)
 	frappe.db.commit()
 	return gpus
+
+
+def is_placeholder_device_id(device_id):
+	"""Whether this id is a bare CUDA index standing in for a UUID nothing has read yet.
+
+	Written by `promote_gpus` for a legacy row and by `aws.py` at provision, where no driver has
+	been asked. It says which slot the card sat in, never which card it is."""
+	return (device_id or "").strip().isdigit()
+
+
+def plan_reconcile(existing, scanned, slot_is_identity=False):
+	"""What the scan means for the cards already on record: `(upgrades, inserts, stale)`.
+
+	Pure, so the rule can be pinned without a site — and it is worth pinning, because getting it
+	wrong deletes a row that a running replica's claim lives on.
+
+	Two passes. A real `device_id` matches only itself, so two cards that swapped slots keep their
+	own rows. A PLACEHOLDER matches by slot instead: it was never an identity, so a scan reporting
+	a real UUID for that slot is the same card seen properly for the first time, and upgrading it
+	in place is what keeps its `held_by` and the replica rows pointing at it.
+
+	`slot_is_identity` widens that second pass to every card, and is for a box whose hardware is
+	rented. Stopping and starting an EC2 instance migrates it to another host — AWS's own advice
+	for a sick GPU is to do exactly that — so nvidia-smi comes back with a different physical card
+	at the same index. The UUID that was identity yesterday names silicon this account no longer
+	has, while the slot is what persists. On bare metal the opposite holds, which is why this is a
+	property of the box and not a global rule: there, a card that stops answering has been pulled,
+	and pruning it is the honest reading."""
+	by_device = {card.device_id: card for card in existing}
+	upgrades, inserts, unmatched = [], [], []
+	claimed = set()
+
+	for row in scanned:
+		card = by_device.get(row["device_id"])
+		if card and card.name not in claimed:
+			upgrades.append((card, row))
+			claimed.add(card.name)
+		else:
+			unmatched.append(row)
+
+	by_slot = {
+		card.gpu_index: card
+		for card in existing
+		if card.name not in claimed
+		and (slot_is_identity or is_placeholder_device_id(card.device_id))
+	}
+	for row in unmatched:
+		card = by_slot.pop(row.get("gpu_index"), None)
+		if card:
+			upgrades.append((card, row))
+			claimed.add(card.name)
+		else:
+			inserts.append(row)
+
+	return upgrades, inserts, [card for card in existing if card.name not in claimed]
+
+
+def reconcile_gpus(machine, scanned):
+	"""Upsert one `GPU` per scanned card and prune what the box no longer reports.
+
+	Upserted rather than replaced. A card that is still there keeps its row — and therefore keeps
+	its `held_by`, so a re-scan of a busy box does not disturb a running replica. Rewriting the
+	list, which is what this used to do, silently dropped the claim with the row."""
+	from grove.grove.doctype.gpu.gpu import cards_on
+
+	existing = cards_on([machine])
+	# A rented box identifies its cards by SLOT: a stop/start lands the instance on another host,
+	# so the same index answers with a different UUID and the old one names nothing. Pruning there
+	# would delete a row a replica still points at, for a card that never went anywhere.
+	slot_is_identity = bool(frappe.db.get_value("Machine", machine, "cloud_provider"))
+	upgrades, inserts, stale = plan_reconcile(existing, scanned, slot_is_identity)
+
+	for card, row in upgrades:
+		frappe.db.set_value(
+			"GPU",
+			card.name,
+			{"device_id": row["device_id"], **_scanned_values(row)},
+			update_modified=False,
+		)
+	for row in inserts:
+		frappe.get_doc(
+			{
+				"doctype": "GPU",
+				"machine": machine,
+				"device_id": row["device_id"],
+				**_scanned_values(row),
+			}
+		).insert(ignore_permissions=True)
+	for card in stale:
+		# The card is gone, so whatever held it is holding nothing. Deleting the row takes the
+		# claim with it, which is the point of the claim being a column here.
+		frappe.delete_doc("GPU", card.name, ignore_permissions=True, force=True)
+
+	_refresh_from_types(machine)
+	_mirror_onto_machine(machine)
+
+
+def _scanned_values(row):
+	"""The columns a scan owns on a card. Its type is resolved, not stored as the reported string."""
+	from grove.grove.doctype.gpu_type.gpu_type import resolve
+
+	return {
+		"gpu_type": resolve(
+			row.get("gpu_model"), row.get("vram_gb"), row.get("compute_capability")
+		),
+		"gpu_index": row.get("gpu_index") or 0,
+	}
+
+
+def _is_number(value):
+	try:
+		float(value)
+	except (TypeError, ValueError):
+		return False
+	return True
+
+
+def _refresh_from_types(machine):
+	"""Re-pull what the cards fetch off their type.
+
+	A scan writes cards with `db.set_value`, which sets a link without running its fetches — so a
+	card whose type was seeded or corrected in this same scan would keep the old figure, and the
+	placement checks read the CARD. `GPU Type.on_update` covers an operator editing the type; this
+	covers the scan that taught it."""
+	frappe.db.sql(
+		"""update `tabGPU` gpu join `tabGPU Type` type on type.name = gpu.gpu_type
+		set gpu.vram_gb = type.vram_gb, gpu.compute_capability = type.compute_capability
+		where gpu.machine = %(machine)s""",
+		{"machine": machine},
+	)
+
+
+def _mirror_onto_machine(machine):
+	"""Rewrite the Machine's GPU grid to match its cards.
+
+	The grid is a read-only mirror, not a second source of truth: `GPU.machine` is what says where
+	a card is, and this only exists so the Machine form can show them as a grid with links rather
+	than a rendered panel. Rewritten by the same function that reconciles the cards, so there is
+	one writer and the two cannot disagree.
+
+	Everything but the link is `fetch_from` the GPU, so a card renamed or re-typed later shows
+	through without this running again."""
+	from grove.grove.doctype.gpu.gpu import cards_on
+
+	doc = frappe.get_doc("Machine", machine)
+	doc.gpus = []
+	for card in cards_on([machine]):
+		doc.append("gpus", {"gpu": card.name})
+	doc.save(ignore_permissions=True)
 
 
 def _scan_result(play_name):
@@ -553,7 +708,7 @@ def _scan_message(result):
 
 def parse_nvidia_smi(stdout):
 	"""CSV from `nvidia-smi --query-gpu=index,name,memory.total,uuid` (noheader, nounits) →
-	Machine GPU rows. Memory comes back in MiB; the field is whole GB, and a card reporting
+	scanned cards. Memory comes back in MiB; the field is whole GB, and a card reporting
 	e.g. 97887 MiB is a 96 GB card, so it rounds rather than truncates."""
 	gpus = []
 	for line in (stdout or "").splitlines():
@@ -561,11 +716,21 @@ def parse_nvidia_smi(stdout):
 		if len(fields) < 3 or not fields[0].isdigit():
 			continue  # blank line, or a warning nvidia-smi printed above the CSV
 		index, name, memory_mib = fields[0], fields[1], fields[2]
+		uuid = fields[3] if len(fields) > 3 else ""
+		# Appended to the query rather than inserted, so a box answering an older playbook still
+		# parses — and so parse_gpu_memory's column offsets do not move.
+		compute_cap = fields[6] if len(fields) > 6 else ""
 		gpus.append({
 			"gpu_index": int(index),
 			"gpu_model": name,
 			"vram_gb": vram_gb_from_mib(int(memory_mib)) if memory_mib.isdigit() else 0,
-			"gpu_uuid": fields[3] if len(fields) > 3 else "",
+			# What CUDA_VISIBLE_DEVICES is given. The UUID when the box reported one, so the card
+			# keeps its identity across a reseat; the index only as a fallback for a driver that
+			# answered without one.
+			"device_id": uuid or str(int(index)),
+			# What says whether this card can run bfloat16 at all. Blank on a driver too old to
+			# report it, which reads as "unknown" and skips the check rather than failing it.
+			"compute_capability": float(compute_cap) if _is_number(compute_cap) else 0,
 		})
 	return gpus
 

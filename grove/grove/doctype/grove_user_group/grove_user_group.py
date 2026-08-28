@@ -6,10 +6,11 @@ from frappe.model.document import Document
 
 
 class GroveUserGroup(Document):
-	"""A named set of models. Membership lives on Grove User, which links here.
+	"""A named set of models. Membership lives on Grove User, which lists the groups it belongs
+	to; a user reaches the union of all of them.
 
 	The gateway holds this as its own Redis record (group:<name>) and each member's user record
-	points at it, so an edit here is one push however many members the group has. No sync hook:
+	names it, so an edit here is one push however many members the group has. No sync hook:
 	any edit, or the delete itself, moves the snapshot hash and the next tick pushes it — a
 	deleted group is pruned because it is simply no longer named."""
 
@@ -26,3 +27,9 @@ class GroveUserGroup(Document):
 		models: DF.Table[GroveModelRow]
 		public_catalog: DF.Check
 	# end: auto-generated types
+
+	def validate(self):
+		# The name travels to the gateway inside a comma-joined membership list, so a comma in
+		# it would split into two groups that resolve to nothing.
+		if "," in self.name:
+			frappe.throw("A group name cannot contain a comma")

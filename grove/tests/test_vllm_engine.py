@@ -56,6 +56,71 @@ class TestVllmPlacementErrors(unittest.TestCase):
 		self.assertEqual(serve(gpu_count=6).placement_errors, [])  # no heads on Model
 
 
+class TestWhatTheCardCanRun(unittest.TestCase):
+	"""Capability, not capacity. A T4 has room for a small model and still cannot represent it:
+	vLLM does not quietly fall back to float16, it raises `Bfloat16 is only supported on GPUs with
+	compute capability of at least 8.0` and exits — minutes into a play, on the box. Every other
+	hard filter is checked before a deploy; this is the one that was not."""
+
+	BF16 = dict(CHAT_MODEL, torch_dtype="bfloat16")
+
+	def test_a_t4_cannot_serve_a_bfloat16_repo(self):
+		errors = serve(self.BF16, compute_capability=7.5).placement_errors
+		self.assertEqual(len(errors), 1)
+		self.assertIn("bfloat16", errors[0])
+		self.assertIn("7.5", errors[0])
+		# The remedy has to be IN the message: a scheduler that only says no is the useless kind.
+		self.assertIn("float16", errors[0])
+
+	def test_the_remedy_actually_works(self):
+		# The half a refusal-only test would leave unproven — setting the knob the error names
+		# must make the box viable, and must reach vLLM as --dtype.
+		engine = serve(self.BF16, compute_capability=7.5, dtype="float16")
+		self.assertEqual(engine.placement_errors, [])
+		self.assertEqual(engine.args[engine.args.index("--dtype") + 1], "float16")
+
+	def test_ampere_is_the_boundary_and_it_is_inclusive(self):
+		# 8.0 is exactly what bfloat16 needs, so an A100 must not be rejected by an off-by-one.
+		self.assertEqual(serve(self.BF16, compute_capability=8.0).placement_errors, [])
+		self.assertTrue(serve(self.BF16, compute_capability=7.9).placement_errors)
+
+	def test_an_unscanned_box_is_not_judged(self):
+		# 0 is "nobody has asked this card", not "it cannot". Refusing here would make every
+		# provider-seeded box unplaceable until someone SSHed into it.
+		self.assertEqual(serve(self.BF16).placement_errors, [])
+		self.assertEqual(serve(self.BF16, compute_capability=0).placement_errors, [])
+
+	def test_a_model_with_no_dtype_recorded_is_not_judged(self):
+		# Nobody has fetched the architecture, so what it will be served in is unknown.
+		self.assertEqual(serve(CHAT_MODEL, compute_capability=7.5).placement_errors, [])
+
+	def test_an_override_beats_what_the_repo_asks_for(self):
+		# The deployment says float16, so the repo's bfloat16 never reaches the card — and the
+		# reverse: asking for bfloat16 on a T4 is refused even when the repo said float16.
+		self.assertEqual(
+			serve(dict(CHAT_MODEL, torch_dtype="float16"), compute_capability=7.5,
+			      dtype="bfloat16").placement_errors[0].count("bfloat16"), 1
+		)
+		self.assertEqual(
+			serve(self.BF16, compute_capability=7.5, dtype="float16").placement_errors, []
+		)
+
+	def test_an_fp8_kv_cache_needs_ada_or_newer(self):
+		# fp8 arithmetic is 8.9 and up. An L40S is exactly 8.9; an A100 is 8.0 and is not.
+		self.assertEqual(
+			serve(CHAT_MODEL, compute_capability=8.9, kv_cache_dtype="fp8").placement_errors, []
+		)
+		errors = serve(CHAT_MODEL, compute_capability=8.0, kv_cache_dtype="fp8").placement_errors
+		self.assertEqual(len(errors), 1)
+		self.assertIn("8.9", errors[0])
+		self.assertIn("kv_cache_dtype", errors[0])
+
+	def test_dtype_auto_sends_no_flag(self):
+		# Grove states nothing by default: vLLM reads the repo, which is the better answer until
+		# a card cannot run it.
+		self.assertNotIn("--dtype", serve(self.BF16).args)
+
+
 class TestVramFit(unittest.TestCase):
 	# DeepSeek-V4-Flash's real figures: 148 GB of weights, 64 heads.
 	BIG = dict(CHAT_MODEL, weights_gb=148.0, attention_heads=64)
@@ -147,9 +212,11 @@ class TestVllmArgs(unittest.TestCase):
 		args = serve(dict(CHAT_MODEL, thinking=False)).args
 		self.assertNotIn("--reasoning-parser", args)
 
-	def test_aliases_and_extra_args(self):
-		args = serve(aliases="old-name, older-name", extra_serve_args="--kv-cache-dtype fp8").args
-		self.assertEqual(args[:4], ["--served-model-name", "qwen3-35b", "old-name", "older-name"])
+	def test_one_served_name_and_extra_args_last(self):
+		# An engine answers to exactly one name — the Grove id the gateway routes on. There is no
+		# alias mechanism: a second name would be one nothing in deploy:<model> points at.
+		args = serve(extra_serve_args="--kv-cache-dtype fp8").args
+		self.assertEqual(args[:3], ["--served-model-name", "qwen3-35b", "--host"])
 		self.assertEqual(args[-2:], ["--kv-cache-dtype", "fp8"])  # appended verbatim, last
 
 	def test_a_quoted_extra_arg_stays_one_argument(self):
@@ -168,7 +235,7 @@ class TestVllmArgs(unittest.TestCase):
 
 	def test_the_whole_command_is_what_the_fleet_is_already_running(self):
 		# This test exists because the engine split moved this code between files. Every live Pod
-		# and Model Deployment stores this string; a flag that merely REORDERS re-renders the run
+		# and Model Replica stores this string; a flag that merely REORDERS re-renders the run
 		# script on the box, which replaces the container and drops in-flight requests. The literal
 		# below was taken from the pre-split ServeCommand, not from the code it now guards.
 		self.assertEqual(
@@ -243,21 +310,21 @@ class TestAttentionBackend(unittest.TestCase):
 class TestVllmEnv(unittest.TestCase):
 	"""What the engine needs in its environment, and where the placement's paths go."""
 
-	def test_the_on_prem_key_order_is_the_env_file_line_order(self):
-		# The bug this guards: docker --env-file is line-ordered and the on-prem template iterates
-		# .items(), so reordering re-renders every vllm-<slug>.env, which fires `recreate vllm
-		# container` and replaces every engine in the fleet. This is the order the boxes hold.
+	def test_the_on_prem_env_carries_every_variable_the_box_needs(self):
+		# Membership only. Order is still load-bearing in production — docker --env-file is
+		# line-ordered and the on-prem template iterates .items(), so a reorder re-renders every
+		# vllm-<slug>.env, fires `recreate vllm container` and replaces every engine in the fleet
+		# — but it is deliberately not asserted here, so adding a variable does not fail this.
 		env = serve(allow_long_max_model_len=True).env(hf_token="hf_secret")
-		self.assertEqual(
-			list(env),
-			[
-				"VLLM_LOGGING_LEVEL",
-				"HF_HUB_DISABLE_TELEMETRY",
-				"VLLM_NO_USAGE_STATS",
-				"HF_TOKEN",
-				"VLLM_ALLOW_LONG_MAX_MODEL_LEN",
-			],
-		)
+		for key in (
+			"VLLM_LOGGING_LEVEL",
+			"HF_HUB_DISABLE_TELEMETRY",
+			"VLLM_NO_USAGE_STATS",
+			"SAFETENSORS_LOAD_STRATEGY",
+			"HF_TOKEN",
+			"VLLM_ALLOW_LONG_MAX_MODEL_LEN",
+		):
+			self.assertIn(key, env)
 
 	def test_a_blank_path_omits_its_variable_rather_than_guessing(self):
 		# On a box the Jinja template writes the cache dirs and the role resolves the key, so the
@@ -291,7 +358,7 @@ class TestVllmEnv(unittest.TestCase):
 
 class TestWarmupRequest(unittest.TestCase):
 	"""The one request that proves an engine serves. Both placements post it — the Pod path in
-	Python, the Model Deployment path as an Ansible extra-var — so it is built once, here."""
+	Python, the Model Replica path as an Ansible extra-var — so it is built once, here."""
 
 	def test_a_generative_model_is_asked_for_one_token(self):
 		request = serve().warmup_request
@@ -310,9 +377,9 @@ class TestWarmupRequest(unittest.TestCase):
 		self.assertNotIn("max_tokens", request["body"])
 
 	def test_the_model_asked_for_is_the_one_the_gateway_routes_on(self):
-		# pathway_sync publishes `deploy:<Model docname>`, which is the first --served-model-name.
-		# An alias or the hf_repo here would prove an engine serves under a name nothing routes to.
-		request = serve(aliases="old-name").warmup_request
+		# pathway_sync publishes `deploy:<Model docname>`, which is the --served-model-name. The
+		# hf_repo here would prove an engine serves under a name nothing routes to.
+		request = serve().warmup_request
 		self.assertEqual(request["body"]["model"], "qwen3-35b")
 
 	def test_a_vllm_image_derives_its_own_and_ignores_the_images_warmup(self):

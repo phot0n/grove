@@ -3,7 +3,7 @@
 """Standalone cloud Pod lifecycle via provider APIs (e.g. RunPod). A Pod is self-contained:
 it holds the spawn spec (GPUs / ports / image / template / startup cmd / volume / env) and,
 for a serving pod, the vLLM config (translated to the container start command). Pods are NOT
-backed by a Machine — Machine + Inference Server + Model Deployment are the on-prem path.
+backed by a Machine — Machine + Inference Server + Model Replica are the on-prem path.
 
 PodProvisioner owns one Pod's provider side: `PodProvisioner(pod).restart()`. The Pod form's
 Spawn / Sync / Restart / Stop / Start / Terminate buttons reach it through the module-level
@@ -304,7 +304,7 @@ class PodProvisioner:
 
 	def sync_model_published(self):
 		"""On a serving Pod lifecycle transition: recompute the Model's `published` flag — a
-		Running Pod is a live deployment, and a serving pod has no Model Deployment to drive it.
+		Running Pod is a live deployment, and a serving pod has no Model Replica to drive it.
 		No-op for a non-serving pod. The route itself follows from `engine_url`, which the
 		projection tick reads off the Pod."""
 		model = frappe.db.get_value("Pod", self.pod.name, "model")

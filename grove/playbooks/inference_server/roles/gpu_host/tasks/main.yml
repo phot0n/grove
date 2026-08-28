@@ -168,7 +168,7 @@
           / 1073741824) | round | int }}
 
 # ── Docker + NVIDIA container runtime ───────────────────────────────────────
-# Every Model Deployment serves from a container, so this is what makes the box able to.
+# Every Model Replica serves from a container, so this is what makes the box able to.
 # Everything below must come AFTER the mount above: Docker's data-root lives on the data
 # volume, and writing it into an unmounted mount point would shadow it.
 - name: Fetch the NVIDIA container-toolkit signing key
@@ -193,8 +193,21 @@
     name:
       - docker.io
       - "nvidia-container-toolkit={{ nvidia_container_toolkit_version }}"
+      # CRIU (>= 2.0) is what `docker checkpoint` shells out to. Inert until the daemon
+      # runs with experimental: true — installed now so a future checkpoint/restore
+      # autoscaling path needs a daemon flag, not a fleet-wide package rollout.
+      - criu
     state: present
     update_cache: true
+
+# The CLI over the driver's checkpoint API (r570+): parks a process's CUDA/VRAM state in
+# host RAM so CRIU can dump the container. Unpinned on purpose; get_url skips an existing
+# dest, so a box keeps whatever it first pulled until the file is removed.
+- name: Install cuda-checkpoint
+  ansible.builtin.get_url:
+    url: https://raw.githubusercontent.com/NVIDIA/cuda-checkpoint/main/bin/x86_64_Linux/cuda-checkpoint
+    dest: /usr/local/bin/cuda-checkpoint
+    mode: "0755"
 
 # This role is the only writer of daemon.json — deliberately NOT `nvidia-ctk runtime
 # configure`, which rewrites the same file and would fight the data-root below, bouncing
@@ -221,6 +234,10 @@
       # onto a small root disk and fail with ENOSPC. Off, so data-root means what it says.
       features:
         containerd-snapshotter: false
+      # The checkpoint API is gated daemon-wide behind this; inert until something calls
+      # `docker checkpoint`. Flipping it on an already-provisioned box restarts dockerd,
+      # bouncing every serving container once.
+      experimental: true
       runtimes:
         nvidia:
           path: nvidia-container-runtime

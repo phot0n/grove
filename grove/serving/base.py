@@ -1,6 +1,6 @@
 # Copyright (c) 2026, Grove and contributors
 # For license information, please see license.txt
-"""The engine-agnostic contract Pod and Model Deployment call through. A concrete engine
+"""The engine-agnostic contract Pod and Model Replica call through. A concrete engine
 (VllmEngine, CustomEngine, ...) implements every abstract member here; neither doctype ever names a
 concrete class or branches on engine_kind — engine_class is the one place that dispatch happens.
 
@@ -58,7 +58,7 @@ class Engine(ABC):
 	serves, and what the routing side may hold it to.
 
 	`model` is the Model's launch config read live; everything else is the per-box tuning off
-	whichever doc owns the placement. A Pod and a Model Deployment carry the same knobs, so the
+	whichever doc owns the placement. A Pod and a Model Replica carry the same knobs, so the
 	constructor takes them all and an engine ignores the ones it has no use for."""
 
 	# What the ROUTING side assumes this engine runs concurrently when the placement names no
@@ -74,6 +74,8 @@ class Engine(ABC):
 		gpu_count=1,
 		pipeline_parallel_size=1,
 		gpu_vram_gb=None,
+		compute_capability=None,
+		dtype=None,
 		kv_cache_dtype=None,
 		gpu_memory_utilization=None,
 		max_model_len=None,
@@ -81,7 +83,6 @@ class Engine(ABC):
 		max_num_seqs=None,
 		attention_backend=None,
 		allow_long_max_model_len=False,
-		aliases=None,
 		extra_serve_args=None,
 		startup_command=None,
 		warmup_path=None,
@@ -94,6 +95,11 @@ class Engine(ABC):
 		self.gpu_count = int(gpu_count or 1)
 		self.pipeline_parallel_size = int(pipeline_parallel_size or 1)
 		self.gpu_vram_gb = gpu_vram_gb
+		# What the box's weakest card can do, 0 when nothing has scanned it. 0 means "unknown",
+		# and an unknown skips the capability checks rather than failing them — the same reading
+		# a blank CPU architecture gets.
+		self.compute_capability = float(compute_capability or 0)
+		self.dtype = dtype or "auto"
 		self.kv_cache_dtype = kv_cache_dtype or "auto"
 		self.gpu_memory_utilization = gpu_memory_utilization or DEFAULT_GPU_MEMORY_UTILIZATION
 		self.max_model_len = parse_context_length(max_model_len) or DEFAULT_MAX_MODEL_LEN
@@ -107,7 +113,6 @@ class Engine(ABC):
 		self.max_num_seqs = int(max_num_seqs or 0)
 		self.attention_backend = attention_backend or "auto"
 		self.allow_long_max_model_len = bool(allow_long_max_model_len)
-		self.aliases = (aliases or "").replace(",", " ").split()
 		self.extra_serve_args = shlex.split(extra_serve_args or "")
 		# What a custom image is invoked with. Split here rather than at the placement so both
 		# planes hand the engine the same raw string the operator typed.
@@ -207,7 +212,7 @@ class Engine(ABC):
 
 def engine_class(engine_kind):
 	"""The Engine for an Engine Image's engine_kind. Add an engine by adding one entry here — Pod,
-	Model Deployment and pathway_sync never change."""
+	Model Replica and pathway_sync never change."""
 	from grove.serving.custom import CustomEngine
 	from grove.serving.vllm import VllmEngine
 

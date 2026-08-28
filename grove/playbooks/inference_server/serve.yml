@@ -1,7 +1,7 @@
 ---
-# Doctype-driven model serve. Run by model_deployment.deploy_model via
+# Doctype-driven model serve. Run by model_replica.deploy_model via
 # ansible_runner against a single-host inventory (hosts: all), with EVERY var
-# passed as extra-vars assembled from the Model ⊕ Model Deployment (no
+# passed as extra-vars assembled from the Model ⊕ Model Replica (no
 # group_vars). Host bootstrap (NVIDIA driver + data volume) is NOT here — it runs
 # once per box via provision.yml (Inference Server setup); deploy_model gates on
 # is_provisioned. This play just (re)serves the model.

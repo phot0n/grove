@@ -40,6 +40,7 @@ class Model(Document):
 		reasoning_parser: DF.Data | None
 		thinking: DF.Check
 		tool_call_parser: DF.Data | None
+		torch_dtype: DF.Data | None
 		upstream_model_id: DF.Data | None
 		weights_gb: DF.Float
 		weights_s3_uri: DF.Data | None
@@ -133,6 +134,8 @@ class Model(Document):
 		if not (heads and layers):
 			frappe.throw(f"{self.hf_repo}'s config.json has no head/layer count to read.")
 		values = {"attention_heads": heads, "hidden_layers": layers}
+		if dtype := config_dtype(config, shape):
+			values["torch_dtype"] = dtype
 		if weights_gb := self.get_weights_gb():
 			values["weights_gb"] = weights_gb
 		self.db_set(values)
@@ -154,7 +157,7 @@ class Model(Document):
 			frappe.throw("A GGUF ref cannot be mirrored — the streamer needs safetensors.")
 		if not mirror_server(self.name):
 			frappe.throw(
-				f"No Active Model Deployment serves {self.name}. The mirror runs from a box "
+				f"No Active Model Replica serves {self.name}. The mirror runs from a box "
 				"that has the weights cached — deploy the model once first."
 			)
 		frappe.enqueue(
@@ -223,7 +226,7 @@ def mirror_server(model):
 	"""The Inference Server of an Active deployment of this model — a box that already has
 	the weights cached (or can pull them onto the disk that was sized for them)."""
 	rows = frappe.get_all(
-		"Model Deployment",
+		"Model Replica",
 		filters={"model": model, "status": "Active"},
 		fields=["inference_server"],
 		limit=1,
@@ -258,14 +261,14 @@ def mirror_weights_to_s3(model):
 
 
 def is_reachable(model, exclude=None, provider=None):
-	"""True if a request for `model` has somewhere to go: >=1 Active Model Deployment (on-prem), a
+	"""True if a request for `model` has somewhere to go: >=1 Active Model Replica (on-prem), a
 	Running standalone Pod (cloud), or a third-party provider we hold an endpoint and a key for.
-	`exclude` drops one deployment name (used from Model Deployment.on_trash, where the row still
+	`exclude` drops one deployment name (used from Model Replica.on_trash, where the row still
 	exists in the DB during delete). `provider` is for a caller mid-insert — see vendor_base_url."""
 	filters = {"model": model, "status": "Active"}
 	if exclude:
 		filters["name"] = ("!=", exclude)
-	if frappe.db.get_all("Model Deployment", filters=filters, limit=1):
+	if frappe.db.get_all("Model Replica", filters=filters, limit=1):
 		return True
 	if frappe.db.get_all("Pod", filters={"model": model, "status": "Running"}, limit=1):
 		return True
@@ -295,8 +298,21 @@ def vendor_base_url(model, provider=None):
 LAUNCH_FIELDS = (
 	"hf_repo", "weights_s3_uri", "modality", "enable_prefix_caching",
 	"enable_auto_tool_choice", "tool_call_parser", "thinking", "reasoning_parser",
-	"attention_heads", "weights_gb",
+	"attention_heads", "weights_gb", "torch_dtype",
 )
+
+
+def config_dtype(config, shape=None):
+	"""What vLLM will serve these weights in when nothing overrides it, off the repo's config.json.
+
+	Two spellings and two places. transformers renamed `torch_dtype` to `dtype` in 4.57, and a
+	multimodal repo states it on the LANGUAGE model rather than at the top level — Qwen3.5-4B has
+	`text_config.dtype: bfloat16` and nothing above it. Reading only the top level finds nothing,
+	which reads as "unknown" and silently skips the capability check that this exists to feed."""
+	for source in (shape or {}, config):
+		if dtype := (source.get("torch_dtype") or source.get("dtype") or ""):
+			return dtype
+	return ""
 
 
 def launch_config(model):

@@ -61,18 +61,25 @@ def root_volume_id(instance):
 
 
 def parse_gpus(instance_type_info):
-	"""describe_instance_types → Machine GPU rows, one per card. Seeds the table at
-	provision time, when there is no driver on the box yet and so no nvidia-smi to ask.
-	Scan GPUs overwrites this with the box's own answer; AWS has no UUID to give."""
+	"""describe_instance_types → one scanned card per GPU. Seeds a box at provision time, when
+	there is no driver on it yet and so no nvidia-smi to ask. Scan GPUs replaces this with the
+	box's own answer.
+
+	AWS has no UUID to give, so `device_id` falls back to the CUDA index — which is what a
+	driverless box would use anyway, and what a real scan overwrites with the card's UUID."""
 	gpus = []
 	for entry in (instance_type_info.get("GpuInfo") or {}).get("Gpus") or []:
 		memory_mib = (entry.get("MemoryInfo") or {}).get("SizeInMiB") or 0
 		for _ in range(entry.get("Count") or 0):
+			# One name for both: the placeholder id IS the slot, and `plan_reconcile` upgrades a
+			# card by matching them. Two `len(gpus)` calls that must agree is a card waiting to
+			# take its neighbour's identity.
+			index = len(gpus)
 			gpus.append({
-				"gpu_index": len(gpus),
+				"gpu_index": index,
 				"gpu_model": entry.get("Name") or "",
 				"vram_gb": vram_gb_from_mib(memory_mib),
-				"gpu_uuid": "",
+				"device_id": str(index),
 			})
 	return gpus
 

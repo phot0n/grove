@@ -4,5 +4,5 @@
 from frappe.model.document import Document
 
 
-class ModelDeploymentGPU(Document):
+class GPUTypeAlias(Document):
 	pass

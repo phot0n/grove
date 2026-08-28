@@ -52,7 +52,7 @@ http {
 			proxy_pass http://{{ engine_proxy_gpu_upstream }}/metrics;
 		}
 
-		# One `location /e/<instance>/` per Model Deployment, written by the vllm role. A glob
+		# One `location /e/<instance>/` per Model Replica, written by the vllm role. A glob
 		# that matches nothing is not an error, so a box with nothing deployed still starts.
 		include {{ engine_proxy_engines_dir }}/*.conf;
 	}
