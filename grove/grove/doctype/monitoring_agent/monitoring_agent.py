@@ -6,11 +6,11 @@ import requests
 from frappe.model.document import Document
 
 from grove import failure
-from grove.ansible import AnsibleHost
 from grove.monitoring import engine_targets, host_targets
+from grove.server import Server
 
 
-class MonitoringAgent(AnsibleHost, Document):
+class MonitoringAgent(Server, Document):
 	# begin: auto-generated types
 	# This code is auto-generated. Do not modify anything in this block.
 
@@ -21,9 +21,13 @@ class MonitoringAgent(AnsibleHost, Document):
 
 		engine_scrape_interval: DF.Data | None
 		flush_interval: DF.Data | None
+		frappe_public_key: DF.Code | None
+		geography: DF.Link | None
 		machine: DF.Link
 		max_disk_usage: DF.Data | None
 		metrics_token: DF.Password | None
+		network: DF.Link | None
+		private_ip: DF.Data | None
 		public_ip: DF.Data | None
 		region: DF.Link | None
 		remote_write_url: DF.Data | None
@@ -31,28 +35,46 @@ class MonitoringAgent(AnsibleHost, Document):
 		status: DF.Literal["Pending", "Installing", "Active", "Broken", "Terminated"]
 	# end: auto-generated types
 
-	"""One vmagent, on its own Machine, scraping every box and pod that names it.
+	"""One vmagent, on its own Machine, scraping every box and pod that names it. It discovers
+	what to scrape by asking Grove, so a deploy or a terminated pod changes the target list
+	without touching this agent.
 
-	It discovers what to scrape by asking Grove (grove.monitoring.targets), so a deploy, a
-	new box or a terminated pod changes the target list without touching this agent.
+	A developer_mode site inverts that and Grove PUSHES the lists: monitoring_sd_url is whatever
+	get_url() says, which on a dev site is a laptop the box has no route to."""
 
-	A developer_mode site inverts that: Grove writes the lists to the box and they stay as they
-	were written. The pull cannot work there — monitoring_sd_url is whatever get_url() says,
-	which on a dev site is a laptop the box has no route to — so the push is the only way its
-	agent scrapes anything at all."""
+	@property
+	def archive_blockers(self):
+		"""Whatever this agent scrapes would go dark, engines on Pods included."""
+		blockers = []
+		for doctype in ("Inference Server", "Ingress Server", "Gateway Server", "Pod"):
+			names = frappe.get_all(
+				doctype,
+				filters={"monitoring_agent": self.name, "status": ("!=", "Terminated")},
+				pluck="name",
+			)
+			if names:
+				blockers.append(f"{doctype}s still scraped by this agent: {', '.join(names)}.")
+		return blockers
 
 	@frappe.whitelist()
 	def setup(self):
-		"""Button: install vmagent on this agent's Machine (long job — it SSHes to the box)."""
+		"""Button: install vmagent on this agent's Machine."""
 		self.preflight()
 		frappe.enqueue_doc(self.doctype, self.name, "provision", queue="long", timeout=1800)
 		frappe.msgprint(f"Installing vmagent on {self.name} — watch its Ansible Plays.", alert=True)
 
 	@property
+	def remote_write_url(self):
+		"""Where this agent pushes: its Region's own endpoint, else the fleet-wide one in Grove
+		Settings. Resolved on every read; the column of the same name is what the last install
+		wrote, for the form."""
+		regional = frappe.db.get_value("Region", self.region, "remote_write_url") if self.region else ""
+		return regional or frappe.get_single("Grove Settings").metrics_remote_write_url or ""
+
+	@property
 	def ansible_variables(self):
-		"""Everything the vmagent role reads: the fleet-wide settings, this agent's own endpoint,
-		token and intervals, and what it scrapes. One assembly for every play, so no play can
-		render a template from a variable this doc never passed it."""
+		"""Everything the vmagent role reads. One assembly for every play, so no play can render a
+		template from a variable this doc never passed it."""
 		tuning = {
 			"monitoring_scrape_interval": self.scrape_interval,
 			"monitoring_engine_scrape_interval": self.engine_scrape_interval,
@@ -67,19 +89,15 @@ class MonitoringAgent(AnsibleHost, Document):
 				"metrics_token", raise_exception=False
 			) or "",
 			"monitoring_agent": self.name,
-			# Omitted when blank rather than defaulted here, so the role's defaults/main.yml is the
-			# one place each default is written. An extra-var beats a role default even when it is
-			# empty, so passing "" would put a blank interval in the scrape config.
+			# Omitted when blank, so the role's defaults/main.yml is the one place each default
+			# is written: an extra-var beats a role default even when it is "".
 			**{key: value for key, value in tuning.items() if value},
 		}
 
 	def preflight(self):
-		"""Everything agent.yml needs, checked before it is queued.
-
-		The play installs node_exporter before vmagent, so a setting missing from Grove Settings
-		used to leave a half-built box behind and a failed play to read it out of. Collects every
-		problem rather than throwing on the first — one trip through the form beats finding them
-		one failed install at a time."""
+		"""Everything agent.yml needs, checked before it is queued — the play installs
+		node_exporter before vmagent, so a missing setting used to leave a half-built box behind.
+		Collects every problem rather than throwing on the first."""
 		variables = frappe.get_single("Grove Settings").monitoring_variables
 		problems = []
 
@@ -96,17 +114,16 @@ class MonitoringAgent(AnsibleHost, Document):
 		if not self.get_password("metrics_token", raise_exception=False):
 			problems.append("Metrics Token is empty — the ingestion service would reject the push.")
 
-		# Every box's /metrics/* is behind basic auth. Without this the agent installs happily and
-		# is refused by every host target it scrapes, which reads as a fleet that is simply down.
+		# Every box's /metrics/* is behind basic auth, so without this the agent installs happily
+		# and is refused by everything it scrapes — which reads as a fleet that is down.
 		if not variables["monitoring_scrape_password"]:
 			problems.append(
 				"Grove Settings → Metrics Scrape Password is empty — every box would refuse this "
 				"agent's host scrapes."
 			)
 
-		# Only worth checking when the box will do the fetching. Grove reads the same docs either
-		# way, so a pushed list has nothing here that could be wrong — and on the dev site this
-		# check is exactly the one that cannot pass.
+		# Only when the box does the fetching: a pushed list has nothing here that could be wrong,
+		# and on a dev site this is exactly the check that cannot pass.
 		if not is_pushing_targets():
 			problems += self.get_target_list_problems(variables)
 
@@ -115,12 +132,9 @@ class MonitoringAgent(AnsibleHost, Document):
 
 	@property
 	def target_variables(self):
-		"""What this agent scrapes, as Ansible vars. The lists are the same entries
-		grove.monitoring.targets serves — file_sd and http_sd read the identical shape — so
-		pushing them changes how they arrive, never what is in them.
-
-		Built either way: the vars are unused by the template off a dev site, and computing them
-		regardless keeps one path to go wrong instead of two."""
+		"""What this agent scrapes, as Ansible vars. The same entries grove.monitoring.targets
+		serves — file_sd and http_sd read the identical shape — so pushing changes how they
+		arrive, never what is in them. Built either way, so there is one path to go wrong."""
 		return {
 			"monitoring_static_targets": is_pushing_targets(),
 			"monitoring_host_targets": host_targets(self.name),
@@ -129,10 +143,9 @@ class MonitoringAgent(AnsibleHost, Document):
 
 	@frappe.whitelist()
 	def push_targets(self):
-		"""Button: write this agent's current target lists to its box.
-
-		Refused off a dev site: the agent there re-fetches on its own, and writing files whose
-		scrape config does not name them would look like it had worked."""
+		"""Button: write this agent's current target lists to its box. Refused off a dev site,
+		where the agent re-fetches on its own and writing files its scrape config does not name
+		would look like it had worked."""
 		if not is_pushing_targets():
 			frappe.throw(
 				f"{self.name} fetches its own targets over http_sd — there is nothing to push. "
@@ -149,12 +162,11 @@ class MonitoringAgent(AnsibleHost, Document):
 
 	@failure.reports_failure(mark_broken=False)
 	def write_targets(self):
-		"""Job: push_targets.yml with the lists as they are right now. Leaves status alone —
-		this neither installs nor breaks an agent, and a failed play is the record of it.
+		"""Job: push_targets.yml with the lists as they are right now. Leaves status alone: this
+		neither installs nor breaks an agent.
 
-		The full variables, not just the target lists: that play re-renders scrape.yml, which
-		carries the intervals too. Passing the lists alone left every other variable to the role
-		defaults, silently writing 15s/10s over whatever this doc says."""
+		The FULL variables, not just the lists — that play re-renders scrape.yml, and passing the
+		lists alone left the intervals to the role defaults."""
 		return self.run_playbook("push_targets.yml", extravars=self.ansible_variables)
 
 	@frappe.whitelist()

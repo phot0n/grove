@@ -1,21 +1,22 @@
-// Which doctype a Machine Type backs. The Select reads as the role ('Inference'); the doctype
-// carries the word Server. Pinned against the Select and the doctypes by test_machine_types.py.
+// The Select reads as the role ('Inference'); the doctype carries the word Server. Pinned against
+// both by test_machine_types.py.
 const SERVER_DOCTYPE = {
 	'Gateway': 'Gateway Server',
 	'Ingress': 'Ingress Server',
 	'Inference': 'Inference Server',
 	'Monitoring Agent': 'Monitoring Agent',
+	'State Store': 'Gateway State Store',
 };
 
 frappe.ui.form.on('Machine', {
 	refresh(frm) {
 		if (frm.is_new()) return;
 
-		// Bare-metal only: on a cloud box the provider's instance type is the source of truth and
-		// the cards are seeded from it at provision.
+		// Bare-metal only: on a cloud box the instance type is the source of truth, and the cards
+		// are seeded from it at provision.
 		if (frm.doc.public_ip && !frm.doc.cloud_provider) {
-			// nvidia-smi is the truth for what's in the box — these records drive CUDA pinning,
-			// the VRAM fit check and the Inference Server's GPU view, so don't hand-type them.
+			// These records drive card pinning, the VRAM fit check and the Inference Server's GPU
+			// view, so nvidia-smi writes them rather than an operator.
 			frm.add_custom_button(__('Scan GPUs'), () => {
 				frappe.confirm(
 					__("Read this box's GPUs over SSH? A card still there keeps its record and whatever holds it; one that is gone is removed."),
@@ -24,14 +25,13 @@ frappe.ui.form.on('Machine', {
 			});
 		}
 
-		// Reads nvidia-smi and never writes, so unlike Scan GPUs it is offered on cloud boxes too.
+		// Reads and never writes, so unlike Scan GPUs it is offered on cloud boxes too.
 		if ((frm.doc.gpus || []).length) {
 			frm.add_custom_button(__('GPU Memory'), () => show_gpu_memory(frm));
 		}
 
-		// machine_type says which server doctype this box backs — works for bare-metal too,
-		// so this sits above the AWS-only gate below. public_ip/region are fetch_from on both
-		// doctypes, so setting `machine` on the new doc is all that's needed to fill them in.
+		// Works for bare-metal too, so it sits above the AWS-only gate below. public_ip/region are
+		// fetch_from on both doctypes, so setting `machine` fills them in.
 		const server_doctype = SERVER_DOCTYPE[frm.doc.machine_type];
 		if (server_doctype) {
 			frappe.db.get_value(server_doctype, {machine: frm.doc.name}, 'name').then(({message}) => {
@@ -45,26 +45,20 @@ frappe.ui.form.on('Machine', {
 			});
 		}
 
-		// A box with no provider — or a non-AWS one — shows nothing below. Gated on the
-		// provider's TYPE, not merely on one being set, so a RunPod machine stays clean.
-		if (frm.doc.provider_type !== 'aws') return;
-
-		if (frm.doc.status === 'Provisioning') {
-			// launch() sets status before instance_id lands — without this, reloading mid-launch
-			// still shows Provision and a second click would enqueue a second real EC2 instance.
-			frm.add_custom_button(__('Sync'), () => frm.call('sync'), __('AWS'));
-			return;
-		}
+		if (!frm.doc.cloud_provider) return;
 
 		if (!frm.doc.instance_id) {
-			frm.add_custom_button(__('Provision'), () => frm.call('provision'), __('AWS'));
+			// launch() sets Pending before instance_id lands; Provision then would launch a second
+			// real EC2 instance.
+			if (frm.doc.status !== 'Pending') {
+				frm.add_custom_button(__('Provision'), () => frm.call('provision'), __('AWS'));
+			}
 			return;
 		}
 		for (const action of ['Sync', 'Stop', 'Start']) {
 			frm.add_custom_button(__(action), () => frm.call(action.toLowerCase()), __('AWS'));
 		}
-		// Either way the box's address changes, so both confirm: an Elastic IP replaces the
-		// dynamic one, and releasing it has AWS hand out a fresh dynamic one.
+		// The address changes either way, so both confirm.
 		if (frm.doc.static_ip_allocation_id) {
 			frm.add_custom_button(__('Release Static IP'), () => {
 				frappe.confirm(
@@ -106,8 +100,8 @@ frappe.ui.form.on('Machine', {
 	},
 });
 
-// Live nvidia-smi memory, in a table. The call SSHes to the box, so freeze while it runs —
-// without it the button looks dead for the ten seconds Ansible takes.
+// The call SSHes to the box, so freeze while it runs — the button otherwise looks dead for the
+// ten seconds Ansible takes.
 function show_gpu_memory(frm) {
 	frappe.dom.freeze(__('Reading nvidia-smi on {0}…', [frm.doc.name]));
 	frm.call('gpu_memory')

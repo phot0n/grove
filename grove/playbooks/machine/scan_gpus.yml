@@ -17,3 +17,13 @@
         cmd: nvidia-smi --query-gpu=index,name,memory.total,uuid,memory.used,memory.free,compute_cap --format=csv,noheader,nounits
       register: nvidia_smi
       changed_when: false
+
+    # GPU-to-GPU paths: NV# is NVLink, anything else is a PCIe hop. Parsed by
+    # machine.parse_interconnect into Machine.gpu_interconnect. failed_when: false so a topo
+    # hiccup cannot sink the card inventory — the parser reads garbage as blank.
+    - name: query nvidia-smi topo
+      ansible.builtin.command:
+        cmd: nvidia-smi topo -m
+      register: nvidia_smi_topo
+      changed_when: false
+      failed_when: false

@@ -1,4 +1,4 @@
-# Copyright (c) 2026, Grove and contributors
+# Copyright (c) 2026, Frappe and contributors
 # For license information, please see license.txt
 
 import json
@@ -13,54 +13,95 @@ from grove import failure
 from grove.ansible import AnsibleHost
 from grove.cloud_provider.base import CloudClientError, build_cloud_client
 from grove.grove.doctype.ssh_key.ssh_key import injected_public_keys
+from grove.naming import GeneratedName, next_machine_name
 from grove.utils import vram_gb_from_mib
 
-# Task name in scan_gpus.yml whose output carries the nvidia-smi CSV.
+# Task names in scan_gpus.yml: the nvidia-smi CSV, and the `topo -m` matrix.
 SCAN_TASK = "query nvidia-smi"
+TOPO_TASK = "query nvidia-smi topo"
+
+# The start of a box's name, by what it backs: `inf1-ap-south-1`. The server doc on it takes the
+# whole name.
+NAME_PREFIX = {
+	"Gateway": "gw", "Ingress": "ing", "Inference": "inf", "Monitoring Agent": "mon", "State Store": "store",
+}
 
 
-class Machine(AnsibleHost, Document):
-	"""An on-prem / baremetal / VM box that Inference Servers are provisioned on. Cloud GPU
-	pods are a separate, standalone Pod doctype — not backed by a Machine."""
+class Machine(GeneratedName, AnsibleHost, Document):
+	# begin: auto-generated types
+	# This code is auto-generated. Do not modify anything in this block.
+
+	from typing import TYPE_CHECKING
+
+	if TYPE_CHECKING:
+		from frappe.types import DF
+		from grove.grove.doctype.machine_gpu.machine_gpu import MachineGPU
+
+		cloud_provider: DF.Link | None
+		cpu_architecture: DF.Literal["", "amd64", "arm64"]
+		geography: DF.Link | None
+		gpu_interconnect: DF.Literal["", "PCIe", "NVLink", "Mixed"]
+		gpus: DF.Table[MachineGPU]
+		instance_id: DF.Data | None
+		instance_store_disks: DF.Int
+		instance_store_gb: DF.Int
+		instance_type: DF.Data | None
+		is_bare_metal: DF.Check
+		is_static_ip: DF.Check
+		machine_image: DF.Data | None
+		machine_type: DF.Literal["", "Gateway", "Ingress", "Inference", "Monitoring Agent", "State Store"]
+		network: DF.Link | None
+		private_ip: DF.Data | None
+		public_ip: DF.Data | None
+		region: DF.Link | None
+		root_volume_gb: DF.Int
+		ssh_key: DF.Link | None
+		ssh_port: DF.Int
+		ssh_user: DF.Data | None
+		static_ip_allocation_id: DF.Data | None
+		status: DF.Literal["Draft", "Pending", "Active", "Stopped", "Terminated"]
+	# end: auto-generated types
 
 	@property
 	def playbook_machine(self):
 		"""This doc IS the box — a server doc links one, a Machine names itself."""
 		return self.name
 
+	def before_insert(self):
+		# Before naming, which reads the region.
+		self.set_region_from_network()
+
+	def get_generated_name(self):
+		if not self.machine_type:
+			frappe.throw("Set a Machine Type — it is the start of this box's name.")
+		geography = frappe.db.get_value("Region", self.region, "geography") if self.region else None
+		zone = frappe.db.get_value("Geography", geography, "fleet_zone") if geography else ""
+		return next_machine_name(NAME_PREFIX[self.machine_type], self.region, zone)
+
 	def validate(self):
+		self.set_region_from_network()
+		# Not fetch_from: link fetching runs before validate, i.e. before the region above is set.
+		self.geography = frappe.db.get_value("Region", self.region, "geography") if self.region else None
+
+	def set_region_from_network(self):
 		if self.network:
 			region = frappe.db.get_value("Network", self.network, "region")
 			if region:
 				self.region = region
-		self.validate_launch_locked_fields()
-
-	def validate_launch_locked_fields(self):
-		"""The SSH keys go in via user-data at launch, so editing the key afterwards would only
-		make this doc disagree with the box."""
-		if self.is_new() or not self.instance_id:
-			return
-		if self.has_value_changed("ssh_key"):
-			frappe.throw(
-				f"SSH Key cannot change once {self.name} is launched (instance "
-				f"{self.instance_id}). Terminate and relaunch to change it."
-			)
 
 	def on_update(self):
 		if self.has_value_changed("is_static_ip"):
 			self.sync_static_ip()
 
 	def sync_static_ip(self):
-		"""Mirror the static-IP flag onto the servers on this box. The Machine owns the address,
-		so the flag is set here and the servers only report it."""
+		"""The Machine owns the address, so the flag is set here and the servers only report."""
 		for doctype in ("Gateway Server", "Inference Server"):
 			for name in frappe.get_all(doctype, filters={"machine": self.name}, pluck="name"):
 				frappe.db.set_value(doctype, name, "is_static_ip", self.is_static_ip)
 
 	@frappe.whitelist()
 	def scan_gpus(self):
-		"""Button: read this box's real GPU inventory off nvidia-smi and rewrite the GPU
-		table from it (long job — it SSHes to the box)."""
+		"""Button: read the box's real inventory off nvidia-smi and rewrite the GPU table."""
 		if not self.public_ip:
 			frappe.throw(f"Machine {self.name} has no public IP — nothing to connect to.")
 		frappe.enqueue(
@@ -71,18 +112,16 @@ class Machine(AnsibleHost, Document):
 
 	@frappe.whitelist()
 	def get_gpus(self):
-		"""This box's cards, with whatever holds each. What the form's GPU panel renders.
-
-		Read live off the `GPU` records rather than a stored summary, so the panel cannot drift
-		from what placement sees — they run the same query."""
+		"""This box's cards, with whatever holds each. Read live off the `GPU` records rather than
+		a stored summary, so the panel cannot drift from what placement sees."""
 		from grove.grove.doctype.gpu.gpu import cards_on
 
 		return cards_on([self.name])
 
 	@frappe.whitelist()
 	def gpu_memory(self):
-		"""Button: what each GPU on this box is using right now. Nothing is stored — the
-		numbers are stale the moment they arrive, so they go straight to the dialog."""
+		"""Button: what each GPU is using right now. Nothing is stored — the numbers are stale the
+		moment they arrive."""
 		if not self.public_ip:
 			frappe.throw(f"Machine {self.name} has no public IP — nothing to connect to.")
 		# ponytail: runs Ansible in the request (~10s) because the dialog needs the answer,
@@ -100,9 +139,6 @@ class Machine(AnsibleHost, Document):
 
 	@property
 	def cloud_client(self):
-		"""CloudClient for this box: its Cloud Provider's account keys and kind, its Region's
-		code. Never a concrete class by name — build_cloud_client is the one place that picks
-		one from the Cloud Provider's provider_type."""
 		if not self.cloud_provider:
 			frappe.throw(
 				f"Machine {self.name} has no Cloud Provider — set one, "
@@ -112,25 +148,21 @@ class Machine(AnsibleHost, Document):
 		secret = provider.get_password("api_key", raise_exception=False)
 		if not (provider.access_key_id and secret):
 			frappe.throw(f"Cloud Provider {provider.name} has no credentials set.")
-		try:
-			return build_cloud_client(provider.provider_type, provider.access_key_id, secret, self.region_code)
-		except CloudClientError as e:
-			frappe.throw(str(e))
+
+		return build_cloud_client(provider.provider_type, provider.access_key_id, secret, self.region_code)
 
 	@property
 	def region_code(self):
-		"""The region to talk to — this box's Region, whose Name is the provider's own region
-		code. No account-wide fallback: every AWS Machine needs a Region, directly or via its
-		Network."""
+		"""This box's Region, whose Name is the provider's own region code. No account-wide
+		fallback: every AWS Machine needs one, directly or via its Network."""
 		if not self.region:
 			frappe.throw(f"Machine {self.name} has no Region set — link a Network, or set one directly.")
 		return self.region
 
 	@property
 	def resolved_machine_image(self):
-		"""This Machine's own Machine Image, else its Network's — AMI ids are region-scoped,
-		so the default lives on Network (one region each), not on Cloud Provider (one account,
-		many regions)."""
+		"""This Machine's own, else its Network's: AMI ids are region-scoped, so the default lives
+		on Network (one region each), not on Cloud Provider (many)."""
 		network = self.network_doc
 		value = self.machine_image or (network.machine_image if network else "")
 		if not value:
@@ -144,37 +176,39 @@ class Machine(AnsibleHost, Document):
 		return frappe.get_cached_doc("Network", self.network) if self.network else None
 
 	def get_security_group_ids(self, network):
-		"""This box's security groups: the Network's proxy or inference list, matching this
-		Machine's Machine Type. Empty when there's no Network.
+		"""The Network's proxy or inference list, by Machine Type. Empty when there's no Network.
 
-		An Ingress Server takes the proxy list with a Gateway Server. It needs the same 80/443
-		open — to the gateways, which sit in no Network of their own, and to the Route53 health
-		checkers behind its Network's shared name, whose addresses are AWS's to change.
-
-		A Monitoring Agent box takes the inference list. It needs only 22 inbound — its vmagent
-		and its node_exporter both bind 127.0.0.1, and its scrapes and remote writes are all
-		outbound — so the proxy list would open 80/443 to the world for nothing."""
+		Ingress takes the proxy list: it needs the same 80/443 open, to gateways that sit in no
+		Network of their own and to Route53 health checkers whose addresses are AWS's to change.
+		A Monitoring Agent takes the inference list — vmagent and node_exporter both bind
+		127.0.0.1 and everything else is outbound, so the proxy list would open 80/443 for
+		nothing. A State Store takes its own: 6379 to the Network's gateways."""
 		if not network:
 			return []
 		if not self.machine_type:
 			frappe.throw(f"Set a Machine Type on Machine {self.name} to pick its security groups.")
-		return (
-			network.proxy_security_group_id_list
-			if self.machine_type in ("Gateway", "Ingress")
-			else network.inference_security_group_id_list
-		)
+		if self.machine_type in ("Gateway", "Ingress"):
+			return network.proxy_security_group_id_list
+		if self.machine_type == "State Store":
+			return network.state_store_security_group_id_list
+		return network.inference_security_group_id_list
 
 	@property
 	def boot_timeout_sec(self):
-		"""How long this box may take to become reachable. A bare metal instance POSTs real
-		firmware before anything listens, on a launch and on every start after one."""
+		"""A bare metal instance POSTs real firmware before anything listens, on a launch and on
+		every start after one."""
 		return 2400 if self.is_bare_metal else 900
 
 	@frappe.whitelist()
 	def provision(self):
-		"""Button: launch this box on EC2. Everything that can be checked without a running
-		instance is checked here — credentials, region, image, security groups, and the instance
-		type — so a typo fails on the button rather than after AWS has started billing."""
+		"""Button: launch this box on EC2."""
+		self.validate_launchable()
+		frappe.enqueue_doc(self.doctype, self.name, "launch", queue="long", timeout=3000)
+		frappe.msgprint(f"Provisioning {self.name} — reload when it reports Active.", alert=True)
+
+	def validate_launchable(self):
+		"""Everything checkable without a running instance, so a typo fails before AWS starts
+		billing."""
 		if self.instance_id:
 			frappe.throw(f"Machine {self.name} already has instance {self.instance_id}.")
 		if not (self.instance_type and self.root_volume_gb):
@@ -183,13 +217,10 @@ class Machine(AnsibleHost, Document):
 		self.get_security_group_ids(self.network_doc)
 		self.sync_instance_type(client)
 		self.validate_image_architecture(client)
-		frappe.enqueue_doc(self.doctype, self.name, "launch", queue="long", timeout=3000)
-		frappe.msgprint(f"Provisioning {self.name} — reload when it reports Active.", alert=True)
 
 	def validate_image_architecture(self, client):
-		"""Refuse an AMI built for a different architecture than the instance type runs. AWS
-		accepts the launch and the box then never boots — there is no console to read and no
-		status check that ever passes, only a twenty-minute wait ending in a timeout."""
+		"""AWS accepts a mismatched AMI and the box then never boots — no console to read, no
+		status check that passes, just a twenty-minute wait ending in a timeout."""
 		image = self.resolved_machine_image
 		image_architecture = client.get_image_info(image)["cpu_architecture"]
 		if self.cpu_architecture and image_architecture != self.cpu_architecture:
@@ -201,11 +232,11 @@ class Machine(AnsibleHost, Document):
 
 	@failure.reports_failure(mark_broken=False)
 	def launch(self):
-		"""Job: run the instance, wait for it to be reachable, then record what AWS gave back
-		and seed the GPU table from the instance type. A failure before instance_id is set
-		(bad AMI, credentials, quota, ...) resets status to Pending rather than stranding the
-		Machine at Provisioning forever — the UI only offers Provision again once it's back."""
-		self.db_set("status", "Provisioning", commit=True)
+		"""Job: run the instance, wait for it to be reachable, record what AWS gave back and seed
+		the GPU table from the instance type. A failure before instance_id is set resets status to
+		Draft rather than stranding the Machine at Pending — the UI only offers Provision again once
+		it's back."""
+		self.db_set("status", "Pending", commit=True)
 		try:
 			client = self.cloud_client
 			network = self.network_doc
@@ -219,14 +250,11 @@ class Machine(AnsibleHost, Document):
 				ssh_public_keys=injected_public_keys(),
 			)
 		except Exception:
-			# Back to Pending, not Broken: a Machine has no failed state, and an instance that was
-			# never launched is exactly as un-launched as it was before. The comment, toast and
-			# notification that used to be written here come from the decorator now — this keeps
-			# only the part that is specific to launching.
-			self.db_set("status", "Pending", commit=True)
+			# Draft, not Broken: an instance that never launched is as un-launched as before.
+			self.db_set("status", "Draft", commit=True)
 			raise
-		# Committed before the poll: a timeout further down must not roll this back and leave
-		# a billed instance that Grove has no record of.
+		# Committed before the poll: a timeout below must not roll this back and leave a billed
+		# instance Grove has no record of.
 		self.db_set("instance_id", instance["instance_id"], commit=True)
 		ready = client.poll_instance_ready(instance["instance_id"], timeout_sec=self.boot_timeout_sec)
 		self.db_set({
@@ -240,10 +268,8 @@ class Machine(AnsibleHost, Document):
 
 	@frappe.whitelist()
 	def attach_static_ip(self):
-		"""Button: swap this box's address for an Elastic IP, which survives a Stop. Runs at
-		launch when the box asked for one, and on a running box whenever an operator wants a
-		stable address. Recorded with its allocation id — that, not the address, is what hands
-		it back later."""
+		"""Button: swap this box's address for an Elastic IP, which survives a Stop. Recorded with
+		its allocation id — that, not the address, is what hands it back later."""
 		self.require_instance()
 		if self.static_ip_allocation_id:
 			frappe.throw(f"{self.name} already holds Elastic IP {self.public_ip}.")
@@ -257,9 +283,9 @@ class Machine(AnsibleHost, Document):
 
 	@frappe.whitelist()
 	def release_static_ip(self):
-		"""Button: hand the Elastic IP back — it is billed for as long as it is held. AWS gives a
-		running box a fresh dynamic address the moment the Elastic IP comes off, so the address
-		is re-read off the instance rather than guessed at."""
+		"""Button: hand the Elastic IP back — it is billed while held. AWS gives a running box a
+		fresh dynamic address the moment it comes off, so the address is re-read off the
+		instance."""
 		if not self.static_ip_allocation_id:
 			frappe.throw(f"{self.name} has no Elastic IP to release.")
 		self.cloud_client.release_static_ip(self.static_ip_allocation_id)
@@ -269,9 +295,8 @@ class Machine(AnsibleHost, Document):
 
 	@frappe.whitelist()
 	def sync(self):
-		"""Button: pull state, IPs and launch facts back off AWS — instance_type, machine_image
-		and root_volume_gb included, so a box registered by hand (instance_id set, nothing
-		else) gets fully backfilled from what's actually running."""
+		"""Button: pull state, IPs and launch facts back off AWS, so a box registered by hand
+		(instance_id set, nothing else) gets fully backfilled from what's running."""
 		self.require_instance()
 		client = self.cloud_client
 		try:
@@ -295,60 +320,44 @@ class Machine(AnsibleHost, Document):
 		self.sync_instance_type(client)
 
 	def sync_dependent_servers(self):
-		"""Reflect this Machine no longer serving onto every Gateway, Ingress and Inference Server
-		and Monitoring Agent built on it — Active there would be a lie once the box itself is
-		Terminated, Offline or Draining. Terminated propagates as Terminated (the box is gone
-		for good, along with whatever was on it); Offline/Draining propagate as Broken
-		(stopped, but Start can still bring it back). Only touches ones that were Active —
-		Pending/Installing/Broken/Terminated already say what's true.
-
-		An agent matters most here: it is the only doc whose silence looks exactly like a
-		healthy idle fleet, so a stopped agent box has to say so on the doc.
-
-		The Ingress Server was missing from this list until it bit: it carries a machine, a status
-		and DNS records of its own, so a terminated box left one Active and still resolving, with
-		nothing else in the fleet that would ever correct it."""
-		if self.status not in ("Terminated", "Offline", "Draining"):
+		"""Reflect this Machine no longer serving onto every server doc built on it. Terminated
+		propagates as Terminated, Stopped/Pending as Broken (Start can still bring those back)."""
+		if self.status not in ("Terminated", "Stopped", "Pending"):
 			return
 		dependent_status = "Terminated" if self.status == "Terminated" else "Broken"
-		for doctype in ("Gateway Server", "Ingress Server", "Inference Server", "Monitoring Agent"):
+		for doctype in (
+			"Gateway Server", "Ingress Server", "Inference Server", "Monitoring Agent", "Gateway State Store"
+		):
 			for name in frappe.get_all(
 				doctype, filters={"machine": self.name, "status": "Active"}, pluck="name"
 			):
 				self.mark_dependent(doctype, name, dependent_status)
 
 	def mark_dependent(self, doctype, name, status):
-		"""Write the status THROUGH the document, not with db.set_value.
+		"""Write the status THROUGH the document, not with db.set_value: the consequences live in
+		on_update — a Terminated gateway gives up its DNS records and comes out of the inference
+		security groups. Skipping that left a Route53 multivalue row pointing at a box that no
+		longer existed, a black hole for everything resolving to it.
 
-		The write has consequences, and they live in on_update: a Terminated gateway or ingress has
-		to give up its DNS records, and a gateway leaving also has to come out of the inference
-		security groups. db.set_value skips validate and on_update entirely, so none of that ran —
-		terminating a Machine left a latency record in Route53 pointing at a box that no longer
-		existed, which is a black hole for every client that resolves to it.
-
-		Guarded per document on purpose. save() runs validate, so a dependent that will not validate
-		for some unrelated reason would otherwise abort the termination halfway and leave the
-		machine gone with its siblings still claiming to be Active. Reported rather than swallowed,
-		so a dependent that could not be updated says so."""
+		Guarded per document: save() runs validate, so one dependent failing for an unrelated
+		reason would otherwise abort the termination halfway. Rolled back to before it and logged."""
+		frappe.db.savepoint("mark_dependent")
 		try:
 			doc = frappe.get_doc(doctype, name)
 			doc.status = status
 			doc.save(ignore_permissions=True)
-		except Exception as error:
-			failure.report(
-				doctype,
-				name,
-				f"Could not mark {status.lower()} after {self.name} went {self.status.lower()}",
-				str(error),
+		except Exception:
+			frappe.db.rollback(save_point="mark_dependent")
+			frappe.log_error(
+				title=f"Could not mark {doctype} {name} {status.lower()} after {self.name} went {self.status.lower()}"
 			)
 
 	def sync_instance_type(self, client):
-		"""Record what this instance type is and ships: its architecture, whether it is bare
-		metal, its ephemeral local NVMe (which Grove leaves unmounted) and its GPUs. Runs at
-		preflight as well as after launch — it reads the type, never the instance — so the
-		architecture and the boot timeout are known before anything needs them.
+		"""What this instance type is and ships: architecture, bare metal, ephemeral NVMe, GPUs.
+		Reads the type and never the instance, so it runs at preflight too and the architecture
+		and boot timeout are known before anything needs them.
 
-		GPUs are only seeded when the box has NONE — a scanned card is nvidia-smi's answer and is
+		GPUs are seeded only when the box has NONE: a scanned card is nvidia-smi's answer and is
 		never overwritten by the provider's coarser one."""
 		if not self.instance_type:
 			return
@@ -373,14 +382,14 @@ class Machine(AnsibleHost, Document):
 		the address when it's an Elastic IP — a dynamic one is gone the moment it stops."""
 		self.require_instance()
 		self.cloud_client.stop_instance(self.instance_id)
-		self.db_set({"status": "Draining", "public_ip": self.public_ip if self.is_static_ip else ""})
+		self.db_set({"status": "Pending", "public_ip": self.public_ip if self.is_static_ip else ""})
 		self.sync_dependent_servers()
 		frappe.msgprint(f"Stopping {self.name} — Sync once it settles.", alert=True)
 
 	@frappe.whitelist()
 	def start(self):
-		"""Button: start a stopped instance. AWS re-issues the public IP, so this polls for
-		the new one rather than leaving the old, now-wrong address on the doc."""
+		"""Button: start a stopped instance. AWS re-issues the public IP, so this polls for the
+		new one rather than leaving a now-wrong address on the doc."""
 		self.require_instance()
 		self.cloud_client
 		frappe.enqueue_doc(self.doctype, self.name, "resume", queue="long", timeout=3000)
@@ -389,7 +398,7 @@ class Machine(AnsibleHost, Document):
 	@failure.reports_failure(mark_broken=False)
 	def resume(self):
 		"""Job: start the instance and record the address AWS gives it this time. A start costs
-		the same firmware POST a launch does, so it waits as long."""
+		the same firmware POST a launch does."""
 		client = self.cloud_client
 		client.start_instance(self.instance_id)
 		ready = client.poll_instance_ready(self.instance_id, timeout_sec=self.boot_timeout_sec)
@@ -401,9 +410,8 @@ class Machine(AnsibleHost, Document):
 
 	@frappe.whitelist()
 	def resize_root_volume(self, size_gb: int):
-		"""Button: grow the only disk this box has. The root volume holds the OS, the engine
-		images and every weight, so a box provisioned too small cannot serve at all — and
-		relaunching it to fix that throws away everything already downloaded."""
+		"""Button: grow the only disk this box has. The root volume holds the OS, the images and
+		every weight, and relaunching to fix a too-small one throws all of that away."""
 		self.require_instance()
 		if size_gb <= (self.root_volume_gb or 0):
 			frappe.throw(
@@ -418,9 +426,8 @@ class Machine(AnsibleHost, Document):
 
 	@failure.reports_failure(mark_broken=False)
 	def grow_root(self, size_gb):
-		"""Job: enlarge the volume at the provider, then grow the partition and filesystem on
-		the box. root_volume_gb is written only once the box reports the space, so the field
-		never claims a size the filesystem does not have."""
+		"""Job: enlarge the volume at the provider, then grow the partition and filesystem on the
+		box. root_volume_gb is written only once the box reports the space."""
 		self.cloud_client.resize_root_volume(self.instance_id, size_gb)
 		play_name, rc = self.run_playbook("grow_root.yml")
 		if rc != 0:
@@ -436,8 +443,6 @@ class Machine(AnsibleHost, Document):
 		self.require_instance()
 		client = self.cloud_client
 		if self.static_ip_allocation_id:
-			# Handed back first: an Elastic IP is billed while allocated, and once the instance
-			# is gone this doc is the only record of which address to release.
 			client.release_static_ip(self.static_ip_allocation_id)
 			self.db_set("static_ip_allocation_id", "")
 		client.terminate_instance(self.instance_id)
@@ -452,11 +457,10 @@ class Machine(AnsibleHost, Document):
 	def get_ssh_argv(self, command, tty=False):
 		"""The local `ssh` argv that runs one remote argv on this box.
 
-		The remote argv is quoted word by word, so a unit name or a slug cannot become a second
-		command on the far side. Not root → sudo -n, which fails loudly rather than hanging on
-		a password prompt. `tty` forces a pty: without one, killing the local ssh leaves the
-		remote command running (sshd only hangs it up when it next writes), so anything that
-		follows output needs it to avoid leaking a process on the box per call."""
+		Quoted word by word, so a unit name or a slug cannot become a second command on the far
+		side. Not root → sudo -n, which fails loudly rather than hanging on a password prompt.
+		`tty` forces a pty: without one, killing the local ssh leaves the remote command running
+		(sshd only hangs it up when it next writes)."""
 		if not self.public_ip:
 			frappe.throw(f"Machine {self.name} has no public IP — nothing to connect to.")
 		user = self.ssh_user or "root"
@@ -471,24 +475,18 @@ class Machine(AnsibleHost, Document):
 		]
 
 	def run_command(self, command, timeout=60):
-		"""Run one argv on this box over SSH and return what it printed (stdout + stderr).
-		For reads that are not worth a playbook — a log tail, a status — where an Ansible
-		Play doc per call would be noise. Anything that changes the box belongs in a role."""
-		try:
-			result = subprocess.run(
-				self.get_ssh_argv(command), capture_output=True, text=True, timeout=timeout
-			)
-		except subprocess.TimeoutExpired:
-			frappe.throw(f"{self.name} did not answer within {timeout}s.")
+		"""Run one argv over SSH and return stdout + stderr. For reads not worth a playbook, where
+		an Ansible Play doc per call would be noise. Anything that CHANGES the box belongs in a
+		role."""
+		result = subprocess.run(self.get_ssh_argv(command), capture_output=True, text=True, timeout=timeout)
 		return (result.stdout + result.stderr).strip()
 
 	def stream_command(self, command, idle_tick=5):
-		"""Follow one argv on this box over SSH, yielding its output line by line as it arrives
-		— the follow-mode twin of run_command. Yields None after each idle_tick seconds of
-		silence, so a caller can act (stop, flush) without waiting for the next line.
+		"""The follow-mode twin of run_command. Yields None after each idle_tick seconds of
+		silence, so a caller can stop or flush without waiting for the next line.
 
-		Runs on a pty (see get_ssh_argv) so that killing the local ssh hangs the remote command
-		up too — a caller that stops consuming must not leave a `docker logs -f` on the box."""
+		Runs on a pty (see get_ssh_argv) so killing the local ssh hangs the remote command up too:
+		a caller that stops consuming must not leave a `docker logs -f` on the box."""
 		process = subprocess.Popen(
 			self.get_ssh_argv(command, tty=True),
 			stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1,
@@ -509,8 +507,8 @@ class Machine(AnsibleHost, Document):
 
 
 def scan_machine_gpus(machine_name):
-	"""Job: run scan_gpus.yml and reconcile this Machine's `GPU` records against what the box
-	reports. nvidia-smi is the truth about which cards exist."""
+	"""Job: run scan_gpus.yml and reconcile this Machine's `GPU` records against it. nvidia-smi is
+	the truth about which cards exist."""
 	machine = frappe.get_doc("Machine", machine_name)
 	play_name, rc = machine.run_playbook("scan_gpus.yml")
 	result = _scan_result(play_name)
@@ -527,36 +525,31 @@ def scan_machine_gpus(machine_name):
 			f"It said: {_scan_message(result)}"
 		)
 	reconcile_gpus(machine.name, gpus)
+	topo = _scan_result(play_name, TOPO_TASK).get("stdout")
+	frappe.db.set_value("Machine", machine.name, "gpu_interconnect", parse_interconnect(topo))
 	frappe.db.commit()
 	return gpus
 
 
 def is_placeholder_device_id(device_id):
-	"""Whether this id is a bare CUDA index standing in for a UUID nothing has read yet.
-
-	Written by `promote_gpus` for a legacy row and by `aws.py` at provision, where no driver has
-	been asked. It says which slot the card sat in, never which card it is."""
+	"""A bare CUDA index standing in for a UUID nothing has read yet — written by `aws.py` at
+	provision. It says which slot the card sat in, never which card it is."""
 	return (device_id or "").strip().isdigit()
 
 
 def plan_reconcile(existing, scanned, slot_is_identity=False):
-	"""What the scan means for the cards already on record: `(upgrades, inserts, stale)`.
-
-	Pure, so the rule can be pinned without a site — and it is worth pinning, because getting it
-	wrong deletes a row that a running replica's claim lives on.
+	"""What the scan means for the cards already on record: `(upgrades, inserts, stale)`. Pure, so
+	the rule can be pinned without a site — worth pinning, because getting it wrong deletes a row
+	a running replica's claim lives on.
 
 	Two passes. A real `device_id` matches only itself, so two cards that swapped slots keep their
-	own rows. A PLACEHOLDER matches by slot instead: it was never an identity, so a scan reporting
-	a real UUID for that slot is the same card seen properly for the first time, and upgrading it
-	in place is what keeps its `held_by` and the replica rows pointing at it.
+	own rows. A PLACEHOLDER matches by slot instead: it was never an identity, so upgrading it in
+	place keeps its `held_by` and the replica rows pointing at it.
 
-	`slot_is_identity` widens that second pass to every card, and is for a box whose hardware is
-	rented. Stopping and starting an EC2 instance migrates it to another host — AWS's own advice
-	for a sick GPU is to do exactly that — so nvidia-smi comes back with a different physical card
-	at the same index. The UUID that was identity yesterday names silicon this account no longer
-	has, while the slot is what persists. On bare metal the opposite holds, which is why this is a
-	property of the box and not a global rule: there, a card that stops answering has been pulled,
-	and pruning it is the honest reading."""
+	`slot_is_identity` widens that second pass to every card, for a box whose hardware is rented:
+	an EC2 stop/start migrates the instance to another host, so the same index answers with a
+	different physical card. On bare metal the opposite holds — a card that stops answering was
+	pulled — which is why this is a property of the box and not a global rule."""
 	by_device = {card.device_id: card for card in existing}
 	upgrades, inserts, unmatched = [], [], []
 	claimed = set()
@@ -589,15 +582,12 @@ def plan_reconcile(existing, scanned, slot_is_identity=False):
 def reconcile_gpus(machine, scanned):
 	"""Upsert one `GPU` per scanned card and prune what the box no longer reports.
 
-	Upserted rather than replaced. A card that is still there keeps its row — and therefore keeps
-	its `held_by`, so a re-scan of a busy box does not disturb a running replica. Rewriting the
-	list, which is what this used to do, silently dropped the claim with the row."""
+	Upserted, not replaced: a card still there keeps its row and therefore its `held_by`, so a
+	re-scan of a busy box does not disturb a running replica."""
 	from grove.grove.doctype.gpu.gpu import cards_on
 
 	existing = cards_on([machine])
-	# A rented box identifies its cards by SLOT: a stop/start lands the instance on another host,
-	# so the same index answers with a different UUID and the old one names nothing. Pruning there
-	# would delete a row a replica still points at, for a card that never went anywhere.
+	# A rented box identifies its cards by SLOT — see plan_reconcile.
 	slot_is_identity = bool(frappe.db.get_value("Machine", machine, "cloud_provider"))
 	upgrades, inserts, stale = plan_reconcile(existing, scanned, slot_is_identity)
 
@@ -618,8 +608,7 @@ def reconcile_gpus(machine, scanned):
 			}
 		).insert(ignore_permissions=True)
 	for card in stale:
-		# The card is gone, so whatever held it is holding nothing. Deleting the row takes the
-		# claim with it, which is the point of the claim being a column here.
+		# The row takes the claim with it, which is the point of the claim being a column.
 		frappe.delete_doc("GPU", card.name, ignore_permissions=True, force=True)
 
 	_refresh_from_types(machine)
@@ -647,12 +636,9 @@ def _is_number(value):
 
 
 def _refresh_from_types(machine):
-	"""Re-pull what the cards fetch off their type.
-
-	A scan writes cards with `db.set_value`, which sets a link without running its fetches — so a
-	card whose type was seeded or corrected in this same scan would keep the old figure, and the
-	placement checks read the CARD. `GPU Type.on_update` covers an operator editing the type; this
-	covers the scan that taught it."""
+	"""Re-pull what the cards fetch off their type. `db.set_value` sets a link without running its
+	fetches, so a card whose type was seeded in this same scan would keep the old figure — and the
+	placement checks read the CARD. `GPU Type.on_update` covers an operator editing the type."""
 	frappe.db.sql(
 		"""update `tabGPU` gpu join `tabGPU Type` type on type.name = gpu.gpu_type
 		set gpu.vram_gb = type.vram_gb, gpu.compute_capability = type.compute_capability
@@ -662,15 +648,12 @@ def _refresh_from_types(machine):
 
 
 def _mirror_onto_machine(machine):
-	"""Rewrite the Machine's GPU grid to match its cards.
+	"""Rewrite the Machine's GPU grid to match its cards. The grid is a read-only mirror —
+	`GPU.machine` says where a card is — rewritten by the same function that reconciles the cards,
+	so there is one writer.
 
-	The grid is a read-only mirror, not a second source of truth: `GPU.machine` is what says where
-	a card is, and this only exists so the Machine form can show them as a grid with links rather
-	than a rendered panel. Rewritten by the same function that reconciles the cards, so there is
-	one writer and the two cannot disagree.
-
-	Everything but the link is `fetch_from` the GPU, so a card renamed or re-typed later shows
-	through without this running again."""
+	Everything but the link is `fetch_from` the GPU, so a card re-typed later shows through
+	without this running again."""
 	from grove.grove.doctype.gpu.gpu import cards_on
 
 	doc = frappe.get_doc("Machine", machine)
@@ -680,11 +663,11 @@ def _mirror_onto_machine(machine):
 	doc.save(ignore_permissions=True)
 
 
-def _scan_result(play_name):
-	"""The scan task's result, off its Ansible Task doc (the runner stores each one as JSON
-	there). Empty when the task never ran — an unreachable host has no result to report."""
+def _scan_result(play_name, task_name=SCAN_TASK):
+	"""A scan task's result, off its Ansible Task doc. Empty when the task never ran — an
+	unreachable host has no result to report."""
 	output = frappe.db.get_value(
-		"Ansible Task", {"play": play_name, "task_name": SCAN_TASK}, "output"
+		"Ansible Task", {"play": play_name, "task_name": task_name}, "output"
 	)
 	try:
 		return json.loads(output) if output else {}
@@ -693,8 +676,7 @@ def _scan_result(play_name):
 
 
 def _scan_message(result):
-	"""What nvidia-smi actually said, for an error the operator can act on without opening
-	the play. Names the usual cause of the mismatch, which is by far the common failure."""
+	"""What nvidia-smi said, so the error is actionable without opening the play."""
 	message = (
 		result.get("stdout") or result.get("stderr") or result.get("msg") or "nothing at all"
 	).strip()
@@ -707,9 +689,9 @@ def _scan_message(result):
 
 
 def parse_nvidia_smi(stdout):
-	"""CSV from `nvidia-smi --query-gpu=index,name,memory.total,uuid` (noheader, nounits) →
-	scanned cards. Memory comes back in MiB; the field is whole GB, and a card reporting
-	e.g. 97887 MiB is a 96 GB card, so it rounds rather than truncates."""
+	"""CSV from `nvidia-smi --query-gpu=...` (noheader, nounits) → scanned cards. Memory arrives in
+	MiB and the field is whole GB: 97887 MiB is a 96 GB card, so it rounds rather than
+	truncates."""
 	gpus = []
 	for line in (stdout or "").splitlines():
 		fields = [field.strip() for field in line.split(",")]
@@ -717,28 +699,40 @@ def parse_nvidia_smi(stdout):
 			continue  # blank line, or a warning nvidia-smi printed above the CSV
 		index, name, memory_mib = fields[0], fields[1], fields[2]
 		uuid = fields[3] if len(fields) > 3 else ""
-		# Appended to the query rather than inserted, so a box answering an older playbook still
-		# parses — and so parse_gpu_memory's column offsets do not move.
+		# Appended to the query, not inserted, so a box answering an older playbook still parses
+		# and parse_gpu_memory's column offsets do not move.
 		compute_cap = fields[6] if len(fields) > 6 else ""
 		gpus.append({
 			"gpu_index": int(index),
 			"gpu_model": name,
 			"vram_gb": vram_gb_from_mib(int(memory_mib)) if memory_mib.isdigit() else 0,
-			# What CUDA_VISIBLE_DEVICES is given. The UUID when the box reported one, so the card
-			# keeps its identity across a reseat; the index only as a fallback for a driver that
-			# answered without one.
+			# What `docker run --gpus` is given. The UUID when the box reported one, so the card
+			# keeps its identity across a reseat; the index only as a fallback.
 			"device_id": uuid or str(int(index)),
-			# What says whether this card can run bfloat16 at all. Blank on a driver too old to
-			# report it, which reads as "unknown" and skips the check rather than failing it.
+			# Blank on a driver too old to report it, which reads as "unknown" and skips the
+			# bfloat16 check rather than failing it.
 			"compute_capability": float(compute_cap) if _is_number(compute_cap) else 0,
 		})
 	return gpus
 
 
+def parse_interconnect(stdout):
+	"""`nvidia-smi topo -m` → how the cards reach each other. Only the GPU rows and their GPU
+	columns count; NIC rows, affinity columns and the legend are skipped. Blank on one card, which
+	has no GPU-to-GPU path to describe."""
+	rows = [line.split() for line in (stdout or "").splitlines() if line.startswith("GPU")]
+	cells = [cell for row in rows for cell in row[1:1 + len(rows)] if cell != "X"]
+	if not cells:
+		return ""
+	nvlink = sum(cell.startswith("NV") for cell in cells)
+	if nvlink == len(cells):
+		return "NVLink"
+	return "Mixed" if nvlink else "PCIe"
+
+
 def parse_gpu_memory(stdout):
-	"""The same CSV read for its transient columns — total/used/free MiB per card. A card
-	that reports a non-numeric figure (MIG, a driver that answers [N/A]) is skipped rather
-	than shown as 0, which would read as an idle GPU."""
+	"""The same CSV read for its transient columns. A card reporting a non-numeric figure (MIG, a
+	driver answering [N/A]) is skipped rather than shown as 0, which would read as idle."""
 	rows = []
 	for line in (stdout or "").splitlines():
 		fields = [field.strip() for field in line.split(",")]

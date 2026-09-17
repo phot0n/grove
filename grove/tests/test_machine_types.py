@@ -11,6 +11,8 @@ import re
 import unittest
 from pathlib import Path
 
+from grove.grove.doctype.machine.machine import NAME_PREFIX
+
 DOCTYPES = Path(__file__).parent.parent.parent / "grove/grove/doctype"
 
 
@@ -44,6 +46,10 @@ class TestMachineTypesAreCreatableDoctypes(unittest.TestCase):
 		# one type whose doctype name is the option, which is why the map is a map and not a suffix.
 		self.assertIn("Monitoring Agent", self.machine_types)
 		self.assertEqual(self.server_doctypes["Monitoring Agent"], "Monitoring Agent")
+
+	def test_every_type_starts_a_name(self):
+		# A type with no prefix could not name its Machine, so it could not be created at all.
+		self.assertEqual(sorted(NAME_PREFIX), sorted(self.machine_types))
 
 	def test_every_type_is_routed_by_the_form(self):
 		# A type missing from the map is silent: the button simply never appears.

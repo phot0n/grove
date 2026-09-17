@@ -122,6 +122,21 @@ whitespace, keep the rest as written.
 given** rather than sorted. "Take the first N" therefore means the first N slots; sorting docnames
 would pin cards by hash.
 
+## Interconnect
+
+`Machine.gpu_interconnect` says how a box's cards reach each other: `PCIe`, `NVLink`, or `Mixed`.
+It is a **Machine** fact, not a `GPU Type` one — an H100 ships as SXM (NVLink) and as PCIe, and a
+PCIe A100 box may carry bridges between pairs only.
+
+`scan_gpus.yml` runs `nvidia-smi topo -m` as a second task and `parse_interconnect` reads the
+GPU×GPU cells: `NV#` is an NVLink path, anything else (`PIX`/`PXB`/`PHB`/`NODE`/`SYS`) is a PCIe
+hop. Every pair linked → `NVLink`; none → `PCIe`; some → `Mixed`, which means a replica spanning
+the box still crosses PCIe. NIC rows, affinity columns and the legend are ignored.
+
+Blank means nobody has asked — the box was seeded from its instance type and never scanned — or
+the box has one card, which has no GPU-to-GPU path to describe. Nothing gates on it yet; it is
+there so an operator placing a multi-card replica can see what tensor parallel would run over.
+
 ## Not built yet
 
 - **MIG enumeration.** `scan_gpus.yml` queries `--query-gpu`, which reports the *parent*, so a MIG
