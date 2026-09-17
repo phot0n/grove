@@ -15,13 +15,13 @@ class UsageModelRow(Document):
 
 		cached_tokens: DF.Int
 		completion_tokens: DF.Int
+		last_pulled: DF.Datetime | None
 		model: DF.Link | None
 		parent: DF.Data
 		parentfield: DF.Data
 		parenttype: DF.Data
 		prompt_tokens: DF.Int
 		request_count: DF.Int
-		total_tokens: DF.Int
 	# end: auto-generated types
 
 	pass

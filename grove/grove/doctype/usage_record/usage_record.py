@@ -28,29 +28,24 @@ class UsageRecord(Document):
 		month: DF.Data
 		prompt_tokens: DF.Int
 		request_count: DF.Int
-		total_tokens: DF.Int
 		user: DF.Link | None
 	# end: auto-generated types
 
-	def on_update(self):
-		# TODO: a lot of usage records will do this at probably the same time
-		self._enforce_budget()
+def enforce_budget(grove_user, month):
+	"""Flag the USER rate_limited once their billable usage this month reaches max_tokens, so the
+	next sync has the gateways 429 them. The budget is the person's and shared across their keys,
+	so one key exhausting it stops the lot. Called by the usage pull once per user it touched —
+	not per record, which is what an on_update hook cost.
 
-	def _enforce_budget(self):
-		"""When the USER's recorded billable usage this month reaches their budget
-		(Grove User.max_tokens), flag the USER rate_limited so the next sync tells
-		the gateways to reject them with 429. The budget belongs to the person and is shared
-		across their keys, so one key exhausting it stops the lot — and one record does it,
-		however many they hold. Set-only here — clearing is the daily grove.usage_pull.reactivate_rate_limited
-		job (which also breaks the month-rollover deadlock, since a blocked user sees no
-		new usage to re-fire this). Reactive: usage is pulled after the fact, so a small
-		overage is expected."""
-		if self.month != current_month():
-			return  # only the current month gates
-		limit = monthly_budget(self.user)
-		if not limit or billable_tokens(self.user, self.month) < limit:
-			return
-		set_rate_limited(self.user, 1)
+	Set-only: clearing is the daily reactivate_rate_limited job, which is also what breaks the
+	month-rollover deadlock — a blocked user sees no new usage to re-fire this. Reactive, so a
+	small overage is expected."""
+	if month != current_month():
+		return False  # only the current month gates
+	limit = monthly_budget(grove_user)
+	if not limit or billable_tokens(grove_user, month) < limit:
+		return False
+	return set_rate_limited(grove_user, 1)
 
 
 def current_month():
@@ -58,19 +53,10 @@ def current_month():
 	return datetime.now(timezone.utc).strftime("%Y-%m")
 
 
-def billable(total_tokens, cached_tokens):
-	"""One record's billable tokens: total minus the prefix-cache hits, never below zero.
-
-	Cache hits skip prefill compute — near-zero marginal cost on our own GPUs — so they do not
-	count against a budget. Cached is a SUBSET of total, so the difference should never be
-	negative; the floor is there for when it is anyway. A response can report cached tokens with
-	total_tokens: 0, and the gateway's /meter skips a zero rather than writing it, leaving a
-	record whose cached count exceeds its total. Summed unclamped, that row would cancel real
-	usage on the user's OTHER keys and quietly credit them back under their budget.
-
-	The one definition of billable: the budget gate and the usage report both come here, so they
-	cannot drift into disagreeing about what a customer owes."""
-	return max((total_tokens or 0) - (cached_tokens or 0), 0)
+def billable(prompt_tokens, completion_tokens, cached_tokens):
+	"""Uncached prompt plus completion. Cached ⊆ prompt, but floored so a record whose cached
+	count exceeds its prompt (the gateway skips zeros) cannot credit a user's other keys."""
+	return max((prompt_tokens or 0) - (cached_tokens or 0), 0) + (completion_tokens or 0)
 
 
 def billable_tokens(grove_user, month):
@@ -79,6 +65,6 @@ def billable_tokens(grove_user, month):
 	rows = frappe.get_all(
 		"Usage Record",
 		filters={"user": grove_user, "month": month},
-		fields=["total_tokens", "cached_tokens"],
+		fields=["prompt_tokens", "completion_tokens", "cached_tokens"],
 	)
-	return sum(billable(r.total_tokens, r.cached_tokens) for r in rows)
+	return sum(billable(r.prompt_tokens, r.completion_tokens, r.cached_tokens) for r in rows)

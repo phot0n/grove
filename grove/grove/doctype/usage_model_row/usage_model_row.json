@@ -9,8 +9,8 @@
   "prompt_tokens",
   "completion_tokens",
   "cached_tokens",
-  "total_tokens",
-  "request_count"
+  "request_count",
+  "last_pulled"
  ],
  "fields": [
   {
@@ -34,12 +34,6 @@
    "label": "Completion Tokens"
   },
   {
-   "fieldname": "total_tokens",
-   "fieldtype": "Int",
-   "in_list_view": 1,
-   "label": "Total Tokens"
-  },
-  {
    "fieldname": "cached_tokens",
    "fieldtype": "Int",
    "in_list_view": 1,
@@ -50,6 +44,12 @@
    "fieldtype": "Int",
    "in_list_view": 1,
    "label": "Requests"
+  },
+  {
+   "description": "Last drain that carried a delta for this model — when it was last used, to within a pull interval.",
+   "fieldname": "last_pulled",
+   "fieldtype": "Datetime",
+   "label": "Last Pulled"
   }
  ],
  "istable": 1,

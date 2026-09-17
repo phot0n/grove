@@ -1,53 +1,46 @@
 # Copyright (c) 2026, Grove and contributors
 # For license information, please see license.txt
-"""Pull token usage from each Gateway Server into monthly Usage Records (§6 job 3).
+"""Pull token usage from each Gateway Server into monthly Usage Records.
 
-The gateway no longer tracks the month — it just accumulates per-key deltas in
-`usage:<prefix>`. On pull we: (1) GET /usage, which atomically reads-and-deletes
-(HGETALL + DEL in one Lua call) each live counter and returns it; (2) stamp the
-month from OUR clock (UTC, matching grove.api.usage) and ADD the delta into the
-(key, month) record. No second round trip — the counter is already gone.
+The gateway accumulates per-key deltas in `usage:<prefix>`. A pull GETs /usage, which atomically
+reads-and-deletes each live counter (HGETALL + DEL in one Lua call), stamps the month from OUR
+clock, and ADDs the delta into the (key, month) record.
 
-**1-shot / no retry**: the drain deletes the counter as it returns it, so a
-failed pull is NOT retried. A crash between the GET response and the insert
-commit loses that cycle's delta. Net: never double-count, rare bounded loss on
-failure. Requests metered mid-pull are safe (atomic drain → they land either
-fully in the pulled snapshot or on the fresh live key, never split).
+**1-shot, no retry**: the drain deletes the counter as it returns it, so a crash between the
+response and the commit loses that cycle's delta. Never double-count, rare bounded loss on failure.
+Requests metered mid-pull land either fully in the snapshot or on the fresh key, never split.
 
-Each run is logged as a **Pathway Sync** doc (sync_type=Usage) with a per-proxy
-child row, same as the keys/routes sync, and serialized by that doc's own lock so
-two overlapping pulls can't drain the same counters twice."""
+Each run is logged as a Pathway Sync doc and serialized by that doc's own lock, so two overlapping
+pulls cannot drain the same counters twice."""
 
+import json
 import time
 
 import requests
 
 import frappe
 
-from grove.pathway_sync import _active_proxies, _finalize, _new_run
+from grove.pathway_sync import _finalize, _new_run, sync_targets, try_in_turn
 from grove.grove.doctype.grove_user.grove_user import monthly_budget, set_rate_limited
-from grove.grove.doctype.usage_record.usage_record import billable_tokens, current_month
+from grove.grove.doctype.usage_record.usage_record import billable_tokens, current_month, enforce_budget
 
 TIMEOUT = 15
-_FIELDS = ("prompt_tokens", "completion_tokens", "total_tokens", "cached_tokens", "request_count")
+_FIELDS = ("prompt_tokens", "completion_tokens", "cached_tokens", "request_count")
 
 
-def pull_all():
-	"""Scheduled: pull + drain usage from every Active proxy, logged as one
-	Pathway Sync doc. Skips if another pull is in flight."""
-	doc = _new_run("Usage", "Scheduled")
-	if not doc.acquire_lock(wait=0):  # scheduled → skip if a pull is in flight
+def pull_all(gateways=None, trigger="Scheduled", wait=0):
+	"""Scheduled: pull + drain every gateway Redis — a store once, through its first writer that
+	answers. Named `gateways` are pulled themselves. Skips if another pull is in flight, unless
+	told to wait for it."""
+	doc = _new_run("Usage", trigger)
+	if not doc.acquire_lock(wait=wait):
 		return None
 	try:
-		active = _active_proxies()
-		if not active:
+		groups = sync_targets() if gateways is None else [(None, [gateway]) for gateway in gateways]
+		if not groups:
 			return None
-		ok = 0
-		for proxy in active:
-			res = _pull_and_classify(proxy)
-			doc.append("results", {"server_type": "Gateway Server", "server": proxy, **res})
-			ok += res["success"]
-		_finalize(doc, len(active), ok)
+		ok = sum(try_in_turn(doc, store, gateways, _pull_and_classify) is True for store, gateways in groups)
+		_finalize(doc, len(groups), ok)
 		frappe.db.commit()
 		return doc.name
 	finally:
@@ -55,13 +48,11 @@ def pull_all():
 
 
 def reactivate_rate_limited():
-	"""Daily job: clear rate_limited for users whose CURRENT-month usage is
-	back under their budget — i.e. the month rolled over (no Usage Records yet) or the
-	budget was raised. A user still over budget for the still-active current month stays
-	blocked (the monthly cap is HARD — no daily burst). Runs independently of traffic so
-	a blocked user still gets un-limited at month rollover (they otherwise see no usage to
-	re-fire the on_update). The budget is per-user and shared across their keys, so clearing it
-	unblocks all of them at once. Returns the count of users reactivated."""
+	"""Daily: clear rate_limited for users back under their budget — the month rolled over, or the
+	budget was raised. Still over for the current month stays blocked: the monthly cap is HARD.
+
+	Runs independently of traffic, because a blocked user sees no new usage to re-fire the
+	pull's budget check. Clearing unblocks every key they hold at once."""
 	month = current_month()
 	users = frappe.get_all("Grove User", filters={"rate_limited": 1}, pluck="name")
 	cleared = 0
@@ -76,14 +67,14 @@ def reactivate_rate_limited():
 
 
 def _pull_and_classify(proxy_name):
-	"""Pull + drain one proxy; report reachability + success separately (matches
-	the keys/routes sync rows) so the log distinguishes 'down' from 'rejected'."""
+	"""Pull + drain one proxy. Reachability and success are separate, like the keys/routes sync
+	rows, so the log distinguishes 'down' from 'rejected'."""
 	start = time.monotonic()
 	reachable, success, http_status, error, detail, had_data = 1, 0, 0, None, "", 0
 	try:
-		pulled = _pull_proxy(proxy_name)
+		pulled, lost = _pull_proxy(proxy_name)
 		had_data = 1 if pulled else 0
-		detail = f"pulled:{pulled}"
+		detail = f"pulled:{pulled} lost:{lost}" if lost else f"pulled:{pulled}"
 		success = 1
 	except (requests.ConnectionError, requests.Timeout) as e:
 		reachable, error = 0, f"{type(e).__name__}: {e}"[:2000]
@@ -104,8 +95,8 @@ def _pull_and_classify(proxy_name):
 
 
 def _pull_proxy(proxy_name):
-	"""GET /usage (atomically reads-and-deletes each live counter), record the
-	deltas under this month, and commit. Returns the count of keys pulled."""
+	"""GET /usage, which atomically reads-and-deletes each counter, then record the deltas under
+	this month and commit. → (keys pulled, keys whose delta could not be recorded)."""
 	p = frappe.get_doc("Gateway Server", proxy_name)
 	admin_url = (p.admin_url or "").rstrip("/")
 	token = p.get_password("admin_token")
@@ -116,19 +107,46 @@ def _pull_proxy(proxy_name):
 	r.raise_for_status()
 	usages = r.json().get("usages", {})
 	if not usages:
-		return 0
+		return 0, 0
 
 	month = current_month()
+	touched, lost = set(), 0
 	for prefix, h in usages.items():
 		amounts = {f: int(h.get(f, 0) or 0) for f in _FIELDS}
 		per_model = _per_model(h)
-		# Record only for keys registered here; unregistered (e.g. manual test
-		# keys) are dropped — the gateway already deleted the counter on read.
-		if any(amounts.values()) and (user := frappe.db.get_value("Grove API Key", prefix, "user")):
+		# Unregistered keys are dropped: the gateway already deleted the counter on read.
+		if not any(amounts.values()) or not (user := frappe.db.get_value("Grove API Key", prefix, "user")):
+			continue
+		# One key's failure must not take the rest of the response down with it — the gateway has
+		# already deleted every counter in it. Roll back only that key's partial writes, keep going,
+		# and put the drained payload where someone can replay it.
+		frappe.db.savepoint("usage_key")
+		try:
 			_add_delta(proxy_name, prefix, user, month, amounts, per_model)
+		except Exception:
+			frappe.db.rollback(save_point="usage_key")
+			_log_lost_delta(proxy_name, prefix, user, month, h)
+			lost += 1
+			continue
+		touched.add(user)
+
+	# Once per user, after the loop: the budget is the person's, and a user holding ten keys
+	# is one sum, not ten.
+	for user in touched:
+		enforce_budget(user, month)
 
 	frappe.db.commit()
-	return len(usages)
+	return len(usages), lost
+
+
+def _log_lost_delta(proxy_name, prefix, user, month, usage):
+	"""The gateway deleted this counter on read, so the Error Log is now the only copy: the
+	traceback, then the drained hash verbatim — enough to replay by hand."""
+	payload = {"gateway_server": proxy_name, "api_key": prefix, "user": user, "month": month, "usage": usage}
+	frappe.log_error(
+		title=f"Usage delta lost: {prefix} on {proxy_name}"[:140],
+		message=f"{frappe.get_traceback()}\n\nDrained payload (replay by hand):\n{json.dumps(payload, indent=1)}",
+	)
 
 
 def _per_model(h):
@@ -146,38 +164,62 @@ def _per_model(h):
 
 
 def _add_delta(proxy_name, prefix, user, month, amounts, per_model=None):
-	"""ADD a pulled delta to the (api_key, month) Usage Record's per-gateway row,
-	then roll the doc totals up from the rows (zero-loss aggregate). per_model deltas
-	accumulate into per-model rows (summed across gateways, like the top-level totals)."""
-	if name := frappe.db.exists("Usage Record", {"month": month, "api_key": prefix}):
-		doc = frappe.get_doc("Usage Record", name)
-	else:
-		doc = frappe.new_doc("Usage Record")
-		doc.api_key = prefix
-		doc.month = month
-	doc.user = user
+	"""ADD a pulled delta into the (api_key, month) Usage Record: its per-gateway row, its
+	per-model rows and the totals. Rows that exist are incremented in place — an UPDATE that
+	adds, no doc load, no save, so a pull costs a few statements per key instead of a full save
+	with its child-table diff. Only a row that is not there yet goes through the Document API,
+	which is what knows how to create one. Totals stay the sum of the gateway rows because every
+	gateway increment is mirrored onto them."""
+	# Skip models no longer in the Model doctype so a stale name cannot fail the whole pull;
+	# their tokens still land in the flat totals.
+	models = list((per_model or {}).keys())
+	known = set(frappe.get_all("Model", filters={"name": ("in", models)}, pluck="name")) if models else set()
+	per_model = {m: d for m, d in (per_model or {}).items() if m in known}
 
-	row = next((r for r in doc.gateway_usage if r.gateway_server == proxy_name), None)
-	if not row:
-		row = doc.append("gateway_usage", {"gateway_server": proxy_name})
-	for f in _FIELDS:
-		row.set(f, (row.get(f) or 0) + amounts[f])
-	row.last_pulled = frappe.utils.now()
+	name = _ensure_rows(prefix, user, month, proxy_name, per_model)
+	now = frappe.utils.now()
+	_increment("Usage Gateway Row", amounts, now, parent=name, gateway_server=proxy_name)
+	for model, deltas in per_model.items():
+		_increment("Usage Model Row", {f: int(deltas.get(f, 0)) for f in _FIELDS}, now, parent=name, model=model)
+	frappe.db.sql(
+		f"update `tabUsage Record` set user = %s, modified = %s, {_adds()} where name = %s",
+		[user, now, *[amounts[f] for f in _FIELDS], name],
+	)
 
-	# Top-level totals = sum of per-gateway rows.
-	for f in _FIELDS:
-		doc.set(f, sum(gr.get(f) or 0 for gr in doc.gateway_usage))
 
-	# Per-model breakdown: add-accumulate (drain is delete-on-read, so deltas). Skip
-	# models no longer in the Model doctype so a stale name can't fail the whole pull;
-	# their tokens still land in the flat totals above.
-	for model, deltas in (per_model or {}).items():
-		if not frappe.db.exists("Model", model):
-			continue
-		mrow = next((r for r in doc.model_usage if r.model == model), None)
-		if not mrow:
-			mrow = doc.append("model_usage", {"model": model})
-		for f in _FIELDS:
-			mrow.set(f, (mrow.get(f) or 0) + int(deltas.get(f, 0)))
+def _ensure_rows(prefix, user, month, proxy_name, per_model):
+	"""The record and every row this delta lands in, created at zero where missing. The rare
+	path — first sight of a key this month, of a gateway or of a model — and the only one that
+	saves a document."""
+	name = frappe.db.exists("Usage Record", {"month": month, "api_key": prefix})
+	have_gateway = name and frappe.db.exists("Usage Gateway Row", {"parent": name, "gateway_server": proxy_name})
+	have_models = set(
+		frappe.get_all("Usage Model Row", filters={"parent": name}, pluck="model", parent_doctype="Usage Record")
+	) if (name and per_model) else set()
+	missing_models = [m for m in per_model if m not in have_models]
+	if name and have_gateway and not missing_models:
+		return name
 
+	doc = frappe.get_doc("Usage Record", name) if name else frappe.new_doc("Usage Record")
+	doc.api_key, doc.month, doc.user = prefix, month, user
+	if not have_gateway:
+		doc.append("gateway_usage", {"gateway_server": proxy_name})
+	for model in missing_models:
+		doc.append("model_usage", {"model": model})
 	doc.save(ignore_permissions=True)
+	return doc.name
+
+
+def _adds():
+	"""`prompt_tokens = prompt_tokens + %s, …` for every counter, in _FIELDS order."""
+	return ", ".join(f"`{f}` = `{f}` + %s" for f in _FIELDS)
+
+
+def _increment(doctype, amounts, now, **where):
+	"""ADD `amounts` onto the one child row `where` names. Column names come from _FIELDS and
+	the row filter's keys are this module's own literals, so only the values are parameters."""
+	clause = " and ".join(f"`{k}` = %s" for k in where)
+	frappe.db.sql(
+		f"update `tab{doctype}` set {_adds()}, `last_pulled` = %s where {clause}",
+		[*[amounts[f] for f in _FIELDS], now, *where.values()],
+	)

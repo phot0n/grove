@@ -12,7 +12,6 @@
   "prompt_tokens",
   "completion_tokens",
   "cached_tokens",
-  "total_tokens",
   "request_count",
   "section_models",
   "model_usage",
@@ -57,13 +56,7 @@
    "label": "Completion Tokens"
   },
   {
-   "fieldname": "total_tokens",
-   "fieldtype": "Int",
-   "in_list_view": 1,
-   "label": "Total Tokens"
-  },
-  {
-   "description": "Prompt tokens served from the prefix cache (subset of Prompt, already in Total). Budget counts total_tokens - cached_tokens.",
+   "description": "Prompt tokens served from the prefix cache",
    "fieldname": "cached_tokens",
    "fieldtype": "Int",
    "label": "Cached Tokens"
@@ -95,7 +88,7 @@
   }
  ],
  "links": [],
- "modified": "2026-08-27 18:46:47.104522",
+ "modified": "2026-09-16 16:52:05.797995",
  "modified_by": "Administrator",
  "module": "Grove",
  "name": "Usage Record",

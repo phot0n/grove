@@ -9,13 +9,13 @@
   "prompt_tokens",
   "completion_tokens",
   "cached_tokens",
-  "total_tokens",
   "request_count",
   "last_pulled"
  ],
  "fields": [
   {
    "columns": 3,
+   "description": "The gateway these tokens were drained through. Gateways on one Gateway State Store share their counters, so a store's usage lands on the writer it was drained through.",
    "fieldname": "gateway_server",
    "fieldtype": "Link",
    "in_list_view": 1,
@@ -33,12 +33,6 @@
    "fieldtype": "Int",
    "in_list_view": 1,
    "label": "Completion Tokens"
-  },
-  {
-   "fieldname": "total_tokens",
-   "fieldtype": "Int",
-   "in_list_view": 1,
-   "label": "Total Tokens"
   },
   {
    "fieldname": "cached_tokens",

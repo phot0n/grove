@@ -22,7 +22,6 @@ class UsageGatewayRow(Document):
 		parenttype: DF.Data
 		prompt_tokens: DF.Int
 		request_count: DF.Int
-		total_tokens: DF.Int
 	# end: auto-generated types
 
 	pass
