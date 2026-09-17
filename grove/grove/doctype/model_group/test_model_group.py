@@ -13,9 +13,9 @@ IGNORE_TEST_RECORD_DEPENDENCIES = []  # eg. ["User"]
 
 
 
-class IntegrationTestGroveUserGroup(IntegrationTestCase):
+class IntegrationTestModelGroup(IntegrationTestCase):
 	"""
-	Integration tests for GroveUserGroup.
+	Integration tests for ModelGroup.
 	Use this class for testing interactions between multiple components.
 	"""
 

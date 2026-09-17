@@ -6,16 +6,14 @@
  "engine": "InnoDB",
  "field_order": [
   "description",
-  "column_break_sfxr",
-  "public_catalog",
   "section_models",
   "models"
  ],
  "fields": [
   {
-   "description": "What this group is for, e.g. \"internal staff\" or \"acme early access\".",
+   "description": "What this group is for, e.g. \"internal staff\".",
    "fieldname": "description",
-   "fieldtype": "Small Text",
+   "fieldtype": "Data",
    "in_list_view": 1,
    "label": "Description"
   },
@@ -30,24 +28,13 @@
    "fieldtype": "Table",
    "label": "Models",
    "options": "Grove Model Row"
-  },
-  {
-   "default": "0",
-   "description": "List these models at /v1/models for callers with no API key",
-   "fieldname": "public_catalog",
-   "fieldtype": "Check",
-   "label": "Show in Public Catalogue"
-  },
-  {
-   "fieldname": "column_break_sfxr",
-   "fieldtype": "Column Break"
   }
  ],
  "links": [],
- "modified": "2026-08-08 02:51:05.965803",
+ "modified": "2026-09-17 14:46:00.000000",
  "modified_by": "Administrator",
  "module": "Grove",
- "name": "Grove User Group",
+ "name": "Model Group",
  "naming_rule": "Set by user",
  "owner": "Administrator",
  "permissions": [

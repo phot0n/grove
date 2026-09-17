@@ -4,8 +4,8 @@
 from frappe.model.document import Document
 
 
-class GroveGroupRow(Document):
-	"""One Grove User Group a person belongs to. Membership is a list: every group's models
+class ModelGroupRow(Document):
+	"""One Model Group a person belongs to. Membership is a list: every group's models
 	are unioned, and the user's own Deny still beats all of them."""
 
 	# begin: auto-generated types
@@ -19,7 +19,7 @@ class GroveGroupRow(Document):
 		parent: DF.Data
 		parentfield: DF.Data
 		parenttype: DF.Data
-		user_group: DF.Link
+		model_group: DF.Link
 	# end: auto-generated types
 
 	pass

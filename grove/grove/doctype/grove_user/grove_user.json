@@ -6,10 +6,12 @@
  "engine": "InnoDB",
  "field_order": [
   "user",
-  "user_groups",
+  "model_groups",
   "column_break_head",
   "max_tokens",
   "rate_limited",
+  "log_payloads",
+  "geography",
   "section_allow",
   "allow",
   "section_deny",
@@ -27,18 +29,17 @@
    "unique": 1
   },
   {
-   "description": "Groups this user belongs to. Everything any of them grants, this user reaches \u2014 on top of their own Allow below.",
-   "fieldname": "user_groups",
+   "fieldname": "model_groups",
    "fieldtype": "Table MultiSelect",
-   "label": "Groups",
-   "options": "Grove Group Row"
+   "label": "Model Groups",
+   "options": "Model Group Row"
   },
   {
    "fieldname": "column_break_head",
    "fieldtype": "Column Break"
   },
   {
-   "description": "total_tokens this user may consume per calendar month (UTC); blank/0 = unlimited. SHARED across every API Key they hold \u2014 the keys are just credentials, the budget is the person's. Enforced by the control plane against the month's Usage Records; when reached, this user is flagged Rate Limited and pushed to the gateways as one record, so every key they hold is refused at once (reactive, resets each month).",
+   "description": "Billable tokens (uncached prompt + completion) this user may consume per calendar month (UTC); blank/0 = unlimited. SHARED across every API Key they hold \u2014 the keys are just credentials, the budget is the person's. Enforced by the control plane against the month's Usage Records; when reached, this user is flagged Rate Limited and pushed to the gateways as one record, so every key they hold is refused at once (reactive, resets each month).",
    "fieldname": "max_tokens",
    "fieldtype": "Int",
    "label": "Max Tokens / Month"
@@ -50,6 +51,20 @@
    "in_list_view": 1,
    "label": "Rate Limited",
    "read_only": 1
+  },
+  {
+   "default": "0",
+   "description": "Store this user's prompts and model outputs in the gateway's payload log (short retention, support queries). Customer content \u2014 off unless they have agreed to it.",
+   "fieldname": "log_payloads",
+   "fieldtype": "Check",
+   "label": "Log Prompts & Outputs"
+  },
+  {
+   "description": "Pin this user's keys to one geography: every gateway elsewhere answers 403. Blank = any geography's endpoint. Needs a pathway release that enforces it on every gateway before it is set.",
+   "fieldname": "geography",
+   "fieldtype": "Link",
+   "label": "Geography",
+   "options": "Geography"
   },
   {
    "description": "Models for this user alone, on top of whatever their group grants. A user with no grants anywhere reaches no models.",
@@ -64,7 +79,7 @@
    "options": "Grove Model Row"
   },
   {
-   "depends_on": "eval: doc.user_groups && doc.user_groups.length",
+   "depends_on": "eval: doc.model_groups && doc.model_groups.length",
    "description": "Models this user may never call. Deny wins over everything \u2014 a group grant and a Public release both lose to it.",
    "fieldname": "section_deny",
    "fieldtype": "Section Break",
@@ -89,7 +104,7 @@
    "link_fieldname": "user"
   }
  ],
- "modified": "2026-08-27 18:44:59.529745",
+ "modified": "2026-09-17 15:05:51.778533",
  "modified_by": "Administrator",
  "module": "Grove",
  "name": "Grove User",

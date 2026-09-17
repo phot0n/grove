@@ -40,15 +40,15 @@ class IntegrationTestGroveUser(IntegrationTestCase):
 		# parenttype/parentfield filter and every user projecting as ungrouped.
 		email = "grove-probe-groups@example.com"
 		for name in ("grove-probe-zeta", "grove-probe-acme"):
-			if not frappe.db.exists("Grove User Group", name):
-				frappe.get_doc({"doctype": "Grove User Group", "__newname": name}).insert()
+			if not frappe.db.exists("Model Group", name):
+				frappe.get_doc({"doctype": "Model Group", "__newname": name}).insert()
 		grove_user = frappe.get_doc(
 			{
 				"doctype": "Grove User",
 				"user": register_user(email),
-				"user_groups": [
-					{"user_group": "grove-probe-zeta"},
-					{"user_group": "grove-probe-acme"},
+				"model_groups": [
+					{"model_group": "grove-probe-zeta"},
+					{"model_group": "grove-probe-acme"},
 				],
 			}
 		).insert()
