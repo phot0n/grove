@@ -1,16 +1,13 @@
-# Copyright (c) 2026, Grove and contributors
+# Copyright (c) 2026, Frappe and contributors
 # For license information, please see license.txt
-"""The provider-agnostic contract Machine and Network call through. A concrete client
-(EC2Client, ...) implements every method here; neither doctype ever names a concrete class or
-branches on provider_type — build_cloud_client is the one place that dispatch happens."""
 
+import frappe
 from abc import ABC, abstractmethod
 
 
 class CloudClientError(Exception):
-	"""A cloud API call failed. Carries the provider's own error code, so a caller can tell
-	"the instance is gone" from a credential or quota failure, without knowing which provider
-	it's talking to."""
+	"""Carries the provider's own error code, so a caller can tell "the instance is gone" from a
+	credential or quota failure without knowing which provider it is talking to."""
 
 	def __init__(self, message, code=None):
 		super().__init__(message)
@@ -25,24 +22,20 @@ class CloudClient(ABC):
 		self, name, instance_type, image_id, subnet_id, security_group_ids,
 		root_volume_gb, ssh_public_keys="",
 	):
-		"""Launch one instance, tagged with the Machine's name and authorised for the given
-		SSH public keys (newline-joined) however this provider injects them. Returns the
-		parsed instance — see get_instance for its shape."""
+		"""Launch one instance, tagged with the Machine's name and authorised for the given SSH
+		public keys however this provider injects them. See get_instance for the shape."""
 
 	@abstractmethod
 	def get_instance(self, instance_id):
 		"""Fetch one instance → {instance_id, status, public_ip, private_ip, instance_type,
-		image_id, root_volume_gb}. status is already mapped to Grove's own vocabulary
-		(Pending/Provisioning/Active/Draining/Offline/Terminated) — callers never see a
-		provider's raw state. The launch facts (instance_type, image_id, root_volume_gb) let
-		Sync backfill a Machine that was registered by hand instead of launched through Grove."""
+		image_id, root_volume_gb}. status is already Grove's own vocabulary — callers never see a
+		provider's raw state. The launch facts let Sync backfill a Machine registered by hand."""
 
 	@abstractmethod
 	def get_instance_type_info(self, instance_type):
-		"""This instance type's facts, already in Grove's own shape:
-		{instance_store: {disks, total_gb}, gpus: [{gpu_index, gpu_model, vram_gb, gpu_uuid}],
-		is_bare_metal: bool, cpu_architecture: 'amd64' | 'arm64'}. The architecture is in Docker's
-		vocabulary, not the provider's, because that is what an Engine Image is matched against."""
+		"""This instance type's facts in Grove's own shape: {instance_store, gpus, is_bare_metal,
+		cpu_architecture}. The architecture is in DOCKER's vocabulary, not the provider's, because
+		that is what an Engine Image is matched against."""
 
 	@abstractmethod
 	def get_image_info(self, image_id):
@@ -51,20 +44,17 @@ class CloudClient(ABC):
 
 	@abstractmethod
 	def poll_instance_ready(self, instance_id, timeout_sec=900, poll_interval_sec=10):
-		"""Poll until the instance is reachable — not merely running. A provider reports an
-		instance running well before its OS answers, and on a bare metal box that gap is twenty
-		minutes wide, so an implementation must wait for whatever readiness signal it has rather
-		than for the state to flip."""
+		"""Poll until the instance is REACHABLE, not merely running: a provider reports running
+		well before the OS answers, and on bare metal that gap is twenty minutes wide."""
 
 	@abstractmethod
 	def resize_root_volume(self, instance_id, size_gb, timeout_sec=600, poll_interval_sec=10):
-		"""Grow the instance's root volume to size_gb, returning once the new size is visible to
-		the OS. Growing only — no provider shrinks a volume in place. The filesystem on top is
-		not touched: that is the box's job, via the grow_root playbook."""
+		"""Grow the root volume, returning once the new size is visible to the OS. Growing only.
+		The filesystem on top is the box's job, via the grow_root playbook."""
 
 	@abstractmethod
 	def stop_instance(self, instance_id):
-		"""Stop the instance. Its durable storage survives; ephemeral local storage does not."""
+		"""Durable storage survives; ephemeral local storage does not."""
 
 	@abstractmethod
 	def start_instance(self, instance_id):
@@ -117,5 +107,6 @@ def build_cloud_client(provider_type, access_key_id, secret_access_key, region):
 	clients = {"aws": EC2Client}
 	cls = clients.get(provider_type)
 	if not cls:
-		raise CloudClientError(f"No cloud client for provider type '{provider_type}'.")
+		frappe.throw(f"No client for provider type '{provider_type}'.")
+
 	return cls(access_key_id, secret_access_key, region)
