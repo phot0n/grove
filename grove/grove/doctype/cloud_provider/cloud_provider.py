@@ -8,11 +8,30 @@ from frappe.model.document import Document
 
 
 class CloudProvider(Document):
+	# begin: auto-generated types
+	# This code is auto-generated. Do not modify anything in this block.
+
+	from typing import TYPE_CHECKING
+
+	if TYPE_CHECKING:
+		from frappe.types import DF
+
+		access_key_id: DF.Data | None
+		api_key: DF.Password
+		gpu_types: DF.JSON | None
+		gpu_types_updated: DF.Datetime | None
+		provider_type: DF.Literal["runpod", "aws"]
+		resource_type: DF.Literal["Machine", "Pod"]
+		status: DF.Literal["active", "inactive"]
+	# end: auto-generated types
+
+	def validate(self):
+		self.resource_type = "Pod" if self.provider_type == "runpod" else "Machine"
+
 	@frappe.whitelist()
 	def fetch_gpu_types(self):
-		"""Refresh the cached provider GPU-type list in the background. The heavy provider
-		API call runs in a job that writes gpu_types (+ gpu_types_updated) on this doc; the
-		form's HTML field renders it on reload. RunPod only."""
+		"""Refresh the cached GPU-type list in the background; the form's HTML field renders it on
+		reload. RunPod only."""
 		if self.provider_type != "runpod":
 			frappe.throw("GPU type listing is only available for RunPod providers.")
 		if not self.get_password("api_key", raise_exception=False):
@@ -27,9 +46,8 @@ class CloudProvider(Document):
 
 
 def update_gpu_types(cloud_provider):
-	"""Job: pull the provider's GPU types (id + name + VRAM + cloud availability) and cache
-	them on the Cloud Provider as JSON. Secure-cloud-available first (Grove uses Secure),
-	then largest VRAM first — the same order the picker shows."""
+	"""Job: pull the provider's GPU types and cache them as JSON. Secure-cloud-available first
+	(Grove uses Secure), then largest VRAM — the order the picker shows."""
 	from grove.cloud_provider.runpod import RunPodClient
 
 	cp = frappe.get_doc("Cloud Provider", cloud_provider)
@@ -38,7 +56,7 @@ def update_gpu_types(cloud_provider):
 		return
 	types = RunPodClient(key).list_gpu_types()
 	types.sort(key=lambda g: (not g.get("secureCloud"), -(g.get("memoryInGb") or 0)))
-	# db_set (no validate/version churn); gpu_types is a read-only cache field.
+	# db_set, no validate or version churn: gpu_types is a read-only cache field.
 	cp.db_set("gpu_types", json.dumps(types), update_modified=False)
 	cp.db_set("gpu_types_updated", frappe.utils.now(), update_modified=False)
 	frappe.db.commit()
