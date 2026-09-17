@@ -31,11 +31,28 @@ MODELS = [
 	# A vendor model nothing has published yet: no route at all.
 	{"name": "anthropic/claude-draft", "model_id": "claude-draft", "provider": "anthropic",
 	 "published": 0, "modality": "text"},
+	# A vendor that speaks the other dialect.
+	{"name": "deepseek/deepseek-chat", "model_id": "deepseek-chat", "provider": "deepseek",
+	 "published": 1, "modality": "text"},
+	# A vendor with no dialect set: claims both shapes at its base URL.
+	{"name": "dual/mix-1", "model_id": "mix-1", "provider": "dual", "published": 1,
+	 "modality": "text"},
+	# A vendor running two fronts, one per dialect, under one provider record.
+	{"name": "kimi/k2", "model_id": "k2", "provider": "kimi", "published": 1,
+	 "modality": "text"},
 ]
 PROVIDERS = {
+	# The URL fields are the dialect declaration; there is no dialect field to keep in step.
 	"frappe": {"base_url": None, "api_version": None, "api_key": ""},
-	"anthropic": {"base_url": "https://api.anthropic.com", "api_version": "2023-06-01",
-	              "api_key": "vendor-key"},
+	"anthropic": {"anthropic_base_url": "https://api.anthropic.com",
+	              "api_version": "2023-06-01", "api_key": "vendor-key"},
+	"deepseek": {"base_url": "https://api.deepseek.com", "api_version": "", "api_key": "ds-key"},
+	# One URL genuinely answering both shapes: the same address in both fields.
+	"dual": {"base_url": "https://api.dual.test",
+	         "anthropic_base_url": "https://api.dual.test", "api_version": "",
+	         "api_key": "dual-key"},
+	"kimi": {"base_url": "https://api.kimi.test", "api_version": "", "api_key": "kimi-key",
+	         "anthropic_base_url": "https://api.kimi.test/anthropic"},
 	# An address with no key is not a route — half a provider dials nothing.
 	"halfway": {"base_url": "https://api.halfway.test", "api_version": "", "api_key": ""},
 }
@@ -73,13 +90,13 @@ def routes():
 	with (
 		patch.object(frappe, "get_all", side_effect=FakeQuery()),
 		patch.object(frappe, "get_cached_doc", side_effect=fake_cached_doc),
-		patch.object(frappe, "db", frappe._dict(get_single_value=lambda *args: "")),
+		patch.object(frappe, "db", frappe._dict(get_value=lambda *args: "", get_single_value=lambda *args: "in")),
 		patch.object(
 			frappe, "get_doc",
 			side_effect=lambda *a, **k: frappe._dict(get_password=lambda *a, **k: "secret"),
 		),
 	):
-		return pathway_sync._gateway_routes()
+		return pathway_sync._gateway_routes("in")
 
 
 class TestAVendorModelIsRoutable(unittest.TestCase):
@@ -89,6 +106,40 @@ class TestAVendorModelIsRoutable(unittest.TestCase):
 		self.assertEqual(row["engine_url"], "https://api.anthropic.com")
 		self.assertEqual(row["internal_key"], "vendor-key")
 		self.assertEqual(row["api_version"], "2023-06-01")
+		self.assertEqual(row["dialect"], "anthropic")
+
+	def test_each_url_field_names_its_own_dialect(self):
+		[row] = routes()["deepseek/deepseek-chat"]
+		self.assertEqual(row["dialect"], "openai")
+		[row] = routes()["anthropic/claude-4-5"]
+		self.assertEqual(row["dialect"], "anthropic")
+
+	def test_one_url_answering_both_shapes_is_the_same_address_twice(self):
+		# No dialect field to say "both": a vendor like that fills both fields with one URL and
+		# gets a row per surface, both dialling the same place.
+		rows = routes()["dual/mix-1"]
+		self.assertEqual({r["engine_url"] for r in rows}, {"https://api.dual.test"})
+		self.assertEqual({r["dialect"] for r in rows}, {"openai", "anthropic"})
+
+	def test_a_dual_front_vendor_gets_one_row_per_front(self):
+		# One provider record, both surfaces reachable, each front dialled in its own shape.
+		rows = routes()["kimi/k2"]
+		self.assertEqual(
+			{(r["engine_url"], r["dialect"]) for r in rows},
+			{("https://api.kimi.test", "openai"),
+			 ("https://api.kimi.test/anthropic", "anthropic")},
+		)
+		for row in rows:
+			self.assertEqual(row["internal_key"], "kimi-key")
+			self.assertEqual(row["upstream_model"], "k2")
+			self.assertEqual(row["deployment"], "kimi")
+
+	def test_an_engine_row_pushes_no_dialect(self):
+		# Blank means "both" on an engine; the gateway's blank rules depend on absence here.
+		for rows in routes().values():
+			for row in rows:
+				if row["kind"] != "provider":
+					self.assertNotIn("dialect", row)
 
 	def test_the_provider_is_the_placement(self):
 		# There is no deployment doc to name, and usage has to be attributable to something.

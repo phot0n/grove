@@ -1,50 +1,38 @@
-# Copyright (c) 2026, Grove and contributors
+# Copyright (c) 2026, Frappe and contributors
 # For license information, please see license.txt
-"""Provisioning API (§7). The only user-facing surface: register a user, mint an
-API key, and return a ready-to-use inference endpoint. Cold path (Frappe).
 
-Every endpoint here is for the control client and calls frappe.only_for(CONTROL_ROLE) —
-@frappe.whitelist() alone lets ANY logged-in user in, role or not. The Grove Control role
-holds read on Model and Usage Record, read/write/create on Grove User and read/create on Grove
-API Key — what these endpoints touch and nothing else — so every read and write below is checked
-rather than bypassed. enroll_control_client is the one exception: it runs before the client has a
-session and is gated by the shared bootstrap secret instead."""
+"""Provisioning API. The only user-facing surface: register a user, mint an API key, etc."""
 
 import hmac
 
 import frappe
 
 from grove.grove.doctype.grove_user.grove_user import for_email, register_user
-from grove.grove.doctype.usage_record.usage_record import billable
 
 CONTROL_ROLE = "Grove Control"
 ALLOWED_ROLES = [CONTROL_ROLE]
 
+
 @frappe.whitelist()
-def provision_key(name: str, email: str, token_limit: int=None, allowed_models: list[str]=None):
-	"""Register the user (new/existing) + mint a key + return an OpenAI-compatible
-	endpoint. Control client only — it mints credentials (§7)."""
+def provision_key(name: str, email: str, geography: str, token_limit: int=None, allowed_models: list[str]=None, pin: bool=False):
+	"""Register the user and mint a key for `geography`'s endpoint. `pin` also refuses the user everywhere else."""
 	frappe.only_for(ALLOWED_ROLES)
+	# Blank would read as no filter and hand out whichever endpoint comes first.
+	host = frappe.db.get_value("Geography", geography, "endpoint") if geography else None
+	if not host:
+		frappe.throw(f"No Geography named {geography!r}.")
 
-	# 1. Access and budget are per-user now, so both land on the Grove User rather than the
-	# key — and registering the login is part of writing it, so nothing here handles Users.
-	# The budget is SHARED by every key this user holds — minting a second key does not hand
-	# out a second allowance. Written unconditionally: the key links to this doc, and a blank
-	# one is the correct fail-closed default (no group, no allow).
-	grove_user = _set_policy(email, name, allowed_models, token_limit)
+	# Access and budget are per-user, so both land on the Grove User rather than the key. The
+	# budget is SHARED by every key they hold. Written unconditionally: a blank one is the
+	# correct fail-closed default.
+	grove_user = _set_policy(email, name, allowed_models, token_limit, geography if pin else None)
 
-	# 2. Mint the key (controller generates secret + hash, pushes to gateways).
+	# The controller generates the secret and hash, and pushes to the gateways.
 	key = frappe.new_doc("Grove API Key")
 	key.user = grove_user
 	key.status = "active"
 	key.insert()
 
-	host = frappe.db.get_single_value("Grove Settings", "gateway_host")
-	if not host:
-		frappe.throw("Gateway Host is not found")
-
-	# With a scheme, because the host alone is not a base URL an SDK can take. https always: a
-	# proxy with a certificate 301s port 80, and one without has no business handing out keys.
 	return {
 		"gateway_url": f"https://{host}",
 		"api_key": key.get_password("api_secret"),
@@ -53,9 +41,8 @@ def provision_key(name: str, email: str, token_limit: int=None, allowed_models: 
 
 @frappe.whitelist()
 def revoke_key(api_key: str):
-	"""Revoke by the full key (not the doc name): hash it → find by key_hash → flip to revoked.
-	The row stays as the record it existed; a revoked key is no longer projected, so the next
-	sync prunes it from every proxy and it stops working within a tick."""
+	"""Revoke by the full key, not the doc name. The row stays as the record it existed; a revoked
+	key is no longer projected, so the next sync prunes it from every proxy."""
 	frappe.only_for(ALLOWED_ROLES)
 	from grove.grove.doctype.grove_api_key.grove_api_key import hash_secret
 
@@ -73,7 +60,6 @@ def create_control_client(email: str):
 	token = frappe.form_dict.pop("token", None)
 	expected = frappe.conf.get("control_secret")
 
-	# Constant-time compare; reject when the secret is unset or wrong.
 	if not (expected and token) or not hmac.compare_digest(str(token), str(expected)):
 		frappe.throw("Invalid Operation", frappe.AuthenticationError)
 
@@ -126,7 +112,7 @@ def usage(users: list[str] | str, month: str = None):
 	for r in records:
 		# A user holds several keys and so several records a month — accumulate, don't
 		# overwrite.
-		totals = usage.setdefault(emails[r.user], {"billable_tokens": 0, **dict.fromkeys(_fields, 0)})
+		totals = usage.setdefault(emails[r.user], dict.fromkeys(_fields, 0))
 		for f in _fields:
 			totals[f] += r.get(f) or 0
 
@@ -169,11 +155,11 @@ def _create_control_user(email):
 	return doc
 
 
-def _set_policy(email, full_name, models, token_limit):
+def _set_policy(email, full_name, models, token_limit, geography=None):
 	"""Write the user's Grove User policy and return its name — the id every key, usage
 	record and access lookup carries. `models` is exactly what they may call; `token_limit`
-	is their shared monthly budget. `full_name` names the login when this is the insert that
-	creates it."""
+	is their shared monthly budget; `geography`, when given, pins them. `full_name` names the login
+	when this is the insert that creates it."""
 	name = for_email(email)
 	doc = frappe.get_doc("Grove User", name) if name else frappe.new_doc("Grove User")
 	doc.user = register_user(email, full_name)
@@ -183,6 +169,8 @@ def _set_policy(email, full_name, models, token_limit):
 			doc.append("allow", {"model": model})
 	if token_limit:
 		doc.max_tokens = token_limit
+	if geography:
+		doc.geography = geography
 	doc.save()
 	return doc.name
 

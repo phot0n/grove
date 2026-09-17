@@ -75,13 +75,13 @@ def routes(zone=ZONE):
 
 	with (
 		patch.object(frappe, "get_all", side_effect=FakeQuery(zone)),
-		patch.object(frappe, "db", frappe._dict(get_single_value=lambda *args: zone)),
+		patch.object(frappe, "db", frappe._dict(get_value=lambda *args: zone, get_single_value=lambda *args: "in")),
 		patch.object(
 			frappe, "get_doc",
 			side_effect=lambda *a, **k: frappe._dict(get_password=lambda *a, **k: "secret"),
 		),
 	):
-		return pathway_sync._gateway_routes()
+		return pathway_sync._gateway_routes("in")
 
 
 def rows_for(model, zone=ZONE):

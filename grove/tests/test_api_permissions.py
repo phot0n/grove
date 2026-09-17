@@ -9,6 +9,7 @@ import frappe
 from frappe.tests import IntegrationTestCase
 
 from grove import api
+from grove.grove.doctype.geography.test_geography import make_test_geography
 from grove.grove.doctype.grove_api_key.grove_api_key import KEY_PREFIX
 
 PROBE = "control-probe@example.com"
@@ -56,8 +57,7 @@ class TestTheControlRoleReachesOnlyWhatItServes(IntegrationTestCase):
 				frappe.get_list(doctype, limit=1)
 
 	def test_provisioning_a_key_registers_the_login_it_names(self):
-		frappe.db.set_single_value("Grove Settings", "gateway_host", "gw.probe.test")
-		result = api.provision_key("Probe Person", "probe-person@example.com", token_limit=99)
+		result = api.provision_key("Probe Person", "probe-person@example.com", make_test_geography(), token_limit=99)
 
 		self.assertTrue(result["api_key"].startswith(KEY_PREFIX))
 		self.assertEqual(frappe.db.get_value("User", "probe-person@example.com", "first_name"), "Probe Person")

@@ -9,8 +9,12 @@ all, and that is a real insert and a real db write.
 import frappe
 from frappe.tests import IntegrationTestCase
 
+from grove.grove.doctype.geography.test_geography import make_test_geography
+
 
 def provider(name, **fields):
+	if fields.get("base_url") or fields.get("anthropic_base_url"):
+		fields.setdefault("geography", make_test_geography())
 	return frappe.get_doc({"doctype": "Model Provider", "name": name, **fields})
 
 
