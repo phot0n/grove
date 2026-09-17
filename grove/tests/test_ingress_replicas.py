@@ -31,8 +31,7 @@ class TestPrivateURL(unittest.TestCase):
 		)
 
 	def test_the_scheme_comes_from_the_url_not_from_here(self):
-		# After phase 4 the box serves plain http on :80 and engine_url says so. This function is
-		# not what decides that, and must not assume either way.
+		# After phase 4 the box serves plain http on :80. This function does not decide that.
 		self.assertEqual(
 			private_url("http://203.0.113.7/e/md-00007", "10.0.1.4"),
 			"http://10.0.1.4/e/md-00007",
@@ -44,8 +43,8 @@ class TestPrivateURL(unittest.TestCase):
 		)
 
 	def test_no_private_address_means_no_url(self):
-		# The caller drops the replica on this. Falling back to the public address here is exactly
-		# the failure this design exists to prevent.
+		# The caller drops the replica on this; falling back to the public address is the failure
+		# this design exists to prevent.
 		for blank in ("", None):
 			self.assertEqual(private_url("https://203.0.113.7/e/md-00007", blank), "")
 
@@ -131,16 +130,16 @@ class TestReplicasForIngress(unittest.TestCase):
 		self.assertEqual(route["capacity"], 8)
 
 	def test_a_row_carries_only_what_the_ingress_reads(self):
-		# Every field here is read by pickReplica or handlePick. `server` is not: it is the
-		# gateway's request-id part, and the ingress already has the box's address in engine_url.
+		# Every field here is read by pickReplica or handlePick. `server` is not: the ingress
+		# already has the box's address in engine_url.
 		[route] = self.routes()["qwen3-35b"]
 		self.assertEqual(
 			set(route), {"engine_url", "internal_key", "healthy", "capacity", "deployment"}
 		)
 
 	def test_a_box_owned_by_another_ingress_is_not_in_this_table(self):
-		# Same Network, different owner. If both ingresses held it, each would count only its own
-		# half of the traffic and the replica would run at twice its --max-num-seqs.
+		# Same Network, different owner: two holders each count half the traffic, and the replica
+		# runs at twice its --max-num-seqs.
 		urls = [r["engine_url"] for routes in self.routes().values() for r in routes]
 		self.assertNotIn("https://10.1.1.4/e/md-2", urls)
 		self.assertFalse([u for u in urls if "203.0.113.8" in u])
@@ -153,8 +152,8 @@ class TestReplicasForIngress(unittest.TestCase):
 				self.assertFalse([u for u in urls if "10.0.1.9" in u], urls)
 
 	def test_a_local_replica_with_no_private_address_is_excluded_not_dialled_publicly(self):
-		# Fail closed. The model reads unavailable in this network and someone syncs the Machine,
-		# rather than customer traffic crossing the internet to a box meant to be private.
+		# Fail closed: the model reads unavailable and someone syncs the Machine, rather than
+		# traffic crossing the internet to a box meant to be private.
 		urls = [r["engine_url"] for routes in self.routes().values() for r in routes]
 		self.assertFalse([u for u in urls if "203.0.113.9" in u], urls)
 

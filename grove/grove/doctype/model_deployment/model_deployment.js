@@ -7,14 +7,11 @@ frappe.ui.form.on('Model Deployment', {
 	},
 });
 
-// The scheduler picks the box and the cards off this deployment's placement_policy. It throws
-// naming why every box was rejected when nothing fits, and that message is the whole point of
-// the button, so nothing here may swallow it.
+// The scheduler throws naming why every box was rejected when nothing fits, and that message is
+// the whole point of the button — nothing here may swallow it.
 //
-// No confirm step, deliberately: the error dialog the throw opens lands in the same tick as the
-// confirm dialog's teardown, and the two modals fight over one backdrop — the error is shown and
-// immediately hidden again, so "nothing fits" arrived as nothing at all. The manual path has no
-// confirm either; pressing a button is already the deliberate act.
+// No confirm step, deliberately: the error dialog lands in the same tick as the confirm dialog's
+// teardown and the two fight over one backdrop, so "nothing fits" arrived as nothing at all.
 function place_replica(frm) {
 	frm.call({
 		doc: frm.doc,
@@ -22,18 +19,17 @@ function place_replica(frm) {
 		freeze: true,
 		freeze_message: __('Finding a box…'),
 	}).then((r) => {
-		// A throw already told the operator why, and left no name behind. Returning quietly here
-		// is the ONLY silent path, and it is silent because the dialog spoke.
+		// A throw already said why and left no name behind. The ONLY silent path, and it is
+		// silent because the dialog spoke.
 		if (!r || !r.message) return;
 		frappe.show_alert({ message: __('Placed on {0}', [r.message]), indicator: 'green' });
 		frappe.set_route('Form', 'Model Replica', r.message);
 	});
 }
 
-// The manual path, still here: naming the box and the cards is how an operator overrides the
-// scheduler for one replica. Any Active box is offered — a deployment is not tied to a region,
-// and deploy:<model> unions its replicas wherever they sit. The box's live GPU allocation is
-// shown so a card another deployment already holds is visible before the deploy refuses it.
+// Naming the box and the cards is how an operator overrides the scheduler for one replica. Any
+// Active box is offered: a deployment is not tied to a region. The live GPU allocation is shown so
+// a card another deployment holds is visible before the deploy refuses it.
 function add_replica(frm) {
 	const dialog = new frappe.ui.Dialog({
 		title: __('Add Replica'),
@@ -96,8 +92,7 @@ function show_gpu_allocation(dialog) {
 	});
 }
 
-// The count is what a reconciler will drive later, so it is shown the way it will be computed:
-// Provisioning is capacity already bought and is counted alongside Active.
+// Counted the way a reconciler will: Provisioning is capacity already bought.
 function show_replicas(frm) {
 	frappe.db
 		.get_list('Model Replica', {

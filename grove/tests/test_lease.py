@@ -21,8 +21,8 @@ class FakeRedis:
 		return self.store.get(key)
 
 	def exists(self, *names, **kwargs):
-		# RedisWrapper overrides exists() to apply make_key, while set()/get()/delete() stay raw.
-		# Mixing them writes and reads different keys, so the lease must never call this.
+		# RedisWrapper overrides exists() to apply make_key while set/get/delete stay raw, so
+		# mixing them writes and reads different keys.
 		raise AssertionError("lease must not use exists() — see leased()")
 
 	def delete(self, key):
@@ -40,13 +40,13 @@ class TestTheLeaseAnnouncesIntent(unittest.TestCase):
 		self.assertTrue(lease.take(["gpu-a", "gpu-b"], "MD-1"))
 
 	def test_a_second_taker_is_refused_immediately(self):
-		# The point: no waiting. A claim taken inside the winner's open transaction would block a rival.
+		# No waiting: a claim inside the winner's open transaction would block a rival.
 		lease.take(["gpu-a"], "MD-1")
 		self.assertFalse(lease.take(["gpu-a"], "MD-2"))
 
 	def test_a_partial_lease_is_handed_back_whole(self):
-		# gpu-b is gone, so the lease on gpu-a must not survive — a card marked busy that
-		# nobody goes on to claim is a card stranded until its TTL.
+		# gpu-b is gone, so the lease on gpu-a must not survive: a card marked busy that nobody
+		# claims is stranded until its TTL.
 		lease.take(["gpu-b"], "MD-1")
 		self.assertFalse(lease.take(["gpu-a", "gpu-b"], "MD-2"))
 		self.assertEqual(lease.leased(["gpu-a"]), set())
@@ -62,7 +62,7 @@ class TestTheLeaseAnnouncesIntent(unittest.TestCase):
 
 	def test_two_cards_do_not_share_a_lease(self):
 		# Card 0 of one box and card 0 of another are different records, so nothing has to say
-		# which machine they are on — that is the point of keying on the card's own name.
+		# which machine they are on.
 		lease.take(["gpu-a"], "MD-1")
 		self.assertTrue(lease.take(["gpu-b"], "MD-2"))
 

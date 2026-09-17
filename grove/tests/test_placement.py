@@ -36,7 +36,7 @@ class TestThePolicyRegistry(unittest.TestCase):
 
 	def test_an_unknown_policy_raises_rather_than_defaulting(self):
 		# Falling back to `balanced` would place replicas somewhere nobody asked for and look
-		# like it worked — the failure would surface as a capacity mystery days later.
+		# like it worked.
 		with self.assertRaises(PlacementError):
 			placement_policy("bin-packing")
 
@@ -69,9 +69,8 @@ class TestEachPreference(unittest.TestCase):
 		self.assertLess(BestFit().score(box("a", surplus=0)), BestFit().score(box("b", surplus=6)))
 
 	def test_worst_fit_is_best_fits_inverse(self):
-		# The standard bin-packing names, meaning the standard things: best fit takes the tightest
-		# box and so CONSOLIDATES; worst fit takes the emptiest and so DISTRIBUTES. Getting these
-		# the wrong way round is how `pack` once spread.
+		# Best fit takes the tightest box and CONSOLIDATES; worst fit takes the emptiest and
+		# DISTRIBUTES. The wrong way round is how `pack` once spread.
 		snug, roomy = box("a", surplus=0), box("b", surplus=6)
 		self.assertLess(BestFit().score(snug), BestFit().score(roomy))
 		self.assertLess(WorstFit().score(roomy), WorstFit().score(snug))
@@ -103,8 +102,8 @@ class TestAPolicyIsItsOrder(unittest.TestCase):
 		self.assertEqual(self.winner("spread", [far, warm]), "far")
 
 	def test_every_policy_ends_in_a_total_order(self):
-		# Two boxes alike in everything a policy reads would sort arbitrarily, and placement
-		# would wander between them run to run. Each policy's last scorer has to break that.
+		# Two boxes alike in everything a policy reads would sort arbitrarily, and placement would
+		# wander between them run to run.
 		a = box("a", surplus=2, active_replicas=1)
 		b = box("b", surplus=2, active_replicas=3)
 		for policy in POLICIES:
@@ -113,15 +112,15 @@ class TestAPolicyIsItsOrder(unittest.TestCase):
 				self.assertNotEqual(sort_key(a, scorers), sort_key(b, scorers))
 
 	def test_pack_consolidates_and_spread_distributes(self):
-		# The property the policy NAMES have to hold, and the one that was wrong: packing takes
-		# the tightest box so replicas gather, spreading takes the emptiest so they scatter.
+		# What the policy NAMES have to mean: packing takes the tightest box so replicas gather,
+		# spreading takes the emptiest so they scatter.
 		snug = box("snug", surplus=0)
 		roomy = box("roomy", surplus=6)
 		self.assertEqual(self.winner("pack", [snug, roomy]), "snug")
 		self.assertEqual(self.winner("spread", [snug, roomy]), "roomy")
 
 	def test_pack_ignores_region_and_balanced_does_not(self):
-		# The only thing separating them: balanced weighs region before fit, pack not at all.
+		# The only thing separating them: balanced weighs region, pack not at all.
 		crowded_but_snug = box("snug", replicas_in_region=5, surplus=0)
 		empty_region = box("far", replicas_in_region=0, surplus=6)
 		self.assertEqual(self.winner("balanced", [crowded_but_snug, empty_region]), "far")
@@ -140,8 +139,8 @@ class TestAPolicyIsItsOrder(unittest.TestCase):
 
 
 class TestFittingGpus(unittest.TestCase):
-	# Deliberately named so that docname order and index order DISAGREE: `cards_on` sorts by CUDA
-	# index and "take the first N" means that order, so sorting the names would pin other cards.
+	# Named so docname order and index order DISAGREE: `cards_on` sorts by CUDA index and "take
+	# the first N" means that order, so sorting the names would pin other cards.
 	CARDS = [
 		{"name": "aaa", "gpu_index": 2, "gpu_type": "h100", "vram_gb": 80},
 		{"name": "zzz", "gpu_index": 0, "gpu_type": "l40s", "vram_gb": 48},
@@ -149,19 +148,17 @@ class TestFittingGpus(unittest.TestCase):
 	]
 
 	def test_cards_come_back_in_the_order_they_were_given(self):
-		# find_placement takes the first N, so this order decides which cards are pinned. The
-		# caller hands them over index-ordered; sorting docnames here would order them by a hash.
+		# find_placement takes the first N, so this order decides which cards are pinned.
 		self.assertEqual(fitting_gpus(self.CARDS), ("aaa", "zzz", "mmm"))
 
 	def test_a_card_is_named_not_numbered(self):
-		# The point of the whole change: an index has to be resolved against the box a second
-		# time, and a scan landing in between resolves it onto different silicon.
+		# An index has to be resolved against the box a second time, and a scan landing in between
+		# resolves it onto different silicon.
 		self.assertEqual(fitting_gpus([self.CARDS[0]]), ("aaa",))
 
 	def test_the_type_filter_is_exact(self):
-		# It used to be a substring test, because both sides were unvalidated free text —
-		# nvidia-smi said "Tesla T4" where AWS said "T4". Both resolve to one GPU Type now, so
-		# equality is finally safe and there is nothing left to guess at.
+		# A substring test back when both sides were unvalidated free text — nvidia-smi said
+		# "Tesla T4" where AWS said "T4". Both resolve to one GPU Type now.
 		self.assertEqual(fitting_gpus(self.CARDS, gpu_type="h100"), ("aaa", "mmm"))
 		self.assertEqual(fitting_gpus(self.CARDS, gpu_type="l40s"), ("zzz",))
 
@@ -176,8 +173,7 @@ class TestFittingGpus(unittest.TestCase):
 		self.assertEqual(fitting_gpus(self.CARDS, gpu_type="", min_vram_gb=0), ("aaa", "zzz", "mmm"))
 
 	def test_a_card_with_no_type_resolved_is_not_matched_by_a_named_filter(self):
-		# A card whose type could not be resolved must not satisfy a filter that names one —
-		# placing on it would be guessing at hardware nobody identified.
+		# A card whose type could not be resolved must not satisfy a filter that names one.
 		cards = [{"name": "aaa", "gpu_index": 0, "gpu_type": None, "vram_gb": 80}]
 		self.assertEqual(fitting_gpus(cards, gpu_type="h100"), ())
 		self.assertEqual(fitting_gpus(cards), ("aaa",))

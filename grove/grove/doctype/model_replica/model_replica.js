@@ -1,18 +1,16 @@
-// The log viewer here is the twin of the one in pod.js — same realtime payload ({lines, done}),
-// same 'grove_log' event. Kept per-doctype rather than shared: a shared helper would need an
-// asset bundle, and doctype JS is served straight off disk.
+// Twin of the log viewer in pod.js. Kept per-doctype rather than shared: a shared helper would
+// need an asset bundle, and doctype JS is served straight off disk.
 const LOG_LINE_LIMIT = 2000;
 // Well inside the server's 45s liveness TTL, so one slow ping doesn't cut the stream.
 const LOG_PING_INTERVAL = 15000;
 
 frappe.ui.form.on('Model Replica', {
 	fetch_engine_logs(frm) {
-		// A running stream is stopped, not left to append onto the tail this is about to fetch:
-		// it owns the same pane, and it holds a background worker, an SSH connection and a
+		// A running stream owns the same pane, and holds a worker, an SSH connection and a
 		// `docker logs -f` on the box for as long as it runs.
 		stop_log_stream(frm);
-		// Both readers write the same pane, so each starts from an empty one — otherwise a fetch
-		// after a stream (or the other way round) reads as one log with a jump in the middle.
+		// Both readers write the same pane, so each starts from an empty one — otherwise the two
+		// read as one log with a jump in the middle.
 		clear_logs(frm);
 		frm.call('get_engine_logs', { lines: frm.doc.log_lines || 200 }).then((r) => {
 			const text = r.message || __('Nothing came back — the engine has not started on the box.');
@@ -36,19 +34,16 @@ frappe.ui.form.on('Model Replica', {
 		if (!(frm.doc.model && frm.doc.inference_server)) return;
 		const status = frm.doc.status;
 		const served = status === 'Active' || status === 'Broken';
-		// Provisioning: a play already owns this instance, and a second one would race it over
-		// the same files. Terminated: teardown took the container, the port and the GPU claims
-		// off the box for good — a new deployment is how the model comes back.
+		// Provisioning: a play already owns this instance. Terminated: teardown took the
+		// container, port and claims for good, and a new deployment is how the model comes back.
 		if (!['Provisioning', 'Terminated', 'Active'].includes(status)) {
 			frm.add_custom_button(__('Deploy'), () => {
 				frm.call('setup').then(() => frm.reload_doc());
 			});
 		}
-		// Fast re-render of the container's config (kv cache dtype / gpu mem / batch caps /
-		// attention backend / env rows) with none of the deploy around it. Offered while
-		// Provisioning as well, because that is where a wrong flag shows up: the deploy is
-		// stuck on its health gate and this restarts the engine with the corrected argv
-		// instead of waiting the gate out.
+		// Re-renders the container's config with none of the deploy around it. Offered while
+		// Provisioning too, because that is where a wrong flag shows up — the deploy is stuck on
+		// its health gate, and this restarts with the corrected argv instead of waiting it out.
 		if (served || status === 'Provisioning') {
 			frm.add_custom_button(__('Update Engine Config'), () => {
 				frappe.confirm(
@@ -59,8 +54,8 @@ frappe.ui.form.on('Model Replica', {
 				);
 			});
 		}
-		// Pause without giving the box back: the container, its config, its port and its
-		// GPUs stay claimed, so Start is a `docker start` rather than a redeploy.
+		// Pause without giving the box back: container, config, port and GPUs stay claimed, so
+		// Start is a `docker start` rather than a redeploy.
 		if (served) {
 			frm.add_custom_button(__('Stop'), () => {
 				frappe.confirm(
@@ -74,10 +69,9 @@ frappe.ui.form.on('Model Replica', {
 				frm.call('start').then(() => frm.reload_doc());
 			});
 		}
-		// Multi-tenant box: remove just THIS instance's container + key (shared weights and
-		// image stay for other instances). Also the cleanup for a failed deploy — a container
-		// carries --restart unless-stopped, so a crash-looping engine keeps coming back until
-		// this removes it. Not while Provisioning: it would race the running play.
+		// Removes just THIS instance's container and key; shared weights and image stay. Also the
+		// cleanup for a failed deploy — --restart unless-stopped brings a crash-looping engine
+		// back until this removes it. Not while Provisioning: it would race the play.
 		if (served || status === 'Inactive') {
 			frm.add_custom_button(__('Tear Down'), () => {
 				frappe.confirm(
@@ -95,10 +89,9 @@ function setup_log_view(frm) {
 
 	frappe.realtime.off('grove_log');
 	frappe.realtime.on('grove_log', ({ lines, done }) => {
-		// The job takes a moment to notice Stop, and its last batch rides the 'done' event —
-		// drop both once we are no longer streaming. The pane belongs to the fetch by then, and
-		// appending to it is the jump-in-the-middle that clearing was meant to prevent. The
-		// button still follows 'done', which is the one thing worth hearing after a stop.
+		// The job takes a moment to notice Stop and its last batch rides 'done', so both are
+		// dropped once we stop streaming — the pane belongs to the fetch by then. The button
+		// still follows 'done', which is the one thing worth hearing after a stop.
 		if (frm.log_streaming) {
 			frm.log_lines = frm.log_lines.concat(lines || []).slice(-LOG_LINE_LIMIT);
 			render_logs(frm);
@@ -107,8 +100,8 @@ function setup_log_view(frm) {
 	});
 }
 
-// The job takes a moment to notice Stop; flip the button now so it doesn't look stuck. Safe to
-// call when nothing is streaming, which is what lets Fetch call it unconditionally.
+// Flips the button before the job notices, so it does not look stuck. Safe when nothing is
+// streaming, which is what lets Fetch call it unconditionally.
 function stop_log_stream(frm) {
 	if (!frm.log_streaming) return;
 	frm.call('stop_engine_logs');
@@ -132,8 +125,8 @@ function render_logs(frm, force_scroll) {
 			}),
 		);
 	}
-	// Newest last, like the terminal. Only follow the tail if the reader is already at the
-	// bottom — don't yank them back mid-scroll.
+	// Newest last, like the terminal. Follow the tail only if the reader is already at the
+	// bottom.
 	const pre = $wrapper.find('pre')[0];
 	const follow = force_scroll || pre.scrollHeight - pre.scrollTop - pre.clientHeight < 40;
 	pre.textContent = frm.log_lines.join('\n');

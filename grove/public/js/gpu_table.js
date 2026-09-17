@@ -1,6 +1,3 @@
-// One renderer for the GPU table, shared by the Machine form (the box that owns the cards) and
-// the Inference Server form (the role that serves from them). Both draw the same rows, so drawing
-// them twice was two copies to keep in step — this is loaded app-wide via app_include_js.
 frappe.provide('grove');
 
 grove.render_gpu_table = function (wrapper, gpus, opts = {}) {
@@ -15,8 +12,6 @@ grove.render_gpu_table = function (wrapper, gpus, opts = {}) {
 
 	const rows = gpus
 		.map((g) => {
-			// A holder is a Model Replica; the deployments list is what the allocation view adds
-			// so the model name is readable without opening the replica.
 			const holder = g.held_by
 				? `<a href="/app/model-replica/${encodeURIComponent(g.held_by)}">${esc(
 						(g.deployments || [])[0]?.model || g.held_by,

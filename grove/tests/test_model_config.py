@@ -10,9 +10,8 @@ import unittest
 
 from grove.grove.doctype.model.model import config_dtype
 
-# Qwen3.5-4B, trimmed. Multimodal, transformers 4.57 — the dtype is on the LANGUAGE model and
-# spelled `dtype`, and there is nothing at the top level. This exact shape returned "" from a
-# top-level-only read, which is how the check shipped inert the first time.
+# Qwen3.5-4B, trimmed: the dtype is on the LANGUAGE model, spelled `dtype`, with nothing at the
+# top level. This exact shape returned "" from a top-level read, which shipped the check inert.
 QWEN35_4B = {
 	"architectures": ["Qwen3_5ForConditionalGeneration"],
 	"model_type": "qwen3_5",
@@ -31,20 +30,18 @@ class TestConfigDtype(unittest.TestCase):
 		self.assertEqual(config_dtype(QWEN35_4B), "")
 
 	def test_both_spellings_are_read(self):
-		# transformers renamed torch_dtype to dtype in 4.57; repos on either side of that are
-		# both in the fleet.
+		# transformers renamed torch_dtype to dtype in 4.57, and both are in the fleet.
 		self.assertEqual(config_dtype({"torch_dtype": "float16"}), "float16")
 		self.assertEqual(config_dtype({"dtype": "float16"}), "float16")
 
 	def test_the_language_model_wins_over_the_top_level(self):
-		# The top level describes the whole thing, vision tower included; what vLLM shards for
-		# --language-model-only is the text config, so that is the authority.
+		# The top level describes the whole thing, vision tower included; --language-model-only
+		# shards the text config, so that is the authority.
 		config = {"torch_dtype": "float32", "text_config": {"dtype": "bfloat16"}}
 		self.assertEqual(config_dtype(config, config["text_config"]), "bfloat16")
 
 	def test_a_repo_that_says_nothing_says_nothing(self):
-		# Blank is "unknown", which skips the check rather than failing it — a repo with no dtype
-		# must not become unplaceable.
+		# Blank is "unknown" and skips the check: a repo with no dtype must not be unplaceable.
 		self.assertEqual(config_dtype({"model_type": "llama"}), "")
 		self.assertEqual(config_dtype({}, {}), "")
 

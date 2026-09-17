@@ -1,7 +1,6 @@
 # Copyright (c) 2026, Grove and contributors
 # For license information, please see license.txt
-"""Small helpers shared across the app — paths into the checked-out app and string
-slugging. Nothing here reaches into a doctype; keep it that way."""
+"""Small helpers shared across the app. Nothing here reaches into a doctype; keep it that way."""
 
 import os
 import re
@@ -14,8 +13,8 @@ DNS_LABEL = re.compile(r"[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?")
 
 
 def vram_gb_from_mib(mib):
-	"""MiB → whole marketed GB. Rounds half up, unlike Python's round(), which is banker's:
-	an L4 reporting exactly 23040 MiB is a 24 GB card, and round() would call it 22."""
+	"""MiB → whole marketed GB. Rounds half up, unlike Python's banker's round(): an L4 reporting
+	exactly 23040 MiB is a 24 GB card, and round() would call it 22."""
 	return int(mib // MIB_PER_GB + (1 if mib % MIB_PER_GB * 2 >= MIB_PER_GB else 0))
 
 
@@ -25,56 +24,42 @@ def playbooks_root():
 
 
 def ansible_project_dir(doctype):
-	"""The ansible project directory for the doctype whose boxes a playbook runs against, e.g.
-	'Inference Server' → .../grove/playbooks/inference_server. Its playbooks sit at
-	the top and its roles in roles/ beside them; a role two doctypes share is symlinked in."""
+	"""'Inference Server' → .../playbooks/inference_server. Playbooks at the top, roles in roles/
+	beside them."""
 	return os.path.join(playbooks_root(), doctype.lower().replace(" ", "_"))
 
 
 def shared_roles_dir():
-	"""playbooks/roles — roles more than one doctype's playbooks use (the exporters, which go
-	on every box whoever owns it). Ansible searches it after a playbook's own roles/, so a role
-	is written once and named from anywhere without a copy or a symlink to keep pointing."""
+	"""Roles more than one doctype's playbooks use. Ansible searches it AFTER a playbook's own
+	roles/, so a role is written once and named from anywhere."""
 	return os.path.join(playbooks_root(), "roles")
 
 
 def is_env_key(name):
-	"""True for a POSIX-shaped env var name. Env rows are interpolated into a systemd unit
-	and a `docker run` argv, so anything else is rejected before it gets there."""
+	"""Env rows are interpolated into a systemd unit and a `docker run` argv, so anything not
+	POSIX-shaped is rejected before it gets there."""
 	return bool(re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name or ""))
 
 
 def is_env_value(value):
-	"""True when the value survives a systemd unit intact. Values render as
-	Environment="KEY=<value>", so a newline would start a fresh directive (ExecStart= and
-	friends) and a double quote would end the assignment early."""
+	"""Values render as Environment="KEY=<value>", so a newline starts a fresh directive and a
+	double quote ends the assignment early."""
 	return not re.search(r'[\n\r"]', value or "")
 
 
 def is_id_safe(name):
 	"""True when a doc name survives the gateway's request-id sanitiser without losing itself.
 
-	`CleanIDPart` (pathway, internal/domain/requestid.go) keeps letters, digits and '_',
-	rewrites '-' to '_' so the only '-' left in an id is its own separator, and silently DROPS
-	everything else. That rewrite is only reversible while the name carries no '_' of its own:
-	`inf-a` and `inf_a` both arrive as `inf_a`, and `inf.a` arrives as `infa`. Restricted to
-	letters, digits and '-', an id reads back to the doc that produced it by replacing '_'
-	with '-'."""
+	`CleanIDPart` rewrites '-' to '_' so the only '-' left in an id is its own separator, and
+	silently DROPS everything else. That is reversible only while the name carries no '_' of its
+	own: `inf-a` and `inf_a` both arrive as `inf_a`, and `inf.a` arrives as `infa`."""
 	return bool(re.fullmatch(r"[A-Za-z0-9-]+", name or ""))
 
 
 def validate_id_safe_name(doctype, name):
-	"""Refuse a name the request-id sanitiser cannot round-trip.
-
-	Called from before_insert and before_rename, which are the only two moments a name is settled —
-	grove.naming generates one on insert, and an operator may still rename afterwards. Deliberately
-	NOT from validate: that runs on every save and would block unrelated edits to a box named before
-	this rule existed, for a name nothing can change without a rename anyway.
-
-	A blank name is left alone — "Name is required" is Frappe's own error to raise, and it says so
-	better than this would."""
 	if not name or is_id_safe(name):
 		return
+
 	frappe.throw(
 		f"{doctype} name '{name}' can only contain letters, digits and '-'. The gateway "
 		f"rewrites '-' to '_' when it stamps a request id, so a name holding '_' or "

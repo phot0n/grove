@@ -25,17 +25,17 @@ def scan(device_id, gpu_index, model="Tesla T4"):
 
 class TestPlanReconcile(unittest.TestCase):
 	def test_a_placeholder_is_filled_in_not_replaced(self):
-		# The whole point. Every card in the fleet carries a bare index until its box is scanned;
-		# treating that as an identity makes the first honest scan look like one card removed and
-		# another added, and the removal takes `held_by` with it.
+		# Every card carries a bare index until its box is scanned. Treating that as an identity
+		# makes the first honest scan look like a removal and an insert — and the removal takes
+		# `held_by` with it.
 		rows = [card("gpu-a", "0", 0)]
 		upgrades, inserts, stale = plan_reconcile(rows, [scan(UUID, 0)])
 		self.assertEqual([(c.name, r["device_id"]) for c, r in upgrades], [("gpu-a", UUID)])
 		self.assertEqual((inserts, stale), ([], []))
 
 	def test_a_swap_keeps_both_rows(self):
-		# Two real UUIDs that changed slots are still the same two cards. Matching by index here
-		# would move each claim onto the other card's silicon.
+		# Two real UUIDs that changed slots are the same two cards; matching by index would move
+		# each claim onto the other card's silicon.
 		rows = [card("gpu-a", UUID, 0), card("gpu-b", OTHER_UUID, 1)]
 		upgrades, inserts, stale = plan_reconcile(rows, [scan(UUID, 1), scan(OTHER_UUID, 0)])
 		self.assertEqual({c.name for c, _r in upgrades}, {"gpu-a", "gpu-b"})
@@ -52,8 +52,7 @@ class TestPlanReconcile(unittest.TestCase):
 		self.assertEqual([c.name for c in stale], ["gpu-b"])
 
 	def test_a_placeholder_whose_slot_is_empty_is_not_rescued(self):
-		# The lenient rule must not reach past its own slot: card 1 is genuinely gone, and pairing
-		# it with the only card reported would pin a replica to silicon that is not there.
+		# The lenient rule must not reach past its own slot: card 1 is genuinely gone.
 		rows = [card("gpu-a", "0", 0), card("gpu-b", "1", 1)]
 		upgrades, inserts, stale = plan_reconcile(rows, [scan(UUID, 0)])
 		self.assertEqual([c.name for c, _r in upgrades], ["gpu-a"])
@@ -61,8 +60,7 @@ class TestPlanReconcile(unittest.TestCase):
 		self.assertEqual([c.name for c in stale], ["gpu-b"])
 
 	def test_a_box_that_still_has_no_uuid_to_give_does_not_churn(self):
-		# An AWS-seeded box re-read from the provider still reports indexes. Same placeholder,
-		# matched exactly, so nothing is created or destroyed.
+		# A provider re-read still reports indexes: same placeholder, matched exactly.
 		rows = [card("gpu-a", "0", 0)]
 		upgrades, inserts, stale = plan_reconcile(rows, [scan("0", 0)])
 		self.assertEqual([c.name for c, _r in upgrades], ["gpu-a"])
@@ -75,9 +73,9 @@ class TestARentedBoxIsRehosted(unittest.TestCase):
 	transient half and the slot is the durable one, which is the inverse of bare metal."""
 
 	def test_a_new_card_at_a_known_slot_keeps_the_row(self):
-		# The row is where `held_by` and every replica's pin live. Replacing it strands a replica
-		# on a record that no longer exists: it cannot be saved, and a deploy would hand vLLM
-		# fewer devices than the tensor-parallel size its child rows still declare.
+		# The row holds `held_by` and every replica's pin. Replacing it strands a replica on a
+		# record that no longer exists, and a deploy hands vLLM fewer devices than its child rows
+		# declare.
 		rows = [card("gpu-a", UUID, 0)]
 		upgrades, inserts, stale = plan_reconcile(
 			rows, [scan(OTHER_UUID, 0)], slot_is_identity=True
@@ -86,9 +84,8 @@ class TestARentedBoxIsRehosted(unittest.TestCase):
 		self.assertEqual((inserts, stale), ([], []))
 
 	def test_bare_metal_prunes_the_same_input(self):
-		# The negative control, and the reason this is a property of the box. On hardware we own,
-		# a UUID that stops answering means the card was pulled — absorbing a stranger into its
-		# row would quietly repoint a replica at silicon nobody chose.
+		# The negative control, and why this is a property of the box: on hardware we own, a UUID
+		# that stops answering means the card was PULLED.
 		rows = [card("gpu-a", UUID, 0)]
 		upgrades, inserts, stale = plan_reconcile(rows, [scan(OTHER_UUID, 0)])
 		self.assertEqual(upgrades, [])
@@ -96,8 +93,7 @@ class TestARentedBoxIsRehosted(unittest.TestCase):
 		self.assertEqual([c.name for c in stale], ["gpu-a"])
 
 	def test_each_slot_keeps_its_own_row(self):
-		# Both cards changed underneath. Slot 0 must not land on slot 1's row, or two replicas
-		# swap hardware without either one moving.
+		# Slot 0 must not land on slot 1's row, or two replicas swap hardware without moving.
 		rows = [card("gpu-a", UUID, 0), card("gpu-b", OTHER_UUID, 1)]
 		fresh_a, fresh_b = "GPU-1111", "GPU-2222"
 		upgrades, inserts, stale = plan_reconcile(
@@ -111,7 +107,7 @@ class TestARentedBoxIsRehosted(unittest.TestCase):
 
 	def test_a_slot_the_box_no_longer_reports_is_still_pruned(self):
 		# Slot identity is not a licence to keep everything: an instance resized to fewer GPUs
-		# really has fewer, and a card kept here would be offered to a placement forever.
+		# really has fewer.
 		rows = [card("gpu-a", UUID, 0), card("gpu-b", OTHER_UUID, 1)]
 		_upgrades, inserts, stale = plan_reconcile(
 			rows, [scan("GPU-1111", 0)], slot_is_identity=True
@@ -120,8 +116,7 @@ class TestARentedBoxIsRehosted(unittest.TestCase):
 		self.assertEqual([c.name for c in stale], ["gpu-b"])
 
 	def test_an_unchanged_box_is_matched_by_uuid_not_slot(self):
-		# Nothing moved: the exact pass takes both, so the slot pass never runs and a card that
-		# genuinely swapped slots on a cloud box still keeps its own row.
+		# The exact pass takes both, so a card that genuinely swapped slots keeps its own row.
 		rows = [card("gpu-a", UUID, 0), card("gpu-b", OTHER_UUID, 1)]
 		upgrades, inserts, stale = plan_reconcile(
 			rows, [scan(UUID, 1), scan(OTHER_UUID, 0)], slot_is_identity=True

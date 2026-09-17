@@ -13,7 +13,6 @@
  ],
  "fields": [
   {
-   "description": "Owner of this key. Points at the Grove User (named by email), which is where the access lists and the shared monthly budget this key rides on actually live.",
    "fieldname": "user",
    "fieldtype": "Link",
    "in_list_view": 1,
@@ -39,7 +38,6 @@
    "read_only": 1
   },
   {
-   "description": "Full key; encrypted at rest. Shown once on creation, retrievable for reveal-later.",
    "fieldname": "api_secret",
    "fieldtype": "Password",
    "label": "API Secret",
@@ -51,7 +49,7 @@
   }
  ],
  "links": [],
- "modified": "2026-08-27 18:41:43.399443",
+ "modified": "2026-09-16 13:49:42.869717",
  "modified_by": "Administrator",
  "module": "Grove",
  "name": "Grove API Key",

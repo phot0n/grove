@@ -1,8 +1,5 @@
-# Copyright (c) 2026, Grove and contributors
+# Copyright (c) 2026, Frappe and contributors
 # For license information, please see license.txt
-"""Ansible playbook abstraction. Wraps ansible_runner with sensible defaults for
-playbook/role paths and server connections, so callers provide playbook + server details
-directly without path/doc juggling."""
 
 import os
 
@@ -13,24 +10,19 @@ from grove.utils import ansible_project_dir, playbooks_root
 
 
 class AnsibleHost:
-	"""Mixin for a doc with a box behind it: every Machine, and every server doctype standing
-	on one. Gives them all one way to run a playbook against that box — callers name a
-	playbook, never a project path, a server type or a Machine."""
+	"""Mixin for a doc with a box behind it. Callers name a playbook, never a project path, a
+	server type or a Machine."""
 
 	@property
 	def playbook_machine(self):
-		"""The Machine a playbook from this doc runs against — the box this doc links. A doc
-		that IS the box overrides this to name itself."""
 		if not self.machine:
 			frappe.throw(f"{self.doctype} {self.name} has no Machine to run a playbook against.")
 		return self.machine
 
 	def run_playbook(self, playbook, project=None, extravars=None, **kwargs):
-		"""Run one playbook against this doc's box, tracked as an Ansible Play.
-
-		The playbook comes from this doctype's own folder. `project` names another doctype's
-		when the play is shared — exporters.yml belongs to Monitoring Agent but runs against
-		Inference and Gateway Server boxes."""
+		"""Run one playbook against this doc's box, tracked as an Ansible Play. `project` names
+		another doctype's folder when the play is shared — exporters.yml belongs to Monitoring
+		Agent but runs against Inference and Gateway Server boxes."""
 		ansible = Ansible(project_root=ansible_project_dir(project or self.doctype))
 		return ansible.run_playbook(
 			playbook_name=playbook,
@@ -88,8 +80,8 @@ class Ansible:
 		if not self.playbook or not self.server:
 			raise ValueError("Ad-hoc mode requires playbook= and server= arguments")
 
-		import subprocess
 		import json
+		import subprocess
 
 		playbook_path = self._resolve_playbook_path(self.playbook)
 
