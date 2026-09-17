@@ -13,12 +13,14 @@
 #
 # engine_proxy runs here as well as in provision.yml, so a box provisioned before it existed
 # picks it up on its next deploy — and so the vllm role has the reload handlers it notifies.
+# fleet_tls likewise: a standalone box's nginx names the fleet certificate, so it must be on disk.
 - name: Serve a model on a GPU inference host
   hosts: all
   become: true
   gather_facts: true
   roles:
     - openresty
+    - fleet_tls
     - grove_https
     - engine_proxy
     - vllm
