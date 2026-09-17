@@ -19,6 +19,8 @@
         fail_msg: >-
           This agent has nowhere to push. Set a Remote Write URL on its Region (or the
           fleet-wide one in Grove Settings) and a Metrics Token on the agent itself.
+  roles:
+    - grove_user
   tasks:
     - name: Re-render the vmagent config
       ansible.builtin.include_role:

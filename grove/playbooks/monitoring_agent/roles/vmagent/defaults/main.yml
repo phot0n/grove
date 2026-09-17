@@ -3,6 +3,9 @@
 # vmagent ships inside the vmutils bundle. Pinned so a rebuild lands the same agent.
 vmagent_version: "1.111.0"
 vmagent_config_dir: /etc/vmagent
+# The account the process runs as — grove_user's (see roles/grove_user), restated here because
+# config.yml and push_targets.yml drive this role on their own.
+vmagent_user: frappe
 vmagent_listen_address: 127.0.0.1:8429
 
 # ── Buffering ───────────────────────────────────────────────────────────────

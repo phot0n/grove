@@ -19,6 +19,8 @@
         fail_msg: >-
           This play only writes pushed target lists. Tick Push Targets Manually on the
           Monitoring Agent, or install with agent.yml to fetch them over http_sd instead.
+  roles:
+    - grove_user
   tasks:
     - name: Write the scrape config and target lists
       ansible.builtin.include_role:

@@ -57,5 +57,8 @@
           This agent has nothing to fetch targets with. Set a Service Discovery Token in Grove
           Settings, or tick Push Targets Manually on the agent to have Grove write the lists.
   roles:
+    - grove_user
+    - remove_cloud_user
+    - auditd
     - node_exporter
     - vmagent

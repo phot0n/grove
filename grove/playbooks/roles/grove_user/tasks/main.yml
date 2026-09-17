@@ -1,0 +1,15 @@
+---
+# Press's `user` role: the service account first, in every play that puts a unit or a file of its
+# own on a box. No password (useradd leaves `!` in shadow) and no sudoers: only root's `sudo -u`
+# reaches it. The keypair is the box's own identity as frappe — press uses it for replica rsync and
+# NFS — and only its public half leaves the box, harvested off this task's result by the runner
+# callback onto the server doc the play ran for.
+- name: Create the {{ grove_user }} user
+  ansible.builtin.user:
+    name: "{{ grove_user }}"
+    uid: "{{ grove_user_uid }}"
+    shell: /bin/bash
+    generate_ssh_key: true
+    ssh_key_type: ed25519
+    ssh_key_file: .ssh/id_ed25519
+    ssh_key_comment: "{{ grove_user }}@{{ inventory_hostname }}"

@@ -1,12 +1,11 @@
-# Copyright (c) 2026, Grove and contributors
+# Copyright (c) 2026, Frappe and contributors
 # For license information, please see license.txt
-"""Run Ansible playbooks against a Machine from a background job, streaming
-per-task events into Ansible Play / Ansible Task docs.
+"""Run Ansible playbooks against a Machine from a background job, streaming per-task events into
+Ansible Play / Ansible Task docs.
 
-Modelled on Frappe Press's `press/runner.py`: drive Ansible in-process via
-`PlaybookExecutor` with a custom `CallbackBase`, rather than shelling out. The
-callback creates an Ansible Task per task and updates its status live (the
-Ansible Task `on_update` publishes realtime to the parent play)."""
+Modelled on Frappe Press's `press/runner.py`: Ansible in-process via `PlaybookExecutor` with a
+custom `CallbackBase`, rather than shelling out. The callback creates an Ansible Task per task and
+updates it live — `Ansible Task.on_update` publishes realtime to the parent play."""
 
 import json
 import os
@@ -26,8 +25,7 @@ from frappe.database.utils import dangerously_reconnect_on_connection_abort
 
 from grove.utils import shared_roles_dir
 
-# Ansible's per-task result → the Ansible Task status. Ansible's own vocabulary is finer than
-# what an operator reading a play needs: ok and changed both mean the task did its job.
+# 'ok' and 'changed' both mean the task did its job.
 TASK_STATUS = {
 	"ok": "Success",
 	"changed": "Success",
@@ -38,19 +36,16 @@ TASK_STATUS = {
 
 
 def _set_global_cli_args(remote_user, tags=None, skip_tags=None):
-	# PlaybookExecutor/TaskQueueManager read a broad set of CLI args from this
-	# process-global. Set a complete-enough ImmutableDict to avoid KeyErrors.
-	# tags=["all"] runs every task; pass a subset (e.g. ["unit"]) to run only the
-	# matching tasks — used for a fast unit-only reconfigure.
+	# PlaybookExecutor/TaskQueueManager read CLI args from this process-global, so it has to be
+	# complete enough to avoid KeyErrors. tags=["all"] runs every task.
 	context.CLIARGS = ImmutableDict(
 		connection="smart",
 		module_path=[],
 		forks=1,
 		remote_user=remote_user,
 		private_key_file=None,
-		# Keepalive so long silent tasks (an engine image pull moves tens of GB with no
-		# channel output) don't get dropped by a NAT/idle timeout — which used to kill
-		# the child on the box. 30s pings, tolerate ~1h before giving up.
+		# Keepalive: a long silent task (an image pull moves tens of GB with no channel output)
+		# used to be dropped by a NAT idle timeout, killing the child on the box.
 		ssh_common_args=(
 			"-o StrictHostKeyChecking=accept-new -o ConnectTimeout=20 "
 			"-o ServerAliveInterval=30 -o ServerAliveCountMax=120 -o TCPKeepAlive=yes"
@@ -78,11 +73,9 @@ def _set_global_cli_args(remote_user, tags=None, skip_tags=None):
 	)
 	C.HOST_KEY_CHECKING = False
 	# Searched after the playbook's own roles/ dir, so a role two doctypes share lives once in
-	# playbooks/roles and is named from either — no copy, and no symlink to repoint every time
-	# a folder moves.
+	# playbooks/roles and is named from either.
 	C.DEFAULT_ROLES_PATH = [shared_roles_dir()]
-	# Required (ansible-core >= 2.15) before the in-process API can resolve
-	# collections/modules like ansible.builtin.*.
+	# Required (ansible-core >= 2.15) before the in-process API resolves ansible.builtin.*.
 	init_plugin_loader()
 
 
@@ -105,9 +98,8 @@ class AnsibleCallback(CallbackBase):
 	def v2_playbook_on_task_start(self, task, is_conditional):
 		self._begin_task(task)
 
-	# Handlers are where a deploy actually restarts things, so they are where it fails. Without this
-	# the row is never created and the failure reaches the control plane as a bare "[failed] <name>"
-	# in the play output, with the module's message — the only thing that says why — dropped.
+	# Handlers are where a deploy restarts things, so they are where it fails. Without this the row
+	# is never created and the module's message — the only thing saying why — is dropped.
 	def v2_playbook_on_handler_task_start(self, task):
 		self._begin_task(task)
 
@@ -117,25 +109,24 @@ class AnsibleCallback(CallbackBase):
 		self.current_task = self.runner.add_task(task.get_name())
 
 	def _close_orphan(self, status):
-		"""A `meta:` task (flush_handlers) is run by the strategy, not a task worker, so no
-		runner result ever comes back for it and its row would sit at Running forever.
-		Whoever comes next — the following task, or the play's own end — closes it."""
+		"""A `meta:` task is run by the strategy, not a task worker, so no runner result comes back
+		and its row would sit at Running forever. Whoever comes next closes it."""
 		if self.current_task:
 			self.runner.finish_task(self.current_task, status, {})
 			self.current_task = None
 
-	# Fires on every attempt of a task with `until`/`retries` — the health gate is one task
-	# that can hold the play for 15 minutes, so this is where a stop lands for most of a
-	# serve run. Between tasks alone would not be enough.
+	# Fires on every attempt of a task with `until`/`retries`. The health gate is one task that can
+	# hold the play for 15 minutes, so this is where a stop lands for most of a serve run.
 	def v2_runner_retry(self, result):
 		self._stop_if_asked()
 
 	def _stop_if_asked(self):
-		"""The Stop button writes Stopping from the web process; this is the worker seeing
-		it. Commit first — without ending the current transaction the read is a snapshot
-		from before the button. Ansible swallows callback exceptions, so raising here would
-		be silently ignored; terminate() is the supported way out and the linear strategy
-		checks it both between tasks and while waiting on the running one."""
+		"""The Stop button writes Stopping from the web process; this is the worker seeing it.
+		Commit first, or the read is a snapshot from before the button.
+
+		Ansible swallows callback exceptions, so raising here would be ignored. terminate() is the
+		supported way out, and the linear strategy checks it both between tasks and while waiting
+		on the running one."""
 		if self.stopped:
 			return
 		self._bind_frappe()
@@ -145,10 +136,9 @@ class AnsibleCallback(CallbackBase):
 			self.runner.terminate()
 
 	def _bind_frappe(self):
-		"""Ansible hands retry callbacks to its results thread, and frappe.local is a
-		contextvar — a new thread starts with none of it, so frappe.db there raises
-		"object is not bound". Give that thread a connection of its own rather than
-		reaching across to the main thread's; the runner closes it when the play ends."""
+		"""Ansible hands retry callbacks to its results thread, and frappe.local is a contextvar —
+		a new thread starts with none of it, so frappe.db raises "object is not bound". That thread
+		gets a connection of its own; the runner closes it when the play ends."""
 		try:
 			frappe.db.get_value  # noqa: B018 — unbound frappe.local raises on attribute access
 			return
@@ -158,16 +148,14 @@ class AnsibleCallback(CallbackBase):
 			self.thread_db = frappe.db
 
 	def v2_playbook_on_stats(self, stats):
-		# A play whose last task was a meta one, or that was terminated mid-task, still has a
-		# row open here. Stopped means the task did not finish, so it is not a success.
+		# A play ending on a meta task, or terminated mid-task, still has a row open here.
 		self._close_orphan("skipped" if self.stopped else "ok")
 		hosts = sorted(stats.processed.keys())
 		failed = any(
 			stats.summarize(h).get("failures", 0) or stats.summarize(h).get("unreachable", 0)
 			for h in hosts
 		)
-		# A stopped play ran its tasks to whatever point it reached, so the stats can read
-		# clean; the operator's intent is what the status has to show.
+		# A stopped play's stats can read clean; the operator's intent is what the status shows.
 		self.runner.update_play({
 			"status": "Stopped" if self.stopped else ("Failure" if failed else "Success"),
 			"ended": frappe.utils.now(),
@@ -191,10 +179,19 @@ class AnsibleCallback(CallbackBase):
 	def _finish_task(self, result, status):
 		name = getattr(result._task, "name", "") or ""
 		self.log.append(f"[{status}] {name}")
+		self._record_public_key(result)
 		if not self.current_task:
 			return
 		self.runner.finish_task(self.current_task, status, result._result)
 		self.current_task = None
+
+	# Press's runner.py does the same: the user module hands back the key it generated, and the server
+	# doc is where a later play reads it from to authorise this box on another.
+	def _record_public_key(self, result):
+		if getattr(result._task, "action", "") not in ("user", "ansible.builtin.user"):
+			return
+		if result._result.get("name") == "frappe" and result._result.get("ssh_public_key"):
+			self.runner.record_public_key(result._result["ssh_public_key"])
 
 
 class Ansible:
@@ -252,8 +249,7 @@ class Ansible:
 
 	@dangerously_reconnect_on_connection_abort
 	def add_task(self, task_name):
-		"""The doc for a task Ansible has just started — Running until it reports back, so a
-		play being watched live shows where it actually is."""
+		"""Running until it reports back, so a play watched live shows where it actually is."""
 		doc = frappe.get_doc({
 			"doctype": "Ansible Task",
 			"play": self.play_name,
@@ -275,17 +271,22 @@ class Ansible:
 		doc.save(ignore_permissions=True)
 		frappe.db.commit()
 
+	@dangerously_reconnect_on_connection_abort
+	def record_public_key(self, key):
+		"""frappe's own keypair, generated on the box by grove_user: only the public half comes back."""
+		frappe.db.set_value(self.server_type, self.server, "frappe_public_key", key)
+		frappe.db.commit()
+
 	def terminate(self):
-		"""Stop the run where it is. Ansible's own SIGINT path does exactly this: the
-		strategy checks the flag between tasks AND while waiting on the running one, then
-		unwinds through PlaybookExecutor's cleanup, which reaps the worker."""
+		"""Ansible's own SIGINT path does exactly this: the strategy checks the flag between tasks
+		AND while waiting on the running one, then unwinds through the cleanup that reaps the
+		worker."""
 		if self.executor:
 			self.executor._tqm.terminate()
 
 	def run(self):
-		"""(the Ansible Play doc, Ansible's own rc). The rc is Ansible's, not the doc's: a play
-		whose result could not be written is still a play that ran, and reading the status back
-		turned a lost write into a failed deploy."""
+		"""(the Ansible Play doc, Ansible's own rc). The rc is Ansible's, not the doc's: reading the
+		status back turned a lost write into a failed deploy."""
 		self.executor = PlaybookExecutor(
 			playbooks=[self.playbook_path],
 			inventory=self.inventory,
@@ -300,26 +301,23 @@ class Ansible:
 			if self.callback.thread_db:
 				self.callback.thread_db.close()
 			frappe.db.commit()
-		# A stopped play unwinds through the strategy with whatever rc its tasks earned, usually 0.
-		# The operator asked for it not to finish, so it is never a success.
+		# A stopped play unwinds with whatever rc its tasks earned, usually 0. The operator asked
+		# for it not to finish, so it is never a success.
 		if self.callback.stopped and not rc:
 			rc = 1
 		return frappe.get_doc("Ansible Play", self.play_name), rc
 
 
 def run_play(playbook, server_type, server_name, machine_name, project_dir, extravars=None, tags=None, skip_tags=None, reference_doctype=None, reference_docname=None):
-	"""Build a single-host inventory from the Machine and run
-	<project_dir>/<playbook>. Returns (ansible_play_name, rc); rc 0 = success.
-	tags restricts the run to matching tasks; skip_tags excludes them (e.g.
-	skip_tags=["heavy"] for a fast reconfigure that skips the weights predownload).
-	reference_doctype/docname link the Ansible Play to the triggering doc (defaults to server_type/server_name)."""
+	"""Build a single-host inventory from the Machine and run <project_dir>/<playbook>. Returns
+	(ansible_play_name, rc), rc 0 = success. tags restricts the run, skip_tags excludes.
+	reference_doctype/docname link the Play to the triggering doc."""
 	m = frappe.get_doc("Machine", machine_name)
 	if not m.public_ip:
 		frappe.throw(f"Machine {machine_name} has no public_ip")
 
-	# Cloud GPU images (RunPod) ship several pythons; Ansible's interpreter auto-discovery
-	# can land on one lacking apt/cffi bindings → the apt module crashes. Pin the distro
-	# python (has python3-apt + cffi). Extra-var = highest precedence; explicit wins.
+	# Cloud GPU images ship several pythons, and auto-discovery can land on one without apt/cffi
+	# bindings, which crashes the apt module. An extra-var is highest precedence.
 	extravars = dict(extravars or {})
 	if m.cloud_provider:
 		extravars.setdefault("ansible_python_interpreter", "/usr/bin/python3")
