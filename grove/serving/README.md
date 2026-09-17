@@ -42,6 +42,22 @@ proof.
 *separate* slots: the positional unquoted, every flag quoted. That quoting is also what stops an
 operator's Startup Command reaching the shell, so the two must not be collapsed into one string.
 
+## `--kv-cache-memory` is learned, not declared
+
+vLLM profiles memory on every boot and logs the exact figure that reproduces the allocation
+(`Replace gpu_memory_utilization config with --kv-cache-memory=N`). Passed back, the flag skips
+that profiling and the CUDA-graph memory estimate — the faster-startup trick its docs describe.
+
+The Model Replica owns the figure: `kv_cache_memory` is read off the container log by
+`learned_kv_cache_memory` after a healthy profiled boot, in `_post_play_state`, and the engine
+carries it only while `kv_cache_memory_for` still equals the key — a SHA-256 over image, card
+VRAM, and the command WITHOUT the flag. Any tuning change is a key miss, which means "profile again", not a
+failed boot. Of the two figures vLLM prints, the first (fit into requested memory) is taken, and
+the smallest across TP/PP ranks, since vLLM sizes the cache off the tightest worker.
+`--gpu-memory-utilization` is still emitted: vLLM ignores it for the cache once the figure is set,
+and `usable_vram_gb` still reads it. A boot that fails under the flag clears it, so the next Setup
+profiles from scratch — vLLM's own remedy for an OOM after the hardware moved.
+
 ## Context length is typed, not looked up
 
 `Max Model Len` on a Pod or a Model Deployment is a `Data` field, and `parse_context_length` in

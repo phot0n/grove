@@ -8,6 +8,7 @@
   "model",
   "inference_server",
   "region",
+  "geography",
   "status",
   "column_break_engine",
   "engine_port",
@@ -17,6 +18,8 @@
   "dtype",
   "kv_cache_dtype",
   "gpu_memory_utilization",
+  "kv_cache_memory",
+  "kv_cache_memory_for",
   "max_num_batched_tokens",
   "column_break_tuning",
   "attention_backend",
@@ -64,6 +67,14 @@
    "fieldtype": "Link",
    "label": "Region",
    "options": "Region",
+   "read_only": 1
+  },
+  {
+   "fetch_from": "inference_server.geography",
+   "fieldname": "geography",
+   "fieldtype": "Link",
+   "label": "Geography",
+   "options": "Geography",
    "read_only": 1
   },
   {
@@ -129,6 +140,19 @@
    "fieldname": "gpu_memory_utilization",
    "fieldtype": "Float",
    "label": "GPU Memory Utilization"
+  },
+  {
+   "description": "\u2192 --kv-cache-memory. Learned off the engine's own profiling log after a healthy boot, so the next boot skips profiling. Applied only while KV Cache Memory For still matches the current argv \u2014 a tuning or image change drops it. Clear it to force a re-profile; a failed boot with it set clears it too.",
+   "fieldname": "kv_cache_memory",
+   "fieldtype": "Long Int",
+   "label": "KV Cache Memory (bytes)"
+  },
+  {
+   "description": "SHA-256 of what the figure was measured under: image, card VRAM, and the serve command without the flag. Any of those moving is a miss, and the next boot profiles again.",
+   "fieldname": "kv_cache_memory_for",
+   "fieldtype": "Data",
+   "label": "KV Cache Memory For",
+   "read_only": 1
   },
   {
    "description": "\u2192 --max-num-batched-tokens. 0 inherits. Blank inherits the deployment's value. Set one only when THIS box needs it \u2014 a second owner for a field is drift, so keep the reason box-shaped.",
@@ -248,7 +272,7 @@
   }
  ],
  "links": [],
- "modified": "2026-08-27 17:49:25.378763",
+ "modified": "2026-09-17 00:00:00.000000",
  "modified_by": "Administrator",
  "module": "Grove",
  "name": "Model Replica",

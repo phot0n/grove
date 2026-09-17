@@ -125,6 +125,12 @@ knowing: it *did* lock resources into exclusive offers, deadlocked gang-schedule
 resource hoarding, and filed MESOS-1607 to move "from mutual exclusion toward optimistic
 competition".
 
+The one lock is the **engine port**, and it is the exception that shows why the card is not one.
+A port is not a column a compare-and-swap can own — it is the lowest gap in a set of siblings — so
+`_assign_engine_port` locks the Inference Server row (`for_update`) and reads the siblings with a
+locking read, since a plain `SELECT` would answer from the transaction's snapshot and still miss the
+port a rival just committed. The rival waits milliseconds for the insert to commit, then sees it.
+
 ## Why a lease exists at all
 
 Two facts about a database claim, both measured on a real bench, not assumed:
