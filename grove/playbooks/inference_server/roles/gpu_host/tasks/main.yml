@@ -29,6 +29,9 @@
       ansible.builtin.apt:
         name: "{{ nvidia_driver_pkg }}"
         state: present
+      # Minutes of silent download + DKMS build — detached + poll so a dropped SSH session can't abort it.
+      async: 1800
+      poll: 15
 
     - name: Reboot to load the NVIDIA kernel module
       ansible.builtin.reboot:
@@ -188,17 +191,34 @@
 # hold back security updates on a network-facing daemon. Behaviour that Docker changes
 # between majors is nailed down explicitly in daemon.json below instead — which is what
 # survives an upgrade, unlike a pin.
+# The toolkit's own dependencies are pinned too: apt resolves an unpinned dependency to the
+# repo's newest build, and NVIDIA ships all four in lockstep, so a newer -base than the pinned
+# toolkit is an unmet-dependency failure, not an upgrade.
 - name: Install Docker and the NVIDIA container toolkit
   ansible.builtin.apt:
     name:
       - docker.io
       - "nvidia-container-toolkit={{ nvidia_container_toolkit_version }}"
-      # CRIU (>= 2.0) is what `docker checkpoint` shells out to. Inert until the daemon
-      # runs with experimental: true — installed now so a future checkpoint/restore
-      # autoscaling path needs a daemon flag, not a fleet-wide package rollout.
-      - criu
+      - "nvidia-container-toolkit-base={{ nvidia_container_toolkit_version }}"
+      - "libnvidia-container-tools={{ nvidia_container_toolkit_version }}"
+      - "libnvidia-container1={{ nvidia_container_toolkit_version }}"
     state: present
     update_cache: true
+  # Silent download — detached + poll so a dropped SSH session can't abort it.
+  async: 1800
+  poll: 15
+
+# CRIU (>= 2.0) is what `docker checkpoint` shells out to. Inert until something calls it, and
+# Ubuntu 24.04 dropped the package from its archive — so a box without it still provisions, and
+# the checkpoint path, when it lands, brings its own source for it. Never in the task above:
+# a missing optional package there took every noble box's provision down with it.
+- name: Install CRIU where the archive has it
+  ansible.builtin.apt:
+    name: criu
+    state: present
+  register: gpu_host_criu
+  failed_when: false
+  changed_when: gpu_host_criu.changed | default(false)
 
 # The CLI over the driver's checkpoint API (r570+): parks a process's CUDA/VRAM state in
 # host RAM so CRIU can dump the container. Unpinned on purpose; get_url skips an existing
