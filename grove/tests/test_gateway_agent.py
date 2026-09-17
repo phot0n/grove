@@ -21,74 +21,101 @@ from unittest.mock import Mock, patch
 import frappe
 import yaml
 
-from grove.fleet import FleetHost, gateway_agent_version
+from grove.fleet import FleetHost, gateway_agent_release, gateway_agent_version
 from grove.grove.doctype.gateway_server.gateway_server import GatewayServer
 from grove.grove.doctype.ingress_server.ingress_server import IngressServer
 
-# Anchored to this file, not the cwd: `bench run-tests` runs from the bench root, where a path
-# relative to the app does not resolve.
+# Anchored to this file: `bench run-tests` runs from the bench root.
 PLAYBOOKS = Path(__file__).parent.parent / "playbooks"
 TTL = "2m"
-# Deliberately not a release that exists: these have to fail if the version stops coming from Grove
-# Settings and goes back to being hardcoded.
+# Deliberately not a real release: these fail if the version goes back to being hardcoded.
 PINNED = "v9.9.9"
 
 SETTINGS = SimpleNamespace(
 	gateway_variables={"synthetic_session_ttl": TTL},
 	scrape_auth_variables={"scrape_password_hash": "$2b$12$hash"},
-	tls_variables={
-		"gateway_host": "api.grove.test",
-		"fleet_zone": "grove.test",
-		"fleet_tls_cert": "-----BEGIN CERTIFICATE-----",
-		"fleet_tls_key": "-----BEGIN PRIVATE KEY-----",
-	},
 )
+# What a box's Geography hands it.
+TLS = {
+	"fleet_zone": "grove.test",
+	"fleet_tls_cert": "-----BEGIN CERTIFICATE-----",
+	"fleet_tls_key": "-----BEGIN PRIVATE KEY-----",
+}
 
 
-def extravars_for(doctype_class, module, doc):
+def geography_endpoint(doctype, name, field):
+	assert (doctype, name, field) == ("Geography", "eu", "endpoint")
+	return "eu.grove.test"
+
+
+def extravars_for(doctype_class, module, doc, **kwargs):
 	"""Run _deploy_agent against a fake doc and return the extra-vars it passed."""
 	sent = {}
 
-	def run_playbook(play, extravars):
-		sent.update({"play": play, **extravars})
+	def run_playbook(play, extravars, **play_kwargs):
+		sent.update({"play": play, **extravars, "play_kwargs": play_kwargs})
 		return "play-1", 0
 
 	doc.run_playbook = run_playbook
 	# Recording is FleetHost's, and TestTheInstalledVersionIsRecorded holds it to account.
 	doc.record_agent_version = lambda rc: None
+	doc.record_state_store = lambda rc, store: None
 	# frappe.db is a Local and unbound without a site; the release is read off Grove Settings
 	# through it, so the whole thing is swapped the way test_pathway_sync reaches it.
 	with (
 		patch("frappe.get_single", return_value=SETTINGS),
-		patch.object(frappe, "db", SimpleNamespace(get_single_value=lambda *args: PINNED)),
+		patch.object(
+			frappe, "db", SimpleNamespace(get_single_value=lambda *args: PINNED, get_value=geography_endpoint)
+		),
 	):
-		doctype_class._deploy_agent(doc)
+		doctype_class._deploy_agent(doc, **kwargs)
 	return sent
 
 
-def gateway_extravars():
+class FakeGateway(SimpleNamespace):
+	get_agent_extravars = GatewayServer.get_agent_extravars
+	config_variables = GatewayServer.config_variables
+	short_name = GatewayServer.short_name
+
+
+class FakeIngress(SimpleNamespace):
+	config_variables = IngressServer.config_variables
+	short_name = IngressServer.short_name
+
+
+def fake_ingress(**fields):
+	defaults = dict(
+		name="ing-1", hostname="ing-1.grove.test", is_in_maintenance=0, tls_variables=dict(TLS),
+		get_password=lambda field, **kwargs: f"secret-{field}",
+	)
+	return FakeIngress(**{**defaults, **fields})
+
+
+def fake_gateway(**fields):
+	defaults = dict(
+		name="gw-1",
+		region="ap-south-1",
+		geography="eu",
+		tls_variables=dict(TLS),
+		hostname="gw-1.grove.test",
+		state_store=None,
+		network_state_store=None,
+		is_in_maintenance=0,
+		get_password=lambda field, **kwargs: f"secret-{field}",
+	)
+	return FakeGateway(**{**defaults, **fields})
+
+
+def gateway_extravars(store=None, **fields):
 	return extravars_for(
 		GatewayServer,
 		"grove.grove.doctype.gateway_server.gateway_server",
-		SimpleNamespace(
-			name="gw-1",
-			region="ap-south-1",
-			hostname="gw-1.grove.test",
-			get_password=lambda field, **kwargs: f"secret-{field}",
-		),
+		fake_gateway(state_store=store, **fields),
 	)
 
 
-def ingress_extravars():
-	return extravars_for(
-		IngressServer,
-		"grove.grove.doctype.ingress_server.ingress_server",
-		SimpleNamespace(
-			name="ing-1",
-			hostname="ing-1.grove.test",
-			get_password=lambda field, **kwargs: f"secret-{field}",
-		),
-	)
+def ingress_extravars(**fields):
+	return extravars_for(IngressServer, "grove.grove.doctype.ingress_server.ingress_server", fake_ingress(**fields))
 
 
 def rendered_variables(play_path, task_name, field):
@@ -181,6 +208,18 @@ class TestDeployAgentShipsBothHalves(unittest.TestCase):
 		self.assertEqual("gw-1.grove.test", gateway_extravars()["proxy_hostname"])
 		self.assertEqual("ing-1.grove.test", ingress_extravars()["ingress_hostname"])
 
+	def test_a_gateway_answers_for_its_geography(self):
+		# The endpoint lives on the Geography; a pinned user from elsewhere is refused by this name.
+		sent = gateway_extravars()
+		self.assertEqual(("eu", "eu.grove.test"), (sent["gateway_geography"], sent["gateway_host"]))
+		unplaced = gateway_extravars(geography=None)
+		self.assertEqual(("", ""), (unplaced["gateway_geography"], unplaced["gateway_host"]))
+
+	def test_a_box_named_with_its_domain_is_known_to_the_agent_by_its_label(self):
+		# The id is stamped into request ids, which keep only letters, digits and '-'.
+		self.assertEqual("gw-2", gateway_extravars(name="gw-2.eu.grove.test")["gateway_id"])
+		self.assertEqual("ing-2", ingress_extravars(name="ing-2.eu.grove.test")["ingress_id"])
+
 	def test_the_tuning_comes_from_grove_settings(self):
 		self.assertEqual(TTL, gateway_extravars()["synthetic_session_ttl"])
 
@@ -190,6 +229,15 @@ class TestDeployAgentShipsBothHalves(unittest.TestCase):
 		# and a Deploy Agent rather than a control-plane release.
 		self.assertEqual(PINNED, gateway_extravars()["agent_version"])
 		self.assertEqual(PINNED, ingress_extravars()["agent_version"])
+
+	def test_the_repo_comes_from_grove_settings_and_blank_is_refused(self):
+		values = {"pathway_release": PINNED, "pathway_repo": "someone/pathway"}
+		db = SimpleNamespace(get_single_value=lambda doctype, field: values[field])
+		with patch.object(frappe, "db", db):
+			self.assertEqual({"agent_version": PINNED, "agent_repo": "someone/pathway"}, gateway_agent_release())
+			values["pathway_repo"] = None
+			with patch("frappe.throw", side_effect=frappe.ValidationError), self.assertRaises(frappe.ValidationError):
+				gateway_agent_release()
 
 	def test_a_fleet_that_pins_nothing_is_refused_before_it_ships(self):
 		# Blank renders an empty release tag into the download URL, which 404s the play twenty
@@ -210,6 +258,83 @@ class TestDeployAgentShipsBothHalves(unittest.TestCase):
 			with self.subTest(plane):
 				self.assertNotIn("fleet_tls_key", sent)
 				self.assertIn("fleet_tls_cert", sent)
+
+
+class TestAGatewayIsToldWhichRedis(unittest.TestCase):
+	"""agent.env names the Redis whole, so a deploy that forgot the store would move a gateway back
+	onto an empty loopback Redis and 401 every caller until the next push."""
+
+	def test_a_gateway_with_no_store_keeps_its_own(self):
+		sent = gateway_extravars()
+		self.assertEqual("127.0.0.1:6379", sent["redis_addr"])
+		self.assertEqual("", sent["redis_password"])
+		self.assertFalse(sent["redis_shared"])
+
+	def test_a_deploy_never_moves_a_gateway_onto_its_networks_store(self):
+		# Moving a live gateway drains it first; a routine deploy must not do that by the way.
+		sent = gateway_extravars(store=None, network_state_store="store1-ap-south-1")
+		self.assertEqual("127.0.0.1:6379", sent["redis_addr"])
+
+	def provisioned_onto(self, agent_version):
+		"""The store provision hands get_agent_extravars, for a gateway on s-current in a Network
+		whose store is s-network."""
+		doc = fake_gateway(
+			doctype="Gateway Server", agent_version=agent_version, state_store="s-current",
+			network_state_store="s-network", admin_url="", set_admin_url=lambda: None,
+			record_agent_version=lambda rc: None, record_state_store=lambda rc, store: None,
+			run_playbook=lambda play, extravars: ("play-1", 1),
+		)
+		doc.get_agent_extravars = Mock(return_value={})
+		with patch.object(frappe, "db", Mock()), patch("frappe.get_single", return_value=SETTINGS):
+			GatewayServer.provision(doc)
+		return doc.get_agent_extravars.call_args.args[0]
+
+	def test_a_new_gateway_is_set_up_on_its_networks_store(self):
+		self.assertEqual("s-network", self.provisioned_onto(agent_version=None))
+
+	def test_setting_up_an_installed_gateway_again_keeps_its_redis(self):
+		self.assertEqual("s-current", self.provisioned_onto(agent_version="v1"))
+
+	def test_a_gateway_on_a_store_is_given_the_stores(self):
+		store = SimpleNamespace(
+			redis_variables={"redis_addr": "10.0.61.9:6379", "redis_password": "pw", "redis_shared": True}
+		)
+		with patch.object(frappe, "get_doc", return_value=store):
+			sent = gateway_extravars(store="store1-ap-south-1")
+		self.assertEqual(store.redis_variables, {key: sent[key] for key in store.redis_variables})
+
+	def recorded(self, store, rc=0, before=(None, 0), writers=()):
+		"""What record_state_store writes, given the gateway's store and flag before the play and the
+		store's Active writers."""
+		db = Mock()
+		db.get_value.return_value = frappe._dict(state_store=before[0], is_state_store_writer=before[1])
+		with (
+			patch.object(frappe, "db", db),
+			patch("grove.grove.doctype.gateway_server.gateway_server.store_writers", return_value=list(writers)),
+		):
+			GatewayServer.record_state_store(SimpleNamespace(doctype="Gateway Server", name="gw-1"), rc, store)
+		return db.set_value.call_args.args[2] if db.set_value.called else None
+
+	def test_nothing_is_recorded_when_the_play_failed(self):
+		self.assertIsNone(self.recorded("s1", rc=1))
+
+	def test_the_first_gateway_on_a_store_becomes_its_writer(self):
+		self.assertEqual(self.recorded("s1"), {"state_store": "s1", "is_state_store_writer": 1})
+
+	def test_a_store_that_has_a_writer_takes_this_one_as_a_reader(self):
+		self.assertEqual(self.recorded("s1", writers=["gw-0"]), {"state_store": "s1", "is_state_store_writer": 0})
+
+	def test_a_writer_redeployed_onto_its_store_stays_one(self):
+		recorded = self.recorded("s1", before=("s1", 1), writers=["gw-0", "gw-1"])
+		self.assertEqual(recorded["is_state_store_writer"], 1)
+
+	def test_a_gateway_back_on_its_own_redis_is_no_writer(self):
+		self.assertEqual(self.recorded(None, before=("s1", 1)), {"state_store": None, "is_state_store_writer": 0})
+
+	def test_only_a_gateway_on_a_store_can_be_its_writer(self):
+		doc = SimpleNamespace(name="gw-1", is_state_store_writer=1, state_store=None, set_admin_url=lambda: None, set_admin_token=lambda: None)
+		with patch.object(frappe, "throw", side_effect=frappe.ValidationError), self.assertRaises(frappe.ValidationError):
+			GatewayServer.validate(doc)
 
 
 class TestTheBinaryComesOffTheInternetSafely(unittest.TestCase):
@@ -255,3 +380,140 @@ class TestTheInstalledVersionIsRecorded(unittest.TestCase):
 		# The box is still running whatever it was running. Claiming the new one would hide exactly
 		# the skew this field exists to show.
 		self.set_value_after(1).assert_not_called()
+
+
+class TestPingReachesHealthz(unittest.TestCase):
+	"""Ping tells unreachable (throws) apart from reachable-but-unhealthy (a 503 with its reason)."""
+
+	def ping(self, **get):
+		doc = SimpleNamespace(doctype="Gateway Server", name="gw-1", admin_url="https://gw-1.fleet.test/grove-admin")
+		doc.health_url = FleetHost.health_url.fget(doc)
+		with (
+			patch("grove.fleet.requests.get", **get) as request,
+			patch("frappe.msgprint") as msgprint,
+			patch("frappe.throw", side_effect=frappe.ValidationError),
+		):
+			result = FleetHost.ping(doc)
+		request.assert_called_once_with("https://gw-1.fleet.test/healthz", timeout=5)
+		return result, msgprint
+
+	def test_an_unhealthy_box_is_still_reachable(self):
+		response = Mock(status_code=503, ok=False, text="maintenance\n")
+		response.elapsed.total_seconds.return_value = 0.042
+		result, msgprint = self.ping(return_value=response)
+		self.assertEqual(503, result)
+		self.assertIn("503 in 42 ms: maintenance", msgprint.call_args.args[0])
+		self.assertEqual("orange", msgprint.call_args.kwargs["indicator"])
+
+	def test_an_unreachable_box_raises(self):
+		import requests
+
+		with self.assertRaises(requests.ConnectionError):
+			self.ping(side_effect=requests.ConnectionError("refused"))
+
+
+class TestALocalBuildCanStandInForTheRelease(unittest.TestCase):
+	"""A dev deploy. The binary comes off the control plane, nothing is downloaded, and the rest of
+	the provision — unit, user, config — runs exactly as it does for a release."""
+
+	def test_naming_a_build_skips_the_download(self):
+		for task in install_role_tasks():
+			if "ansible.builtin.get_url" in task or task.get("name", "").startswith("stage the binary under"):
+				with self.subTest(task["name"]):
+					self.assertIn("agent_binary", str(task["when"]))
+
+	def test_the_build_lands_where_the_install_task_copies_from(self):
+		stage = next(t for t in install_role_tasks() if t.get("name") == "stage a local build instead")
+		self.assertEqual("/tmp/pathway", stage["ansible.builtin.copy"]["dest"])
+		self.assertEqual("{{ agent_binary }}", stage["ansible.builtin.copy"]["src"])
+		self.assertNotIn("remote_src", stage["ansible.builtin.copy"])
+
+	def test_the_default_is_the_release(self):
+		defaults = PLAYBOOKS / "roles" / "install_gateway_agent" / "defaults" / "main.yml"
+		self.assertEqual("", yaml.safe_load(defaults.read_text())["agent_binary"])
+
+
+class TestADevDeployShipsALocalBuild(unittest.TestCase):
+	"""The button ships the pinned release. A job started with `agent_binary` ships a build off the
+	control plane instead — the same play, the same tracking, nothing copied by hand."""
+
+	def test_the_button_ships_the_release(self):
+		self.assertEqual("", gateway_extravars()["agent_binary"])
+
+	def test_a_named_build_reaches_the_play(self):
+		sent = extravars_for(
+			GatewayServer,
+			"grove.grove.doctype.gateway_server.gateway_server",
+			fake_gateway(),
+			agent_binary="/builds/pathway",
+		)
+		self.assertEqual("/builds/pathway", sent["agent_binary"])
+
+
+class TestAnUpdateOwnsItsPlays(unittest.TestCase):
+	def test_both_planes_hand_the_reference_to_the_play(self):
+		reference = {"reference_doctype": "Pathway Update", "reference_docname": "r1"}
+		gateway = extravars_for(
+			GatewayServer, "grove.grove.doctype.gateway_server.gateway_server", fake_gateway(), **reference
+		)
+		ingress = extravars_for(
+			IngressServer, "grove.grove.doctype.ingress_server.ingress_server", fake_ingress(), **reference
+		)
+		self.assertEqual(reference, gateway["play_kwargs"])
+		self.assertEqual(reference, ingress["play_kwargs"])
+
+
+class TestMaintenanceIsHeldInConfigJson(unittest.TestCase):
+	"""Maintenance is a config.json key: every play that writes the file carries the doc's value, so
+	a deploy never flips it, and the box is read back because a rejected reload is silent."""
+
+	def test_every_deploy_carries_the_maintenance_flag(self):
+		for extravars in (gateway_extravars, ingress_extravars):
+			with self.subTest(extravars.__name__):
+				self.assertIs(False, extravars()["gateway_maintenance"])
+				self.assertIs(True, extravars(is_in_maintenance=1)["gateway_maintenance"])
+
+	def test_an_ingress_setup_carries_it_too(self):
+		doc = fake_ingress(is_in_maintenance=1)
+		with (
+			patch("frappe.get_single", return_value=SETTINGS),
+			patch.object(frappe, "db", SimpleNamespace(get_single_value=lambda *args: PINNED)),
+		):
+			variables = IngressServer.provision_variables(doc, SETTINGS)
+		self.assertIs(True, variables["gateway_maintenance"])
+
+	def applied(self, box_says, rc=0):
+		doc = fake_gateway(is_in_maintenance=1, get_in_flight=lambda: {"maintenance": box_says, "in_flight": 0})
+		doc.run_playbook = Mock(return_value=("play-1", rc))
+		with (
+			patch("frappe.get_single", return_value=SETTINGS),
+			patch("frappe.throw", side_effect=frappe.ValidationError),
+			patch("grove.fleet.time.sleep"),
+			patch("grove.failure.report"),
+		):
+			result = GatewayServer.apply_config(doc)
+		return doc.run_playbook, result
+
+	def test_it_writes_config_json_and_returns_once_the_box_agrees(self):
+		run_playbook, result = self.applied(box_says=True)
+		self.assertEqual(("play-1", 0), result)
+		play, = run_playbook.call_args.args
+		self.assertEqual("config.yml", play)
+		self.assertIs(True, run_playbook.call_args.kwargs["extravars"]["gateway_maintenance"])
+
+	def test_a_box_that_did_not_take_it_is_an_error(self):
+		with self.assertRaises(frappe.ValidationError):
+			self.applied(box_says=False)
+
+	def test_a_failed_play_is_an_error(self):
+		with self.assertRaises(frappe.ValidationError):
+			self.applied(box_says=True, rc=2)
+
+	def test_a_box_that_cannot_answer_is_never_put_in_maintenance(self):
+		# A pathway older than the key refuses the whole file, even at its next start.
+		import requests
+
+		doc = fake_gateway(get_in_flight=Mock(side_effect=requests.HTTPError("404")), db_set=Mock())
+		with self.assertRaises(requests.HTTPError):
+			GatewayServer.set_maintenance(doc, 1)
+		doc.db_set.assert_not_called()

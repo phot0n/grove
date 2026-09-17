@@ -1,10 +1,9 @@
-# Copyright (c) 2026, Grove and contributors
+# Copyright (c) 2026, Frappe and contributors
 # For license information, please see license.txt
 """Scrape targets Grove hands to a Monitoring Agent.
 
-One vmagent scrapes many boxes, so nothing on a box knows what to scrape — the agent asks
-here, and Grove answers out of the docs that already describe the fleet. A deploy, a new box
-or a terminated pod changes the answer with no playbook to re-run and no file to write."""
+One vmagent scrapes many boxes, so nothing on a box knows what to scrape — the agent asks here and
+Grove answers out of the docs that already describe the fleet, with no playbook to re-run."""
 
 import hmac
 import json
@@ -20,14 +19,11 @@ DCGM_EXPORTER_PORT = 9400
 # vmagent's own /metrics — its -httpListenAddr in the vmagent role.
 VMAGENT_PORT = 8429
 
-# Every box answers on one port, and the exporters are re-published as paths behind it (the
-# engine_proxy role on an inference box, OpenResty on a proxy box) — so a box needs nothing open
-# but 22 and this. The exporters still listen on their own ports; they are simply not reachable
-# from outside.
+# Every box answers on one port and the exporters are re-published as paths behind it, so a box
+# needs nothing open but 22 and this. They still listen on their own ports, just not from outside.
 #
-# An inference box is moving from 443 to 80: nothing ever verified its self-signed certificate, and
-# the hop is inside the fleet, so the TLS was buying nothing but a file the box had to carry. A
-# proxy box keeps 443 — that one faces customers and holds a real certificate.
+# An inference box is moving from 443 to 80: nothing verified its self-signed certificate and the
+# hop is inside the fleet. A proxy box keeps 443 — it faces customers and holds a real one.
 BOX_HTTP_PORT = 80
 BOX_HTTPS_PORT = 443
 NODE_METRICS_PATH = "/metrics/node"
@@ -35,17 +31,14 @@ GPU_METRICS_PATH = "/metrics/gpu"
 
 
 def run_exporters_play(server):
-	"""Install the metrics exporters on a server's box: node, and DCGM when the Machine has
-	GPU rows. Shared by Inference Server and Gateway Server — the play and the box are the same
-	thing, only which doc owns the button differs.
+	"""The exporters play — htpasswd, node, and DCGM when the Machine has GPU rows — as the Update
+	Scrape Auth button re-runs it. Shared by every server doc; only which one owns the button differs.
 
-	The exporters only listen. Which agent scrapes them is the server's `monitoring_agent`,
-	and nothing installed here is told about it."""
+	The exporters only LISTEN; nothing installed here is told which agent scrapes them."""
 	machine = frappe.get_doc("Machine", server.machine)
 	if not machine.public_ip:
 		frappe.throw(f"Machine {machine.name} has no public IP — nothing to connect to.")
-	# The play lives with the agent's — it is a monitoring play whoever owns the box it lands
-	# on, and the roles it needs are already there.
+	# The play lives with the agent's: it is a monitoring play whoever owns the box.
 	return server.run_playbook(
 		"exporters.yml",
 		project="Monitoring Agent",
@@ -75,13 +68,11 @@ def targets(agent: str, kind: str = "engine", token: str = ""):
 def authenticate(token):
 	"""The Service Discovery Token from Grove Settings, compared in constant time.
 
-	This is the whole of what stands between the internet and the fleet's inventory — every
-	box's address and open exporter ports, every model and engine URL — so an unset token
-	refuses rather than waving everyone through.
+	This is the whole of what stands between the internet and the fleet's inventory, so an UNSET
+	token refuses rather than waving everyone through.
 
-	A signed-in user who may read the agent skips it: that is the form's Show Targets button,
-	and they can already read every doc this list is built from. Putting the shared secret in a
-	browser URL to satisfy a check they have already passed would only spread it around."""
+	A signed-in user who may read the agent skips it — that is the form's Show Targets button, and
+	putting the shared secret in a browser URL would only spread it around."""
 	if frappe.session.user != "Guest" and frappe.has_permission("Monitoring Agent", "read"):
 		return
 
@@ -102,23 +93,18 @@ def host_targets(agent):
 
 
 def agent_network(agent):
-	"""The Network this agent's own box sits in, or "" when it has none.
-
-	A Network is one VPC, one subnet, one availability zone, so two boxes that share one can
-	reach each other privately; anything else has no route between the addresses and must be
-	scraped over the public internet."""
+	"""A Network is one VPC, so two boxes sharing one reach each other privately; anything else
+	has no route between the addresses and is scraped over the public internet."""
 	machine = frappe.db.get_value("Monitoring Agent", agent, "machine")
 	return (machine and frappe.db.get_value("Machine", machine, "network")) or ""
 
 
 def agent_targets(agent):
-	"""The agent's own box. Nothing else names it — it carries no Inference or Gateway Server
-	doc — and an agent that cannot see its own disk filling is the blind spot that matters:
-	vmagent's queue depth and dropped-sample counters are how a broken pipeline announces
-	itself, before anyone notices a gap in a dashboard.
+	"""The agent's own box — nothing else names it, and an agent that cannot see its own disk
+	filling is the blind spot that matters: vmagent's queue depth is how a broken pipeline
+	announces itself before anyone notices a gap in a dashboard.
 
-	Scraped over localhost, since this is the box doing the scraping — nothing here has to be
-	reachable from outside, and no security group rule is needed for it.
+	Scraped over localhost, so nothing here needs a security group rule.
 
 	Not through a TLS front like the fleet's, and so not built by exporter_entry: this box
 	carries no Inference or Gateway Server doc, so nothing ever installs nginx on it. Plain http,
@@ -134,9 +120,8 @@ def agent_targets(agent):
 
 
 def engine_targets(agent):
-	"""Engines this agent scrapes: every Active deployment on its boxes, and every Running
-	pod that names it. Both are reached at their engine_url — the address the gateway
-	already routes to."""
+	"""Every Active deployment on this agent's boxes, and every Running pod that names it. Both at
+	their engine_url — the address the gateway already routes to."""
 	network = agent_network(agent)
 	boxes = {box["name"]: box for box in inference_boxes(agent)}
 	deployments = (
@@ -162,7 +147,7 @@ def engine_targets(agent):
 		)
 		for deployment in deployments
 	]
-	# Pods carry no machine/region — they are not on a box we own.
+	# Pods carry no machine/region: they are not on a box we own.
 	entries += [
 		engine_entry(pod.engine_url, {"model": pod.model, "deployment": pod.name})
 		for pod in frappe.get_all(
@@ -174,10 +159,9 @@ def engine_targets(agent):
 	return [entry for entry in entries if entry]
 
 
-# A box that still exists is worth scraping whatever state it is in — Broken most of all, since
-# its metrics are how you find out why. Terminated is the one status that means the machine is
-# gone, so a target for it can only ever be down, and a permanently-down target is worse than no
-# target: it reads exactly like a box that just died.
+# A box that still exists is worth scraping whatever state it is in — Broken most of all. Only
+# Terminated means the machine is gone, and a permanently-down target reads exactly like a box
+# that just died.
 _GONE_STATUS = "Terminated"
 
 
@@ -192,9 +176,8 @@ def inference_boxes(agent):
 
 
 def front_boxes(agent):
-	"""The named boxes this agent scrapes — Gateway Servers and Ingress Servers. Both run the
-	same OpenResty in front of the same node_exporter, so they are one query shape twice over.
-	Never GPU boxes: no DCGM target for either."""
+	"""Gateway and Ingress Servers. Both run the same OpenResty in front of the same
+	node_exporter, so they are one query shape twice over. Never GPU boxes."""
 	servers = [
 		server
 		for doctype in ("Gateway Server", "Ingress Server")
@@ -208,18 +191,14 @@ def front_boxes(agent):
 
 
 def _with_gpu_flag(servers):
-	"""Whether each box has GPUs, from the Machine's own scanned rows rather than a flag
-	somebody has to remember to set."""
+	"""From the Machine's own scanned rows, not a flag somebody has to remember to set."""
 	gpu_machines = set(frappe.get_all("GPU", pluck="machine"))
 	return [{**server, "has_gpu": server["machine"] in gpu_machines} for server in servers]
 
 
 def _with_machine_address(servers):
-	"""Each box's private address and Network, read live off its Machine.
-
-	Not mirrored onto the server doc with a fetch_from: that copy is only as fresh as the last
-	save of the server, and a stale scrape address is a target that can only ever be down —
-	indistinguishable from a box that just died."""
+	"""Read live off the Machine, not mirrored with a fetch_from: that copy is only as fresh as the
+	server's last save, and a stale scrape address is a target that can only ever be down."""
 	machines = [server["machine"] for server in servers if server.get("machine")]
 	addresses = (
 		{
@@ -244,8 +223,7 @@ def _with_machine_address(servers):
 
 
 def build_host_targets(boxes, viewer_network=""):
-	"""Boxes → exporter entries. A box with no address cannot be scraped — it is skipped
-	rather than emitted as a target that can only ever be down."""
+	"""A box with no address is skipped rather than emitted as a target that can only be down."""
 	entries = []
 	for box in boxes:
 		if not box.get("ip"):
@@ -269,14 +247,11 @@ def build_host_targets(boxes, viewer_network=""):
 def exporter_entry(address, port, metrics_path, labels, instance_ip=None):
 	"""One exporter, scraped through its box's TLS front rather than on its own port.
 
-	`instance` is set here instead of being left to default from the address, which is now
-	`<ip>:443` for every exporter on the box: node and DCGM would otherwise collapse into one
-	series name that means nothing. The value keeps the exporter's own port, so it is byte
-	identical to what these targets reported before they moved behind the front.
-
-	It also keeps the box's PUBLIC address even when the box is scraped privately. The address
-	is where to connect; `instance` is which exporter this is, and a box that gains a private
-	IP must not rename every series it has ever reported."""
+	`instance` is set explicitly because the address is now `<ip>:443` for every exporter on the
+	box — node and DCGM would collapse into one series name. It keeps the exporter's own port, and
+	the box's PUBLIC address even when scraped privately: the address is where to connect,
+	`instance` is which exporter this is, and a box gaining a private IP must not rename every
+	series it has ever reported."""
 	return {
 		"targets": [f"{address}:{BOX_HTTPS_PORT}"],
 		"labels": {
@@ -290,16 +265,14 @@ def exporter_entry(address, port, metrics_path, labels, instance_ip=None):
 
 def engine_entry(engine_url, labels, address=None):
 	"""One entry for an engine, addressed where the gateway routes it unless `address` says to
-	reach the same engine privately. None when there is no URL yet — a deployment mid-provision,
-	or a pod still loading.
+	reach it privately. None when there is no URL yet.
 
-	Derived from the URL rather than branched on what kind of engine it is, because the two
-	kinds no longer share a shape: a deployment sits behind its box's front at
-	`https://<ip>/e/<slug>`, while a pod — which has no box, no Ansible and no front — keeps
-	`http://<host>:<port>`. Both fall out of the same two lines.
+	Derived from the URL rather than branched on the engine kind: a deployment sits behind its
+	box's front at `https://<ip>/e/<slug>` while a pod keeps `http://<host>:<port>`, and both fall
+	out of the same two lines.
 
-	Only the address moves. `engine` and `instance` stay the public URL: the first is the join
-	back to the route it describes, and the second is what tells two engines on one box apart."""
+	Only the address moves. `engine` and `instance` stay the public URL — the join back to the
+	route, and what tells two engines on one box apart."""
 	parsed = urlparse(engine_url or "")
 	if not parsed.hostname:
 		return None

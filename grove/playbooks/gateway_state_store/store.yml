@@ -1,0 +1,31 @@
+---
+# Provision a Gateway State Store: the one Redis its Network's gateways share, so a standalone
+# replica's in-flight count is one counter across them. Holds everything a gateway's own Redis
+# did — keys, users, routes, usage, in-flight — so a dead store fails its gateways closed.
+#
+# Listens on loopback and the box's private address, behind a password; the Network's store
+# security group opens 6379 to that Network's gateways only.
+#
+# extra-vars: redis_bind_ip, redis_password.
+- hosts: all
+  become: true
+  gather_facts: true
+
+  pre_tasks:
+    # A store without a password on a private address is every gateway's keys, open to the VPC.
+    - name: refuse to provision without a password
+      ansible.builtin.assert:
+        that:
+          - redis_password | default('') | trim | length > 0
+          - redis_bind_ip | default('') | trim | length > 0
+        fail_msg: >-
+          redis_password and redis_bind_ip are required — provision from the Gateway State Store's
+          Setup button, or pass the same extra-vars it does.
+
+  roles:
+    - grove_user
+    - remove_cloud_user
+    - auditd
+    - role: redis
+      vars:
+        redis_bind: "127.0.0.1 {{ redis_bind_ip }}"

@@ -10,12 +10,14 @@ import frappe
 from frappe.tests import IntegrationTestCase
 
 from grove.cloud_provider.aws import EC2Client
+from grove.grove.doctype.geography.test_geography import make_test_geography
 from grove.grove.doctype.network.network import (
 	INFERENCE_BASE_INGRESS_RULES,
 	PROXY_INGRESS_RULES,
 	Network,
 	inference_ingress_cidrs,
 	parse_security_group_ids,
+	state_store_ingress_cidrs,
 )
 
 
@@ -27,21 +29,21 @@ class TestIngressRules(unittest.TestCase):
 		return {(rule["from_port"], rule["to_port"]) for rule in rules}
 
 	def test_an_inference_box_opens_nothing_but_ssh_at_creation(self):
-		# 443 is not a fixed rule: the engine proxy behind it is dialled only by the gateway and
-		# the metrics agents, so its sources are computed and reconciled per Network.
+		# 443 is not a fixed rule: only the gateway and the metrics agents dial the engine proxy
+		# behind it, so its sources are reconciled per Network.
 		self.assertEqual(self.ports(INFERENCE_BASE_INGRESS_RULES), {(22, 22)})
 
 	def test_no_engine_port_is_reachable_from_outside(self):
-		# The old rule was the fixed range 8080-8085, written as a tuple, which _assign_engine_port
-		# could outgrow: the seventh deployment on a box provisioned green and was unreachable.
+		# The old rule was a fixed 8080-8085 range, which _assign_engine_port could outgrow — the
+		# seventh deployment provisioned green and was unreachable.
 		for rule in INFERENCE_BASE_INGRESS_RULES:
 			with self.subTest(rule["from_port"]):
 				self.assertIsInstance(rule["from_port"], int)
 				self.assertFalse(rule["from_port"] <= 8080 <= rule["to_port"])
 
 	def test_a_proxy_box_still_serves_the_client_api(self):
-		# 443 stays open to the world here: it is the customer API and the control plane's admin
-		# API, and neither caller has an address worth pinning.
+		# 443 stays open here: the customer API and the admin API, neither with an address worth
+		# pinning.
 		self.assertEqual(self.ports(PROXY_INGRESS_RULES), {(22, 22), (80, 80), (443, 443)})
 
 
@@ -79,8 +81,8 @@ class TestInferenceIngressCidrs(unittest.TestCase):
 		self.assertEqual(inference_ingress_cidrs([proxy("")], [], [], "Mumbai"), [])
 
 	def test_an_agent_in_this_network_arrives_privately(self):
-		# scrape_ip dials the private address when the agent shares the box's Network, so that is
-		# the source the box sees — its public /32 would open a hole nothing uses.
+		# The agent dials privately when it shares the box's Network, so a public /32 would open a
+		# hole nothing uses.
 		cidrs = inference_ingress_cidrs(
 			[], [agent("3.3.3.3", network="Mumbai", private_ip="10.0.0.7")], [], "Mumbai"
 		)
@@ -108,21 +110,19 @@ class TestInferenceIngressCidrs(unittest.TestCase):
 		self.assertEqual(inference_ingress_cidrs([], [], [], "Mumbai"), [])
 
 	def test_an_ingress_in_this_network_arrives_privately(self):
-		# The mirror image of the gateway rule: an ingress dials the box privately or not at all,
-		# so a public /32 would open a hole nothing arrives through while the hop it uses stayed
-		# shut. This is what makes a cutover possible at all.
+		# The mirror of the gateway rule: an ingress dials privately or not at all, so a public
+		# /32 opens a hole nothing arrives through while the hop it uses stays shut.
 		cidrs = inference_ingress_cidrs([], [], [ingress("10.0.127.43")], "Mumbai")
 		self.assertEqual(cidrs, ["10.0.127.43/32"])
 
 	def test_an_ingress_in_another_network_is_not_let_in(self):
-		# Two VPCs can carve the same 10.x range, so a foreign ingress's private address is not
-		# merely useless here — it might name a different machine entirely.
+		# Two VPCs can carve the same 10.x range, so a foreign ingress's private address might
+		# name a different machine entirely.
 		cidrs = inference_ingress_cidrs([], [], [ingress("10.0.127.43", network="Frankfurt")], "Mumbai")
 		self.assertEqual(cidrs, [])
 
 	def test_an_ingress_with_no_private_address_contributes_nothing(self):
-		# It cannot reach these boxes anyway. Fail closed, the same rule that keeps it out of the
-		# replica table — never a public fallback.
+		# Fail closed, the same rule that keeps it out of the replica table.
 		self.assertEqual(inference_ingress_cidrs([], [], [ingress("")], "Mumbai"), [])
 
 	def test_a_terminated_ingress_is_dropped(self):
@@ -190,8 +190,8 @@ class TestSyncIngress(unittest.TestCase):
 		self.assertEqual(result, {"opened": ["9.9.9.9/32"], "closed": ["1.1.1.1/32"]})
 
 	def test_a_group_source_on_this_port_is_revoked_too(self):
-		# The desired state is a list of addresses, so a group-to-group rule is by definition
-		# not in it — left behind it would be an invisible hole no /32 diff can see.
+		# The desired state is a list of addresses, so a group-to-group rule is never in it — and
+		# left behind it is a hole no /32 diff can see.
 		client = self.client([self.permission(443, source_groups=["sg-proxy"])])
 		result = client.sync_ingress("sg-1", 443, ["1.1.1.1/32"])
 		self.assertEqual(result["closed"], ["sg-proxy"])
@@ -209,8 +209,8 @@ class TestSyncIngress(unittest.TestCase):
 		self.assertEqual(client.revoked, [])
 
 	def test_one_port_is_reconciled_without_disturbing_the_other_front_port(self):
-		# 80 and 443 reconcile as separate calls against the same group. Each must see only its
-		# own permission, or every run would revoke what the previous one just wrote.
+		# Separate calls against the same group, so each must see only its own permission or every
+		# run revokes what the last one wrote.
 		client = self.client([self.permission(443, "1.1.1.1/32")])
 		result = client.sync_ingress("sg-1", 80, ["1.1.1.1/32"])
 		self.assertEqual(result, {"opened": ["1.1.1.1/32"], "closed": []})
@@ -228,6 +228,7 @@ class TestFrontPorts(unittest.TestCase):
 			inference_security_group_ids=",".join(groups),
 			inference_security_group_id_list=list(groups),
 			inference_ingress_cidrs=["1.1.1.1/32"],
+			state_store_security_group_ids="",
 			cloud_client=SimpleNamespace(
 				sync_ingress=lambda gid, port, cidrs: calls.append((gid, port, tuple(cidrs)))
 				or {"opened": [], "closed": []}
@@ -236,8 +237,7 @@ class TestFrontPorts(unittest.TestCase):
 		)
 
 	def test_both_front_ports_are_reconciled_to_the_same_sources(self):
-		# 80 is opened before the box listens on it, so no box is briefly unreachable when its
-		# nginx moves off 443.
+		# Opened before the box listens, so none is briefly unreachable when nginx moves off 443.
 		network = self.network()
 		with patch("frappe.msgprint"):
 			Network.sync_inference_ingress(network)
@@ -247,14 +247,52 @@ class TestFrontPorts(unittest.TestCase):
 		)
 
 	def test_no_engine_or_exporter_port_is_opened(self):
-		# They are reached through the box's own nginx, never directly. A hole for one would be
-		# an unauthenticated engine on the wire.
+		# Reached through the box's nginx, never directly: a hole is an unauthenticated engine.
 		network = self.network()
 		with patch("frappe.msgprint"):
 			Network.sync_inference_ingress(network)
 		for _group, port, _cidrs in network.calls:
 			with self.subTest(port):
 				self.assertNotIn(port, (8080, 9100, 9400))
+
+
+def gateway(private_ip, network="Mumbai", status="Active"):
+	return {"private_ip": private_ip, "network": network, "status": status}
+
+
+class TestStateStoreIngressCidrs(unittest.TestCase):
+	"""Who may reach a store's Redis. It holds every key hash its gateways serve, so the list is
+	the Network's gateways and nothing else."""
+
+	def test_a_gateway_in_this_network_arrives_privately(self):
+		self.assertEqual(state_store_ingress_cidrs([gateway("10.0.61.225")], "Mumbai"), ["10.0.61.225/32"])
+
+	def test_a_gateway_in_another_network_is_not_let_in(self):
+		# Two VPCs can carve the same 10.x range, so its address may name another box here.
+		self.assertEqual(state_store_ingress_cidrs([gateway("10.0.61.225", network="Frankfurt")], "Mumbai"), [])
+
+	def test_a_terminated_or_unaddressed_gateway_contributes_nothing(self):
+		gateways = [gateway("10.0.61.225", status="Terminated"), gateway("")]
+		self.assertEqual(state_store_ingress_cidrs(gateways, "Mumbai"), [])
+
+
+class TestTheStorePortIsReconciledToo(unittest.TestCase):
+	def test_6379_goes_to_the_gateways_and_nothing_else(self):
+		calls = []
+		network = SimpleNamespace(
+			name="NET-1",
+			inference_security_group_ids="",
+			state_store_security_group_ids="sg-store",
+			state_store_security_group_id_list=["sg-store"],
+			state_store_ingress_cidrs=["10.0.61.225/32"],
+			cloud_client=SimpleNamespace(
+				sync_ingress=lambda gid, port, cidrs: calls.append((gid, port, tuple(cidrs)))
+				or {"opened": [], "closed": []}
+			),
+		)
+		with patch("frappe.msgprint"):
+			Network.sync_inference_ingress(network)
+		self.assertEqual(calls, [("sg-store", 6379, ("10.0.61.225/32",))])
 
 
 class TestParseSecurityGroupIds(unittest.TestCase):
@@ -286,7 +324,7 @@ class TestCidrBlockAutoAssignment(IntegrationTestCase):
 
 		self.region = frappe.get_doc({
 			"doctype": "Region", "name": "test-network-cidr-region", "label": "CIDR test",
-			"cloud_provider": "aws",
+			"cloud_provider": "aws", "geography": make_test_geography(),
 		}).insert(ignore_permissions=True)
 		self.addCleanup(self.region.delete, ignore_permissions=True)
 
@@ -318,10 +356,10 @@ class TestCidrBlockAutoAssignment(IntegrationTestCase):
 		self.assertEqual(network.subnet_cidr_block, "10.5.0.0/24")
 
 	def test_bare_metal_placeholder_stays_blank(self):
-		# No Cloud Provider → nothing is carved out, but a Region is still named: it is what a
-		# Machine on this Network inherits.
+		# No Cloud Provider carves nothing out, but a Region is still what a Machine inherits.
 		region = frappe.get_doc({
 			"doctype": "Region", "name": "test-cidr-onprem-region", "label": "On-prem",
+			"geography": make_test_geography(),
 		}).insert(ignore_permissions=True)
 		self.addCleanup(region.delete, ignore_permissions=True)
 
