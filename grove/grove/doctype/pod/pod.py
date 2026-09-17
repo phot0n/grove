@@ -11,8 +11,7 @@ from grove.grove.doctype.engine_image.engine_image import engine_tuning
 from grove.grove.doctype.model.model import launch_config
 from grove.serving.base import build_engine
 
-# Default port pool seeded on a fresh Pod: SSH + a pool of vLLM engine ports (the provider
-# can't hot-add ports, so open them at spawn).
+# Seeded on a fresh Pod: SSH + the engine port. The provider cannot hot-add ports.
 _ENGINE_PORT = 8080
 
 
@@ -24,6 +23,7 @@ class Pod(Document):
 
 	if TYPE_CHECKING:
 		from frappe.types import DF
+
 		from grove.grove.doctype.pod_env.pod_env import PodEnv
 		from grove.grove.doctype.pod_port.pod_port import PodPort
 
@@ -56,25 +56,27 @@ class Pod(Document):
 		ssh_port: DF.Int
 		ssh_user: DF.Data | None
 		startup_command: DF.SmallText | None
+		provision_at: DF.Time | None
+		provision_attempts: DF.Int
+		provision_retries: DF.Int
 		status: DF.Literal["Pending", "Provisioning", "Loading", "Running", "Stopped", "Terminated"]
 		volume_in_gb: DF.Int
+		scheduled_for: DF.Date | None
+		terminate_at: DF.Time | None
 		volume_mount_path: DF.Data | None
 	# end: auto-generated types
 
-	"""A cloud GPU pod (e.g. RunPod), modelled on the provider's pod-create request: GPU
-	list, port pool, Engine Image, startup command, volume, SSH, env. The pod IS the
-	deployment — it serves its Model directly, with no Model Replica behind it, and is
-	operated from its own Spawn / Sync / Restart / Terminate buttons.
+	"""A cloud GPU pod, modelled on the provider's pod-create request. The pod IS the deployment:
+	it serves its Model directly, with no Model Replica behind it.
 
-	The image decides how it is started. A vllm-kind image takes `vllm serve` arguments, so
-	they are derived here into serve_command (the container's dockerStartCmd) — model-intrinsic
-	flags off the Model, per-box tuning off the Pod. A custom-kind image serves on its own and
-	gets no derived arguments, only its own entrypoint plus startup_command."""
+	The image decides how it is started. A vllm-kind image takes `vllm serve` arguments, derived
+	here into serve_command; a custom-kind image gets only its own entrypoint plus
+	startup_command."""
 
 	@property
 	def engine(self):
-		"""The Engine this pod's image serves with: the kind and the warmup off its Engine Image,
-		the Model's launch config read live, and this pod's own tuning."""
+		"""The kind and warmup off its Engine Image, the Model's launch config read live, and this
+		pod's own tuning."""
 		kind, image_tuning = engine_tuning(self.engine_image)
 		return build_engine(
 			kind,
@@ -96,41 +98,38 @@ class Pod(Document):
 		)
 
 	def before_insert(self):
-		# Opened at spawn since the provider can't hot-add ports later. The engine is exposed as
-		# http so it rides the provider's HTTPS proxy and the pod needs no certificate of its
-		# own; SSH has to stay direct tcp.
+		# The engine is exposed as http so it rides the provider's HTTPS proxy and needs no
+		# certificate of its own. SSH has to stay direct tcp.
 		if not self.ports:
 			self.append("ports", {"internal_port": 22, "protocol": "tcp"})
 			self.append("ports", {"internal_port": _ENGINE_PORT, "protocol": "http"})
 
 	def validate(self):
-		# Every kind of pod is reached on its serve port — it is what the health gate polls and
-		# what the gateway route is built from — so a port the provider never opened leaves the
-		# pod Loading forever with a blank endpoint. Checked before the custom branch returns.
+		# The health gate polls the serve port and the gateway route is built from it, so a port
+		# the provider never opened leaves the pod Loading forever with a blank endpoint.
 		serve_port = int(self.serve_port or _ENGINE_PORT)
 		if not any(int(p.internal_port) == serve_port for p in self.ports or []):
 			frappe.throw(
 				f"Serve Port {serve_port} is not in the Ports table — add it so it's opened at spawn."
 			)
 		engine = self.engine
-		# An image that enforces no key of ours must not be handed one: the gateway ships it as
-		# the route's internal key, so minting it would send a bearer to something that never
-		# asked for it.
+		# The gateway ships this as the route's internal key, so minting one for an image that
+		# enforces nothing would send a bearer to something that never asked.
 		if engine.has_api_key and not self.api_key:
 			self.api_key = secrets.token_hex(24)  # vLLM --api-key via VLLM_API_KEY env
-		# Store what actually reaches --max-model-len. The suffix is input sugar, so a doc that
-		# kept '128k' would leave the real number derivable only by re-parsing it. Blank stays
+		# Store what actually reaches --max-model-len; the suffix is input sugar. Blank stays
 		# blank — that is how a placement asks for the engine default.
 		if self.max_model_len:
 			self.max_model_len = str(engine.max_model_len)
 		if errors := engine.placement_errors:
 			frappe.throw("<br>".join(errors))
 		self.serve_command = engine.command
+		validate_window(self)
 
 	@property
 	def gpu_vram_gb(self):
-		"""VRAM per GPU for this pod's GPU type, from the Cloud Provider's cached type list.
-		None until that cache is fetched (or for a type the provider no longer lists)."""
+		"""From the Cloud Provider's cached type list. None until that cache is fetched, or for a
+		type the provider no longer lists."""
 		if not (self.cloud_provider and self.gpu_type_id):
 			return None
 		cached = frappe.db.get_value("Cloud Provider", self.cloud_provider, "gpu_types")
@@ -141,7 +140,7 @@ class Pod(Document):
 
 	@property
 	def resolved_image(self):
-		"""Image ref to spawn from — the Engine Image's, registry host included."""
+		"""The Engine Image's ref, registry host included."""
 		return frappe.get_cached_doc("Engine Image", self.engine_image).full_image
 
 	# ── Standalone lifecycle ──
@@ -150,14 +149,16 @@ class Pod(Document):
 		"""Spawn this pod on its provider (long job)."""
 		frappe.enqueue(
 			"grove.cloud_provider.provisioner.spawn_pod_doc",
-			queue="long", timeout=1800, pod_name=self.name,
+			# The poll and the engine gate fill 1800 s on their own; the create retries add up to
+			# provision_retries * SPAWN_RETRY_DELAY on top.
+			queue="long", timeout=2100, pod_name=self.name,
 		)
 		frappe.msgprint(f"Spawning pod {self.name} on {self.cloud_provider}.", alert=True)
 
 	@frappe.whitelist()
 	def sync(self):
-		"""Pull the pod's current state (IP / external ports / status) off the provider and
-		update this Pod (and its Machine, if linked). Runs inline for immediate feedback."""
+		"""Pull the pod's state off the provider and update this Pod. Runs inline for immediate
+		feedback."""
 		from grove.cloud_provider.provisioner import sync_pod
 
 		res = sync_pod(self.name)
@@ -230,3 +231,11 @@ class Pod(Document):
 			queue="long", timeout=600, pod_name=self.name,
 		)
 		frappe.msgprint(f"Terminating pod {self.name}.", alert=True)
+
+
+def validate_window(doc):
+	"""Half a window is no window, and one of zero length would spawn and terminate on one tick."""
+	if bool(doc.provision_at) != bool(doc.terminate_at):
+		frappe.throw("Set both Up From and Down From, or neither.")
+	if doc.provision_at and str(doc.provision_at) == str(doc.terminate_at):
+		frappe.throw("Up From and Down From must differ.")
