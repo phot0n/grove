@@ -184,7 +184,7 @@ class TestRouteModality(unittest.TestCase):
 
 
 class TestEffectiveGroups(unittest.TestCase):
-	"""group:<name> — the record that made this split worth doing: one push per group, however
+	"""model_group:<name> — the record that made this split worth doing: one push per group, however
 	many keys its members hold. The gateway reads exactly these two fields."""
 
 	def groups(self, groups=(), rows=()):

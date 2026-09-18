@@ -99,7 +99,7 @@ fleet gets re-pushed over row order. Order means nothing on the wire; it exists 
 |---|---|---|
 | `key:<sha256(secret)>` | state push (keys) | whose the key is |
 | `user:<name>` | state push (users) | groups (comma list), own allow/deny, over-budget flag |
-| `group:<name>` | state push (groups) | the model grant for everyone in it |
+| `model_group:<name>` | state push (groups) | the model grant for everyone in it |
 | `deploy:<model>` | state push (routes) | every placement of one model |
 | `grove:state_hash` | state push | per-section/bucket hashes of what the box holds |
 | `usage:<prefix>` | the agent | token counters, incl. `m:<metric>:<model>` fields |
