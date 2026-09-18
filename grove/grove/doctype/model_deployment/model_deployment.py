@@ -83,6 +83,8 @@ class ModelDeployment(Document):
 		self.name = next_deployment_name()
 
 	def validate(self):
+		model = frappe.get_cached_doc("Model", self.model)
+		model.reject_if_vendor_served("A deployment starts an engine for it")
 		self._validate_engine_image()
 		engine = self.engine_for()
 		if errors := engine.placement_errors:

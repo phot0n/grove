@@ -7,11 +7,8 @@ import frappe
 from frappe.model.document import Document
 
 from grove import failure
+from grove.grove.doctype.model_provider.model_provider import self_hosted_provider
 from grove.utils import slugify
-
-# The provider our own engines serve under. Shipped as a fixture, so it exists before the first
-# Model is inserted.
-DEFAULT_PROVIDER = "frappe"
 
 HF_CONFIG_URL = "https://huggingface.co/{repo}/resolve/main/config.json"
 # Root listing with a size per file. The limit is well past any real shard count.
@@ -35,7 +32,7 @@ class Model(Document):
 		modality: DF.Literal["text", "multimodal", "embedding", "audio"]
 		model_id: DF.Data
 		provider: DF.Link | None
-		provider_base_url: DF.Data | None
+		provider_is_self_hosted: DF.Check
 		published: DF.Check
 		reasoning_parser: DF.Data | None
 		thinking: DF.Check
@@ -47,8 +44,9 @@ class Model(Document):
 	# end: auto-generated types
 
 	def validate(self):
+		self.provider_is_self_hosted = self.is_self_hosted
 		# mandatory_depends_on is client-side only; this is the gate an API insert hits.
-		if not self.hf_repo and not self.vendor_base_url:
+		if self.is_self_hosted and not self.hf_repo:
 			frappe.throw(
 				f"{self.model_id} needs an HF Repo: nothing else says where its weights come from, "
 				"and its provider serves nothing of its own.",
@@ -80,10 +78,15 @@ class Model(Document):
 		if not self.model_id:
 			frappe.throw("No Model ID set")
 		# slugify keeps a slash, and the slash separates provider from id — one here would name
-		# `frappe/a/b` and read as a provider nobody registered.
+		# `<provider>/a/b` and read as a provider nobody registered.
 		if "/" in self.model_id:
 			frappe.throw("Model ID cannot contain '/'")
-		self.name = f"{self.provider or DEFAULT_PROVIDER}/{self.model_id}"
+		self.provider = self.provider or self_hosted_provider()
+		if not self.provider:
+			frappe.throw(
+				"No Model Provider is marked Self Hosted, so a blank provider has nothing to default to."
+			)
+		self.name = f"{self.provider}/{self.model_id}"
 
 		# `published` means "reachable", never a manual claim, and is not an access gate —
 		# access is granted per user via Model Group or Grove User.
@@ -102,16 +105,18 @@ class Model(Document):
 		return (self.hf_repo or "").partition(":")[2]
 
 	@property
-	def vendor_base_url(self):
-		"""Where a third party serves this model, "" when we serve it. Read off the provider rather
-		than stored, so the two cannot disagree."""
-		return vendor_base_url(self.name, self.provider)
+	def is_self_hosted(self):
+		"""Our own engines serve it — the provider is the flagged one. Read off the provider rather
+		than the mirror, so the two cannot disagree."""
+		return bool(
+			self.provider and frappe.db.get_value("Model Provider", self.provider, "is_self_hosted")
+		)
 
 	def reject_if_vendor_served(self, what):
 		"""Refuse a self-hosting operation on a model we do not host. The form hides these, but a
 		whitelisted method is reachable without the button — and the errors underneath name a
 		missing repo, which is true and no help at all."""
-		if self.vendor_base_url:
+		if not self.is_self_hosted:
 			frappe.throw(f"{self.name} is served by {self.provider}. {what}, and there is none.")
 
 	@frappe.whitelist()

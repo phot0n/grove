@@ -6,6 +6,11 @@ const LOG_LINE_LIMIT = 2000;
 const LOG_PING_INTERVAL = 15000;
 
 frappe.ui.form.on('Pod', {
+	setup(frm) {
+		// Only a model we host has an engine to start.
+		frm.set_query('model', () => ({ filters: { provider_is_self_hosted: 1 } }));
+	},
+
 	refresh(frm) {
 		if (frm.is_new()) return;
 		setup_log_view(frm);

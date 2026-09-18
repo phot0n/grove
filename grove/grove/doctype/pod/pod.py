@@ -105,6 +105,8 @@ class Pod(Document):
 			self.append("ports", {"internal_port": _ENGINE_PORT, "protocol": "http"})
 
 	def validate(self):
+		model = frappe.get_cached_doc("Model", self.model)
+		model.reject_if_vendor_served("A pod starts an engine for it")
 		# The health gate polls the serve port and the gateway route is built from it, so a port
 		# the provider never opened leaves the pod Loading forever with a blank endpoint.
 		serve_port = int(self.serve_port or _ENGINE_PORT)

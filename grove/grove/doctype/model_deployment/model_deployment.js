@@ -1,4 +1,9 @@
 frappe.ui.form.on('Model Deployment', {
+	setup(frm) {
+		// Only a model we host has an engine to start.
+		frm.set_query('model', () => ({ filters: { provider_is_self_hosted: 1 } }));
+	},
+
 	refresh(frm) {
 		if (frm.is_new()) return;
 		frm.add_custom_button(__('Place a Replica'), () => place_replica(frm));

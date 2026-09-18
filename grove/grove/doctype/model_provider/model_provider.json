@@ -5,6 +5,7 @@
  "doctype": "DocType",
  "engine": "InnoDB",
  "field_order": [
+  "is_self_hosted",
   "geography",
   "base_url",
   "api_version",
@@ -14,6 +15,15 @@
  ],
  "fields": [
   {
+   "default": "0",
+   "description": "The provider our own engines serve under: a Model with no provider is named here, and only its models can be deployed. Exactly one, and it dials nothing \u2014 a URL is what makes a vendor.",
+   "fieldname": "is_self_hosted",
+   "fieldtype": "Check",
+   "in_list_view": 1,
+   "label": "Self Hosted"
+  },
+  {
+   "depends_on": "eval:!doc.is_self_hosted",
    "description": "Where this vendor account processes requests. Its models are routed only by gateways in this geography, so a regional front (eu.api.openai.com) is its own provider. Blank for our own engines, which take their geography from wherever they run.",
    "fieldname": "geography",
    "fieldtype": "Link",
@@ -23,6 +33,7 @@
    "options": "Geography"
   },
   {
+   "depends_on": "eval:!doc.is_self_hosted",
    "description": "The vendor's OpenAI-compatible front (https://api.deepseek.com). The URL fields ARE the dialect declaration: each front set here makes this vendor's models reachable from that surface. Both blank means we serve the models ourselves \u2014 that is what makes a provider third-party, so there is no separate type to keep in step with it.",
    "fieldname": "base_url",
    "fieldtype": "Data",
@@ -30,6 +41,7 @@
    "options": "URL"
   },
   {
+   "depends_on": "eval:!doc.is_self_hosted",
    "description": "The vendor's Anthropic-compatible front \u2014 alone for an Anthropic-only vendor (https://api.anthropic.com), or next to the OpenAI one for a dual-front vendor (DeepSeek's https://api.deepseek.com/anthropic). Same key either way.",
    "fieldname": "anthropic_base_url",
    "fieldtype": "Data",
@@ -56,7 +68,7 @@
   }
  ],
  "links": [],
- "modified": "2026-08-31 13:15:51.109144",
+ "modified": "2026-09-17 12:00:00.000000",
  "modified_by": "Administrator",
  "module": "Grove",
  "name": "Model Provider",

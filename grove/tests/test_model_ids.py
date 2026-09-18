@@ -15,7 +15,7 @@ import unittest
 import frappe
 from frappe.tests import IntegrationTestCase
 
-from grove.grove.doctype.model.model import DEFAULT_PROVIDER
+from grove.grove.doctype.model_provider.model_provider import self_hosted_provider
 
 
 class TestTheIdIsAlwaysPrefixed(IntegrationTestCase):
@@ -36,11 +36,11 @@ class TestTheIdIsAlwaysPrefixed(IntegrationTestCase):
 		doc.insert()
 		return doc
 
-	def test_our_own_models_are_named_under_frappe(self):
+	def test_our_own_models_are_named_under_the_self_hosted_provider(self):
 		doc = self.model("Ponytail Probe 7B")
-		self.assertEqual("frappe/ponytail-probe-7b", doc.name)
+		self.assertEqual(f"{self_hosted_provider()}/ponytail-probe-7b", doc.name)
 		self.assertEqual("ponytail-probe-7b", doc.model_id)
-		self.assertEqual(DEFAULT_PROVIDER, doc.provider)
+		self.assertEqual(self_hosted_provider(), doc.provider)
 
 	def test_a_third_party_model_is_named_under_its_vendor(self):
 		if not frappe.db.exists("Model Provider", "anthropic"):
@@ -53,7 +53,7 @@ class TestTheIdIsAlwaysPrefixed(IntegrationTestCase):
 		# The prefix IS the id: without it the route key would not match what /v1/models
 		# advertises.
 		doc = self.model("No Provider Named", provider="")
-		self.assertTrue(doc.name.startswith(f"{DEFAULT_PROVIDER}/"))
+		self.assertTrue(doc.name.startswith(f"{self_hosted_provider()}/"))
 
 	def test_the_id_cannot_be_edited_afterwards(self):
 		# `set_only_once` refuses the edit rather than leaving the doc named one thing and
@@ -95,9 +95,9 @@ class TestProviderNames(IntegrationTestCase):
 		doc = frappe.get_doc({"doctype": "Model Provider", "name": "vertex-ai"}).insert()
 		self.assertEqual("vertex-ai", doc.name)
 
-	def test_the_default_provider_ships_with_the_app(self):
-		# A fixture, so it exists before the first Model is inserted — every Model defaults to it.
-		self.assertTrue(frappe.db.exists("Model Provider", DEFAULT_PROVIDER))
+	def test_the_self_hosted_provider_ships_with_the_app(self):
+		# A fixture flags it, so it exists before the first Model is inserted — every Model defaults to it.
+		self.assertTrue(self_hosted_provider())
 
 
 if __name__ == "__main__":

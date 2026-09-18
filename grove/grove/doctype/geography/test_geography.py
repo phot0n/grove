@@ -21,7 +21,10 @@ ZONE = "grove.example.com"
 def make_test_geography():
 	"""The Geography site-backed tests put their regions and vendors in."""
 	if not frappe.db.exists("Geography", "test"):
-		geography = {"doctype": "Geography", "__newname": "test", "endpoint": "api.test.grove.localhost"}
+		geography = {
+			"doctype": "Geography", "__newname": "test",
+			"fleet_zone": "test.grove.localhost", "endpoint": "api.test.grove.localhost",
+		}
 		frappe.get_doc(geography).insert(ignore_permissions=True)
 	return "test"
 
@@ -131,7 +134,7 @@ class TestWhoCarriesAGeography(unittest.TestCase):
 
 	def test_a_vendor_must_name_where_it_processes(self):
 		def validate(**fields):
-			doc = SimpleNamespace(**{"name": "openai-eu", "base_url": None, "anthropic_base_url": None, "geography": None, **fields})
+			doc = SimpleNamespace(**{"name": "openai-eu", "base_url": None, "anthropic_base_url": None, "geography": None, "is_self_hosted": 0, **fields})
 			with patch("frappe.throw", side_effect=frappe.ValidationError):
 				ModelProvider.validate(doc)
 

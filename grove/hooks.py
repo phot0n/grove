@@ -14,7 +14,7 @@ notification_config = "grove.notifications.get_notification_config"
 
 fixtures = [
 	{"dt": "Role", "filters": [["name", "in", ["Grove Control", "Grove User"]]]},
-	{"dt": "Model Provider", "filters": [["name", "in", ["frappe"]]]}, # TODO: move to after migrate/after install
+	{"dt": "Model Provider", "filters": [["is_self_hosted", "=", 1]]},  # TODO: move to after migrate/after install
 ]
 
 scheduler_events = {
