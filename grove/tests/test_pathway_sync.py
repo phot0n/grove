@@ -654,7 +654,7 @@ class TestSyncProjection(unittest.TestCase):
 		_name, doc, targets = self.run_projection({}, groups=[("store1", [])])
 		self.assertEqual(targets, [])
 		[row] = doc.results
-		self.assertEqual((row["server_type"], row["server"]), ("Gateway State Store", "store1"))
+		self.assertEqual((row["server_type"], row["server"]), ("Gateway Store", "store1"))
 		self.assertEqual(doc.status, "Failed")
 
 	def test_a_pushed_box_lands_on_the_run_doc(self):
@@ -701,7 +701,7 @@ class TestSyncTargets(unittest.TestCase):
 	"""Which gateways a run reaches: each Redis once, a store only through the gateways marked to."""
 
 	def targets(self, gateways):
-		rows = [frappe._dict(name=name, state_store=store, is_state_store_writer=writer) for name, store, writer in gateways]
+		rows = [frappe._dict(name=name, gateway_store=store, is_store_writer=writer) for name, store, writer in gateways]
 		with unittest.mock.patch.object(frappe, "get_all", return_value=rows) as get_all:
 			groups = pathway_sync.sync_targets()
 		self.assertEqual(get_all.call_args.kwargs["filters"], {"status": "Active"})

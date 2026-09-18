@@ -10,8 +10,8 @@ from unittest.mock import patch
 import frappe
 
 from grove.grove.doctype.gateway_server.gateway_server import GatewayServer
-from grove.grove.doctype.gateway_state_store.gateway_state_store import (
-	GatewayStateStore,
+from grove.grove.doctype.gateway_store.gateway_store import (
+	GatewayStore,
 	gateway_redis_variables,
 )
 
@@ -49,7 +49,7 @@ class TestOneStorePerNetwork(unittest.TestCase):
 			patch.object(frappe, "get_all", side_effect=stub_get_all(stores)),
 			patch.object(frappe, "throw", side_effect=Refused),
 		):
-			GatewayStateStore.validate_one_per_network(doc)
+			GatewayStore.validate_one_per_network(doc)
 
 	def test_the_first_store_of_a_network_is_accepted(self):
 		self.validate("store1", {"Mumbai": [("store1", "Pending")]})
@@ -77,13 +77,13 @@ class TestWhatAGatewayIsGiven(unittest.TestCase):
 	def test_a_store_is_dialled_at_its_private_address_with_its_password(self):
 		store = SimpleNamespace(listen_ip="10.0.61.9", get_password=lambda field: "pw")
 		self.assertEqual(
-			GatewayStateStore.redis_variables.fget(store),
+			GatewayStore.redis_variables.fget(store),
 			{"redis_addr": "10.0.61.9:6379", "redis_password": "pw", "redis_shared": True},
 		)
 
 	def test_the_address_is_the_machines_read_live(self):
 		with patch.object(frappe, "db", stub_db({"store1": {"private_ip": "10.0.61.9"}})):
-			self.assertEqual(GatewayStateStore.listen_ip.fget(SimpleNamespace(machine="store1")), "10.0.61.9")
+			self.assertEqual(GatewayStore.listen_ip.fget(SimpleNamespace(machine="store1")), "10.0.61.9")
 
 	def test_a_machine_with_no_private_address_is_refused(self):
 		store = SimpleNamespace(machine="store1")
@@ -92,24 +92,24 @@ class TestWhatAGatewayIsGiven(unittest.TestCase):
 			patch.object(frappe, "throw", side_effect=Refused),
 			self.assertRaises(Refused),
 		):
-			GatewayStateStore.listen_ip.fget(store)
+			GatewayStore.listen_ip.fget(store)
 
-	def network_state_store(self, stores, network="Mumbai"):
+	def network_store(self, stores, network="Mumbai"):
 		with (
 			patch.object(frappe, "db", stub_db({"gw1": {"network": network}})),
 			patch.object(frappe, "get_all", side_effect=stub_get_all(stores)),
 		):
-			return GatewayServer.network_state_store.fget(SimpleNamespace(machine="gw1"))
+			return GatewayServer.network_store.fget(SimpleNamespace(machine="gw1"))
 
 	def test_a_gateway_takes_its_networks_active_store(self):
-		self.assertEqual(self.network_state_store({"Mumbai": [("store1", "Active")]}), "store1")
+		self.assertEqual(self.network_store({"Mumbai": [("store1", "Active")]}), "store1")
 
 	def test_a_store_not_yet_active_leaves_it_on_loopback(self):
 		# Setup has not finished: there is no Redis there to move onto.
-		self.assertIsNone(self.network_state_store({"Mumbai": [("store1", "Installing")]}))
+		self.assertIsNone(self.network_store({"Mumbai": [("store1", "Installing")]}))
 
 	def test_a_gateway_in_no_network_stays_on_loopback(self):
-		self.assertIsNone(self.network_state_store({"Mumbai": [("store1", "Active")]}, network=None))
+		self.assertIsNone(self.network_store({"Mumbai": [("store1", "Active")]}, network=None))
 
 
 if __name__ == "__main__":

@@ -558,7 +558,7 @@ class TestWhatTheServersMirrorFromTheirMachine(unittest.TestCase):
 	"""Address and network are the Machine's. The server docs carry read-only copies, refreshed on
 	their own save, for the form and the list; code that acts on them reads the Machine live."""
 
-	SERVERS = ("gateway_server", "ingress_server", "monitoring_agent", "inference_server", "gateway_state_store")
+	SERVERS = ("gateway_server", "ingress_server", "monitoring_agent", "inference_server", "gateway_store")
 
 	def field(self, server, name):
 		doc = json.loads((Path(__file__).resolve().parents[1] / server / f"{server}.json").read_text())
@@ -660,7 +660,7 @@ class TestNetworkResolution(IntegrationTestCase):
 			"subnet_id": "subnet-x",
 			"proxy_security_group_ids": "sg-proxy",
 			"inference_security_group_ids": "sg-inference",
-			"state_store_security_group_ids": "sg-store",
+			"store_security_group_ids": "sg-store",
 		}).insert(ignore_permissions=True)
 		self.addCleanup(self.network.delete, ignore_permissions=True)
 
@@ -705,11 +705,11 @@ class TestNetworkResolution(IntegrationTestCase):
 		self.addCleanup(machine.delete, ignore_permissions=True)
 		self.assertEqual(machine.get_security_group_ids(machine.network_doc), ["sg-inference"])
 
-	def test_state_store_role_picks_state_store_security_groups(self):
+	def test_gateway_store_role_picks_store_security_groups(self):
 		# 6379 to the Network's gateways; neither other list opens it.
 		machine = frappe.get_doc({
 			"doctype": "Machine", "name": "test-net-role-store", "cloud_provider": self.provider.name,
-			"network": self.network.name, "machine_type": "State Store",
+			"network": self.network.name, "machine_type": "Gateway Store",
 		}).insert(ignore_permissions=True)
 		self.addCleanup(machine.delete, ignore_permissions=True)
 		self.assertEqual(machine.get_security_group_ids(machine.network_doc), ["sg-store"])
@@ -822,10 +822,10 @@ class TestTerminatingABoxTakesItsServersWithIt(unittest.TestCase):
 	def test_every_dependent_kind_is_covered(self):
 		saved, _, _ = self.cascade(dependents={
 			"Gateway Server": ["gw-1"], "Ingress Server": ["ing-1"],
-			"Inference Server": ["inf-1"], "Monitoring Agent": ["ma-1"], "Gateway State Store": ["store-1"],
+			"Inference Server": ["inf-1"], "Monitoring Agent": ["ma-1"], "Gateway Store": ["store-1"],
 		})
 		self.assertEqual(
-			{"Gateway Server", "Ingress Server", "Inference Server", "Monitoring Agent", "Gateway State Store"},
+			{"Gateway Server", "Ingress Server", "Inference Server", "Monitoring Agent", "Gateway Store"},
 			{doctype for doctype, _, _, _ in saved},
 		)
 

@@ -23,7 +23,7 @@ TOPO_TASK = "query nvidia-smi topo"
 # The start of a box's name, by what it backs: `inf1-ap-south-1`. The server doc on it takes the
 # whole name.
 NAME_PREFIX = {
-	"Gateway": "gw", "Ingress": "ing", "Inference": "inf", "Monitoring Agent": "mon", "State Store": "store",
+	"Gateway": "gw", "Ingress": "ing", "Inference": "inf", "Monitoring Agent": "mon", "Gateway Store": "store",
 }
 
 
@@ -49,7 +49,7 @@ class Machine(GeneratedName, AnsibleHost, Document):
 		is_bare_metal: DF.Check
 		is_static_ip: DF.Check
 		machine_image: DF.Data | None
-		machine_type: DF.Literal["", "Gateway", "Ingress", "Inference", "Monitoring Agent", "State Store"]
+		machine_type: DF.Literal["", "Gateway", "Ingress", "Inference", "Monitoring Agent", "Gateway Store"]
 		network: DF.Link | None
 		private_ip: DF.Data | None
 		public_ip: DF.Data | None
@@ -182,15 +182,15 @@ class Machine(GeneratedName, AnsibleHost, Document):
 		Network of their own and to Route53 health checkers whose addresses are AWS's to change.
 		A Monitoring Agent takes the inference list — vmagent and node_exporter both bind
 		127.0.0.1 and everything else is outbound, so the proxy list would open 80/443 for
-		nothing. A State Store takes its own: 6379 to the Network's gateways."""
+		nothing. A Gateway Store takes its own: 6379 to the Network's gateways."""
 		if not network:
 			return []
 		if not self.machine_type:
 			frappe.throw(f"Set a Machine Type on Machine {self.name} to pick its security groups.")
 		if self.machine_type in ("Gateway", "Ingress"):
 			return network.proxy_security_group_id_list
-		if self.machine_type == "State Store":
-			return network.state_store_security_group_id_list
+		if self.machine_type == "Gateway Store":
+			return network.store_security_group_id_list
 		return network.inference_security_group_id_list
 
 	@property
@@ -326,7 +326,7 @@ class Machine(GeneratedName, AnsibleHost, Document):
 			return
 		dependent_status = "Terminated" if self.status == "Terminated" else "Broken"
 		for doctype in (
-			"Gateway Server", "Ingress Server", "Inference Server", "Monitoring Agent", "Gateway State Store"
+			"Gateway Server", "Ingress Server", "Inference Server", "Monitoring Agent", "Gateway Store"
 		):
 			for name in frappe.get_all(
 				doctype, filters={"machine": self.name, "status": "Active"}, pluck="name"

@@ -11,7 +11,7 @@ playbooks/
   inference_server/   provision.yml  serve.yml  reconfigure.yml  container_state.yml  teardown.yml  deploy_tls.yml
   machine/            ping.yml  grow_root.yml  scan_gpus.yml     — box-level, no role layered on yet
   monitoring_agent/   agent.yml  config.yml  exporters.yml  push_targets.yml
-  gateway_state_store/ store.yml                       — Redis only, shared by a Network's gateways
+  gateway_store/ store.yml                       — Redis only, shared by a Network's gateways
   roles/              grove_user  remove_cloud_user  auditd  dcgm_exporter  node_exporter  fleet_tls  grove_https  install_gateway_agent  openresty  redis
 ```
 
@@ -74,7 +74,7 @@ not what buttons call — it has no Frappe tracking.)
 - **Reconcile the *running* state, not just the file.** A `blockinfile` that already matches reports
   unchanged and never notifies its handler again, so a setting can sit correct in the config and inert
   in the process for the life of the box. See "enforce persistence on the running redis" in
-  `roles/redis`, which a gateway runs on its own Redis and a Gateway State Store on the shared one.
+  `roles/redis`, which a gateway runs on its own Redis and a Gateway Store on the shared one.
 - **Non-fatal cleanup is guarded, not assumed.** Stopping OpenResty on a box that never had it uses
   `failed_when: false`.
 - **The binary is downloaded, never compiled.** The agent lives in its own repo; `install_gateway_agent`

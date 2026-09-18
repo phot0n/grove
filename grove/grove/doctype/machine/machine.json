@@ -42,7 +42,7 @@
    "fieldtype": "Select",
    "in_list_view": 1,
    "label": "Machine Type",
-   "options": "\nGateway\nIngress\nInference\nMonitoring Agent\nState Store",
+   "options": "Gateway\nIngress\nInference\nMonitoring Agent\nGateway Store",
    "reqd": 1,
    "set_only_once": 1
   },
@@ -242,7 +242,7 @@
   }
  ],
  "links": [],
- "modified": "2026-09-17 00:00:00.000000",
+ "modified": "2026-09-17 16:41:00.000000",
  "modified_by": "Administrator",
  "module": "Grove",
  "name": "Machine",

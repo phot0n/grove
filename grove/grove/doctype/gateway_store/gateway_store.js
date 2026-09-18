@@ -1,4 +1,4 @@
-frappe.ui.form.on('Gateway State Store', {
+frappe.ui.form.on('Gateway Store', {
 	refresh(frm) {
 		if (frm.is_new()) return;
 

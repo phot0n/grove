@@ -710,7 +710,7 @@ def full_sync(proxies=None, trigger="Manual", ingresses=None, wait=60):
 
 # --- helpers ---------------------------------------------------------------
 
-NO_WRITER = "No Active State Store Writer — mark one of this store's gateways, or nothing updates it."
+NO_WRITER = "No Active Gateway Store Writer — mark one of this store's gateways, or nothing updates it."
 
 
 def sync_targets():
@@ -721,15 +721,15 @@ def sync_targets():
 	gateways = frappe.get_all(
 		"Gateway Server",
 		filters={"status": "Active"},
-		fields=["name", "state_store", "is_state_store_writer"],
+		fields=["name", "gateway_store", "is_store_writer"],
 		order_by="name asc",
 	)
 	for gateway in gateways:
-		if not gateway.state_store:
+		if not gateway.gateway_store:
 			alone.append((None, [gateway.name]))
 			continue
-		writers = stores.setdefault(gateway.state_store, [])
-		if gateway.is_state_store_writer:
+		writers = stores.setdefault(gateway.gateway_store, [])
+		if gateway.is_store_writer:
 			writers.append(gateway.name)
 	return alone + sorted(stores.items())
 
@@ -738,7 +738,7 @@ def try_in_turn(doc, store, gateways, attempt):
 	"""Run `attempt` on each gateway until one succeeds, logging a row per attempt. True when one
 	succeeded, None when one already held the state (no row), False when none got through."""
 	if not gateways:
-		doc.append("results", {"server_type": "Gateway State Store", "server": store, "error": NO_WRITER})
+		doc.append("results", {"server_type": "Gateway Store", "server": store, "error": NO_WRITER})
 		return False
 	for gateway in gateways:
 		res = attempt(gateway)

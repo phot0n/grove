@@ -5,7 +5,7 @@ const SERVER_DOCTYPE = {
 	'Ingress': 'Ingress Server',
 	'Inference': 'Inference Server',
 	'Monitoring Agent': 'Monitoring Agent',
-	'State Store': 'Gateway State Store',
+	'Gateway Store': 'Gateway Store',
 };
 
 frappe.ui.form.on('Machine', {

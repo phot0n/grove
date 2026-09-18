@@ -1,6 +1,6 @@
 ---
 # Provision a Grove Gateway Server: its Redis (loopback with zero-loss persistence, or the Network's
-# Gateway State Store) + the pathway binary, which owns the whole data path — TLS, routing, auth,
+# Gateway Store) + the pathway binary, which owns the whole data path — TLS, routing, auth,
 # metering. Idempotent.
 #
 # There is no OpenResty here any more. The play stops and disables it rather than ignoring it, so a

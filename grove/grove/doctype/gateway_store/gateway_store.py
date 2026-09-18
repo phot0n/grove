@@ -12,7 +12,7 @@ REDIS_PORT = 6379
 LOOPBACK_REDIS = {"redis_addr": f"127.0.0.1:{REDIS_PORT}", "redis_password": "", "redis_shared": False}
 
 
-class GatewayStateStore(Server, Document):
+class GatewayStore(Server, Document):
 	"""The one Redis a Network's gateways share. One in-flight counter per replica is what caps a
 	standalone box across those gateways; everything else they hold lives here with it."""
 
@@ -49,7 +49,7 @@ class GatewayStateStore(Server, Document):
 			return
 		others = [name for name in stores_in(network, status=("!=", "Terminated")) if name != self.name]
 		if others:
-			frappe.throw(f"Network {network} already has Gateway State Store {others[0]}.")
+			frappe.throw(f"Network {network} already has Gateway Store {others[0]}.")
 
 	def set_redis_password(self):
 		"""Tested through get_password: a saved Password field reads back as asterisks even when
@@ -62,7 +62,7 @@ class GatewayStateStore(Server, Document):
 		"""A gateway on this store authenticates nothing without it."""
 		gateways = frappe.get_all(
 			"Gateway Server",
-			filters={"state_store": self.name, "status": ("!=", "Terminated")},
+			filters={"gateway_store": self.name, "status": ("!=", "Terminated")},
 			pluck="name",
 		)
 		if not gateways:
@@ -113,7 +113,7 @@ def stores_in(network, **filters):
 	if not boxes:
 		return []
 	return frappe.get_all(
-		"Gateway State Store", filters={"machine": ("in", boxes), **filters}, pluck="name"
+		"Gateway Store", filters={"machine": ("in", boxes), **filters}, pluck="name"
 	)
 
 
@@ -121,7 +121,7 @@ def store_writers(store):
 	"""The store's Active writers, in the order a sync tries them."""
 	return frappe.get_all(
 		"Gateway Server",
-		filters={"state_store": store, "is_state_store_writer": 1, "status": "Active"},
+		filters={"gateway_store": store, "is_store_writer": 1, "status": "Active"},
 		order_by="name asc",
 		pluck="name",
 	)
@@ -131,4 +131,4 @@ def gateway_redis_variables(store):
 	"""A gateway's Redis: the store's when it has one, else its own on loopback."""
 	if not store:
 		return dict(LOOPBACK_REDIS)
-	return frappe.get_doc("Gateway State Store", store).redis_variables
+	return frappe.get_doc("Gateway Store", store).redis_variables

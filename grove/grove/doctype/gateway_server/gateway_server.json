@@ -20,8 +20,8 @@
   "admin_token",
   "agent_version",
   "is_in_maintenance",
-  "state_store",
-  "is_state_store_writer",
+  "gateway_store",
+  "is_store_writer",
   "health_check_id"
  ],
  "fields": [
@@ -137,18 +137,18 @@
    "read_only": 1
   },
   {
-   "description": "The Redis this box's agent was last deployed onto: its Network's Gateway State Store when that was Active. Blank = its own loopback Redis. Written by the deploy, not typed.",
-   "fieldname": "state_store",
+   "description": "The Redis this box's agent was last deployed onto: its Network's Gateway Store when that was Active. Blank = its own loopback Redis. Written by the deploy, not typed.",
+   "fieldname": "gateway_store",
    "fieldtype": "Link",
-   "label": "State Store",
-   "options": "Gateway State Store"
+   "label": "Gateway Store",
+   "options": "Gateway Store"
   },
   {
    "default": "0",
-   "depends_on": "eval:doc.state_store",
-   "fieldname": "is_state_store_writer",
+   "depends_on": "eval:doc.gateway_store",
+   "fieldname": "is_store_writer",
    "fieldtype": "Check",
-   "label": "State Store Writer"
+   "label": "Gateway Store Writer"
   },
   {
    "description": "Route53 health check watching this box's /healthz. Its row in the region's multivalue set carries it, and the region's calculated check counts it as a child.",
@@ -166,7 +166,7 @@
   }
  ],
  "links": [],
- "modified": "2026-09-17 00:00:00.000000",
+ "modified": "2026-09-17 16:41:00.000000",
  "modified_by": "Administrator",
  "module": "Grove",
  "name": "Gateway Server",

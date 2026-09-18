@@ -12,7 +12,7 @@ from grove.fleet import (
 	gateway_agent_release,
 	gateway_agent_version,
 )
-from grove.grove.doctype.gateway_state_store.gateway_state_store import (
+from grove.grove.doctype.gateway_store.gateway_store import (
 	gateway_redis_variables,
 	store_writers,
 	stores_in,
@@ -33,18 +33,18 @@ class GatewayServer(PathwayHost, Document):
 		admin_url: DF.Data | None
 		agent_version: DF.Data | None
 		frappe_public_key: DF.Code | None
+		gateway_store: DF.Link | None
 		geography: DF.Link | None
 		health_check_id: DF.Data | None
 		is_in_maintenance: DF.Check
-		is_state_store_writer: DF.Check
 		is_static_ip: DF.Check
+		is_store_writer: DF.Check
 		machine: DF.Link
 		monitoring_agent: DF.Link | None
 		network: DF.Link | None
 		private_ip: DF.Data | None
 		public_ip: DF.Data | None
 		region: DF.Link | None
-		state_store: DF.Link | None
 		status: DF.Literal["Pending", "Installing", "Active", "Broken", "Terminated"]
 	# end: auto-generated types
 
@@ -54,8 +54,8 @@ class GatewayServer(PathwayHost, Document):
 	def validate(self):
 		self.set_admin_url()
 		self.set_admin_token()
-		if self.is_state_store_writer and not self.state_store:
-			frappe.throw(f"{self.name} runs on its own Redis — only a gateway on a State Store can be its writer.")
+		if self.is_store_writer and not self.gateway_store:
+			frappe.throw(f"{self.name} runs on its own Redis — only a gateway on a Gateway Store can be its writer.")
 
 	def set_admin_token(self):
 		"""The credential the control plane authenticates every push with. Generated rather than
@@ -102,24 +102,24 @@ class GatewayServer(PathwayHost, Document):
 		return [f"Last gateway in {self.region}, which still has a live {' and '.join(served)}."]
 
 	@property
-	def network_state_store(self):
+	def network_store(self):
 		"""The Active store of this box's Network, the Network read off the Machine live. None
 		means the box's own loopback Redis."""
 		network = frappe.db.get_value("Machine", self.machine, "network")
 		stores = stores_in(network, status="Active") if network else []
 		return stores[0] if stores else None
 
-	def record_state_store(self, rc, store):
+	def record_store(self, rc, store):
 		"""Which Redis the agent now runs on, on the runs that wrote agent.env. A writer stays one
 		while its store is unchanged, and a store with no Active writer takes this gateway. db.set_value,
 		like record_agent_version, so it fires no on_update."""
 		if rc != 0:
 			return
-		before = frappe.db.get_value(self.doctype, self.name, ["state_store", "is_state_store_writer"], as_dict=True)
-		stays_writer = before.state_store == store and before.is_state_store_writer
+		before = frappe.db.get_value(self.doctype, self.name, ["gateway_store", "is_store_writer"], as_dict=True)
+		stays_writer = before.gateway_store == store and before.is_store_writer
 		is_writer = bool(store) and bool(stays_writer or not store_writers(store))
 		frappe.db.set_value(
-			self.doctype, self.name, {"state_store": store, "is_state_store_writer": int(is_writer)}
+			self.doctype, self.name, {"gateway_store": store, "is_store_writer": int(is_writer)}
 		)
 
 	@frappe.whitelist()
@@ -239,12 +239,12 @@ class GatewayServer(PathwayHost, Document):
 
 		Stays on the Redis it is on: moving a live gateway onto a store drains it first, which a deploy
 		does not."""
-		store = self.state_store
+		store = self.gateway_store
 		play_name, rc = self.run_playbook(
 			"deploy_agent.yml", extravars=self.get_agent_extravars(store, agent_binary), **play
 		)
 		self.record_agent_version(rc)
-		self.record_state_store(rc, store)
+		self.record_store(rc, store)
 		return play_name, rc
 
 	def get_agent_extravars(self, store, agent_binary=""):
@@ -293,7 +293,7 @@ class GatewayServer(PathwayHost, Document):
 		frappe.db.commit()
 
 		# A new box starts on its Network's store; one already installed stays where it is.
-		store = self.state_store if self.agent_version else self.network_state_store
+		store = self.gateway_store if self.agent_version else self.network_store
 		play_name, rc = self.run_playbook(
 			"gateway.yml",
 			# The fleet key too: Setup is what writes the certificate. Blank zone renders a box that
@@ -310,7 +310,7 @@ class GatewayServer(PathwayHost, Document):
 			{"status": "Active" if rc == 0 else "Broken", "admin_url": self.admin_url},
 		)
 		self.record_agent_version(rc)
-		self.record_state_store(rc, store)
+		self.record_store(rc, store)
 		frappe.db.commit()
 
 		if rc == 0:

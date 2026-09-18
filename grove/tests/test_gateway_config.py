@@ -229,7 +229,7 @@ class TestUsageSurvivesTheBoxRestarting(unittest.TestCase):
 	"""
 
 	def setUp(self):
-		# The tasks live in roles/redis, which both the gateway and the state store run.
+		# The tasks live in roles/redis, which both the gateway and the gateway store run.
 		self.tasks = yaml.safe_load((PLAYBOOKS / "roles/redis/tasks/main.yml").read_text())
 		self.names = [t.get("name") for t in self.tasks]
 
@@ -409,7 +409,7 @@ class TestTheProcessIsNotRoot(unittest.TestCase):
 
 
 class TestAGatewayOnAStoreRunsNoRedisOfItsOwn(unittest.TestCase):
-	"""A gateway on its Network's Gateway State Store keeps everything there; a loopback Redis still
+	"""A gateway on its Network's Gateway Store keeps everything there; a loopback Redis still
 	running beside it would hold stale keys nothing reads."""
 
 	def test_the_redis_role_is_skipped_on_a_shared_store(self):
@@ -428,7 +428,7 @@ class TestAStoreIsNeverOpenWithoutAPassword(unittest.TestCase):
 	"""A store listens on its private address, and holds every gateway key hash in the Network."""
 
 	def test_the_store_play_refuses_a_blank_password(self):
-		[check] = play("gateway_state_store/store.yml")["pre_tasks"]
+		[check] = play("gateway_store/store.yml")["pre_tasks"]
 		self.assertIn("redis_password", " ".join(check["ansible.builtin.assert"]["that"]))
 
 	def test_the_listen_address_is_only_written_with_a_password(self):

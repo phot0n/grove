@@ -59,7 +59,7 @@ def extravars_for(doctype_class, module, doc, **kwargs):
 	doc.run_playbook = run_playbook
 	# Recording is FleetHost's, and TestTheInstalledVersionIsRecorded holds it to account.
 	doc.record_agent_version = lambda rc: None
-	doc.record_state_store = lambda rc, store: None
+	doc.record_store = lambda rc, store: None
 	# frappe.db is a Local and unbound without a site; the release is read off Grove Settings
 	# through it, so the whole thing is swapped the way test_pathway_sync reaches it.
 	with (
@@ -98,8 +98,8 @@ def fake_gateway(**fields):
 		geography="eu",
 		tls_variables=dict(TLS),
 		hostname="gw-1.grove.test",
-		state_store=None,
-		network_state_store=None,
+		gateway_store=None,
+		network_store=None,
 		is_in_maintenance=0,
 		get_password=lambda field, **kwargs: f"secret-{field}",
 	)
@@ -110,7 +110,7 @@ def gateway_extravars(store=None, **fields):
 	return extravars_for(
 		GatewayServer,
 		"grove.grove.doctype.gateway_server.gateway_server",
-		fake_gateway(state_store=store, **fields),
+		fake_gateway(gateway_store=store, **fields),
 	)
 
 
@@ -272,16 +272,16 @@ class TestAGatewayIsToldWhichRedis(unittest.TestCase):
 
 	def test_a_deploy_never_moves_a_gateway_onto_its_networks_store(self):
 		# Moving a live gateway drains it first; a routine deploy must not do that by the way.
-		sent = gateway_extravars(store=None, network_state_store="store1-ap-south-1")
+		sent = gateway_extravars(store=None, network_store="store1-ap-south-1")
 		self.assertEqual("127.0.0.1:6379", sent["redis_addr"])
 
 	def provisioned_onto(self, agent_version):
 		"""The store provision hands get_agent_extravars, for a gateway on s-current in a Network
 		whose store is s-network."""
 		doc = fake_gateway(
-			doctype="Gateway Server", agent_version=agent_version, state_store="s-current",
-			network_state_store="s-network", admin_url="", set_admin_url=lambda: None,
-			record_agent_version=lambda rc: None, record_state_store=lambda rc, store: None,
+			doctype="Gateway Server", agent_version=agent_version, gateway_store="s-current",
+			network_store="s-network", admin_url="", set_admin_url=lambda: None,
+			record_agent_version=lambda rc: None, record_store=lambda rc, store: None,
 			run_playbook=lambda play, extravars: ("play-1", 1),
 		)
 		doc.get_agent_extravars = Mock(return_value={})
@@ -304,35 +304,35 @@ class TestAGatewayIsToldWhichRedis(unittest.TestCase):
 		self.assertEqual(store.redis_variables, {key: sent[key] for key in store.redis_variables})
 
 	def recorded(self, store, rc=0, before=(None, 0), writers=()):
-		"""What record_state_store writes, given the gateway's store and flag before the play and the
+		"""What record_store writes, given the gateway's store and flag before the play and the
 		store's Active writers."""
 		db = Mock()
-		db.get_value.return_value = frappe._dict(state_store=before[0], is_state_store_writer=before[1])
+		db.get_value.return_value = frappe._dict(gateway_store=before[0], is_store_writer=before[1])
 		with (
 			patch.object(frappe, "db", db),
 			patch("grove.grove.doctype.gateway_server.gateway_server.store_writers", return_value=list(writers)),
 		):
-			GatewayServer.record_state_store(SimpleNamespace(doctype="Gateway Server", name="gw-1"), rc, store)
+			GatewayServer.record_store(SimpleNamespace(doctype="Gateway Server", name="gw-1"), rc, store)
 		return db.set_value.call_args.args[2] if db.set_value.called else None
 
 	def test_nothing_is_recorded_when_the_play_failed(self):
 		self.assertIsNone(self.recorded("s1", rc=1))
 
 	def test_the_first_gateway_on_a_store_becomes_its_writer(self):
-		self.assertEqual(self.recorded("s1"), {"state_store": "s1", "is_state_store_writer": 1})
+		self.assertEqual(self.recorded("s1"), {"gateway_store": "s1", "is_store_writer": 1})
 
 	def test_a_store_that_has_a_writer_takes_this_one_as_a_reader(self):
-		self.assertEqual(self.recorded("s1", writers=["gw-0"]), {"state_store": "s1", "is_state_store_writer": 0})
+		self.assertEqual(self.recorded("s1", writers=["gw-0"]), {"gateway_store": "s1", "is_store_writer": 0})
 
 	def test_a_writer_redeployed_onto_its_store_stays_one(self):
 		recorded = self.recorded("s1", before=("s1", 1), writers=["gw-0", "gw-1"])
-		self.assertEqual(recorded["is_state_store_writer"], 1)
+		self.assertEqual(recorded["is_store_writer"], 1)
 
 	def test_a_gateway_back_on_its_own_redis_is_no_writer(self):
-		self.assertEqual(self.recorded(None, before=("s1", 1)), {"state_store": None, "is_state_store_writer": 0})
+		self.assertEqual(self.recorded(None, before=("s1", 1)), {"gateway_store": None, "is_store_writer": 0})
 
 	def test_only_a_gateway_on_a_store_can_be_its_writer(self):
-		doc = SimpleNamespace(name="gw-1", is_state_store_writer=1, state_store=None, set_admin_url=lambda: None, set_admin_token=lambda: None)
+		doc = SimpleNamespace(name="gw-1", is_store_writer=1, gateway_store=None, set_admin_url=lambda: None, set_admin_token=lambda: None)
 		with patch.object(frappe, "throw", side_effect=frappe.ValidationError), self.assertRaises(frappe.ValidationError):
 			GatewayServer.validate(doc)
 

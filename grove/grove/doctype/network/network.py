@@ -7,7 +7,7 @@ import frappe
 from frappe.model.document import Document
 
 from grove.cloud_provider.base import build_cloud_client
-from grove.grove.doctype.gateway_state_store.gateway_state_store import REDIS_PORT
+from grove.grove.doctype.gateway_store.gateway_store import REDIS_PORT
 from grove.monitoring import BOX_HTTP_PORT, BOX_HTTPS_PORT
 from grove.net import reachable_ip
 
@@ -57,7 +57,7 @@ class Network(Document):
 		proxy_security_group_ids: DF.Data | None
 		region: DF.Link
 		route_table_id: DF.Data | None
-		state_store_security_group_ids: DF.Data | None
+		store_security_group_ids: DF.Data | None
 		subnet_cidr_block: DF.Data | None
 		subnet_id: DF.Data | None
 		vpc_id: DF.Data | None
@@ -104,9 +104,9 @@ class Network(Document):
 		return parse_security_group_ids(self.inference_security_group_ids)
 
 	@property
-	def state_store_security_group_id_list(self):
-		"""state_store_security_group_ids as a list, for a Gateway State Store box."""
-		return parse_security_group_ids(self.state_store_security_group_ids)
+	def store_security_group_id_list(self):
+		"""store_security_group_ids as a list, for a Gateway Store box."""
+		return parse_security_group_ids(self.store_security_group_ids)
 
 	@property
 	def cloud_client(self):
@@ -167,13 +167,13 @@ class Network(Document):
 			self.cloud_client.authorize_ingress(inference_sg_id, INFERENCE_BASE_INGRESS_RULES)
 			self.db_set("inference_security_group_ids", inference_sg_id)
 
-		if not self.state_store_security_group_ids:
+		if not self.store_security_group_ids:
 			store_sg_id = self.cloud_client.create_security_group(
 				f"{self.name}-store", "Grove-managed: SSH + redis (6379)", self.vpc_id
 			)
 			# SSH only, like an inference box: 6379's sources are the gateways, reconciled below.
 			self.cloud_client.authorize_ingress(store_sg_id, INFERENCE_BASE_INGRESS_RULES)
-			self.db_set("state_store_security_group_ids", store_sg_id)
+			self.db_set("store_security_group_ids", store_sg_id)
 
 		frappe.msgprint(f"Security groups created for {self.name}.", alert=True)
 		# Straight after creation, so a new group is never briefly open to the world.
@@ -192,8 +192,8 @@ class Network(Document):
 		reaches these boxes from wherever bench runs.
 
 		A store's 6379 is reconciled the same way, to this Network's gateways."""
-		if not (self.inference_security_group_ids or self.state_store_security_group_ids):
-			frappe.msgprint(f"Network {self.name} has no inference or state store security group.")
+		if not (self.inference_security_group_ids or self.store_security_group_ids):
+			frappe.msgprint(f"Network {self.name} has no inference or gateway store security group.")
 			return None
 		client = self.cloud_client
 		results = {}
@@ -201,9 +201,9 @@ class Network(Document):
 			results["inference"] = reconcile_ingress(
 				client, self.inference_security_group_id_list, FRONT_PORTS, self.inference_ingress_cidrs
 			)
-		if self.state_store_security_group_ids:
-			results["state_store"] = reconcile_ingress(
-				client, self.state_store_security_group_id_list, (REDIS_PORT,), self.state_store_ingress_cidrs
+		if self.store_security_group_ids:
+			results["gateway_store"] = reconcile_ingress(
+				client, self.store_security_group_id_list, (REDIS_PORT,), self.store_ingress_cidrs
 			)
 		return results
 
@@ -216,10 +216,10 @@ class Network(Document):
 		return inference_ingress_cidrs(proxies, agents, ingresses, self.name)
 
 	@property
-	def state_store_ingress_cidrs(self):
+	def store_ingress_cidrs(self):
 		"""The gateways that may reach this Network's store on 6379, read live."""
 		gateways = _with_machine(frappe.get_all("Gateway Server", fields=["machine", "status"]))
-		return state_store_ingress_cidrs(gateways, self.name)
+		return store_ingress_cidrs(gateways, self.name)
 
 
 def reconcile_ingress(client, group_ids, ports, cidrs):
@@ -275,7 +275,7 @@ def inference_ingress_cidrs(proxies, agents, ingresses, network):
 	return sorted({f"{address}/32" for address in addresses if address})
 
 
-def state_store_ingress_cidrs(gateways, network):
+def store_ingress_cidrs(gateways, network):
 	"""Every address allowed to reach a store in `network` on 6379, as /32s: its own gateways, by
 	the private address they dial it from. Another VPC's 10.x may name a different box, and a
 	Terminated gateway's address is AWS's to hand out again."""
@@ -292,7 +292,7 @@ def sync_fleet_ingress():
 		"Network",
 		or_filters={
 			"inference_security_group_ids": ("is", "set"),
-			"state_store_security_group_ids": ("is", "set"),
+			"store_security_group_ids": ("is", "set"),
 		},
 		pluck="name",
 	)

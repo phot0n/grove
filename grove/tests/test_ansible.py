@@ -101,7 +101,7 @@ class TestEveryRoleAPlaybookNamesResolves(unittest.TestCase):
 		folders = {path.parent.name for path in self.playbooks()}
 		self.assertEqual(
 			folders,
-			{"machine", "inference_server", "gateway_server", "ingress_server", "monitoring_agent", "gateway_state_store"},
+			{"machine", "inference_server", "gateway_server", "ingress_server", "monitoring_agent", "gateway_store"},
 		)
 
 	def test_every_role_resolves_in_its_own_folder_or_the_shared_one(self):
@@ -232,7 +232,7 @@ class TestTheKeyHasAFieldToLandOn(unittest.TestCase):
 	"""record_public_key writes on whatever doc the play ran for, so every doctype whose Setup carries
 	grove_user needs the field — a missing column fails inside a callback Ansible swallows."""
 
-	DOCTYPES = ("gateway_server", "ingress_server", "monitoring_agent", "gateway_state_store")
+	DOCTYPES = ("gateway_server", "ingress_server", "monitoring_agent", "gateway_store")
 
 	def test_every_server_that_gets_the_account_has_the_field(self):
 		doctypes = Path(__file__).resolve().parents[1] / "grove" / "doctype"
@@ -251,7 +251,7 @@ class TestEveryPlayThatPutsSomethingOnABoxCreatesTheUserFirst(unittest.TestCase)
 	never provisioned with it, or are guarded."""
 
 	PLAYS = (
-		"gateway_server/gateway.yml", "ingress_server/ingress.yml", "gateway_state_store/store.yml",
+		"gateway_server/gateway.yml", "ingress_server/ingress.yml", "gateway_store/store.yml",
 		"monitoring_agent/agent.yml", "monitoring_agent/config.yml", "monitoring_agent/push_targets.yml",
 	)
 
@@ -276,7 +276,7 @@ class TestEverySetupPlayRemovesTheCloudImagesUser(unittest.TestCase):
 
 	PLAYS = (
 		"inference_server/provision.yml", "gateway_server/gateway.yml",
-		"ingress_server/ingress.yml", "monitoring_agent/agent.yml", "gateway_state_store/store.yml",
+		"ingress_server/ingress.yml", "monitoring_agent/agent.yml", "gateway_store/store.yml",
 	)
 
 	def test_every_setup_play_lists_the_role(self):

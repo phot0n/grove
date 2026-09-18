@@ -10,7 +10,7 @@ from unittest.mock import patch
 import frappe
 
 from grove.grove.doctype.gateway_server.gateway_server import GatewayServer
-from grove.grove.doctype.gateway_state_store.gateway_state_store import GatewayStateStore
+from grove.grove.doctype.gateway_store.gateway_store import GatewayStore
 from grove.grove.doctype.inference_server.inference_server import InferenceServer
 from grove.grove.doctype.ingress_server.ingress_server import IngressServer
 from grove.grove.doctype.monitoring_agent.monitoring_agent import MonitoringAgent
@@ -74,14 +74,14 @@ class TestWhatBlocksAnArchive(unittest.TestCase):
 	def test_a_store_with_gateways_still_on_it(self):
 		get_all = rows({"Gateway Server": ["gw1-ap-south-1"]})
 		with patch.object(frappe, "get_all", side_effect=get_all):
-			blockers = GatewayStateStore.archive_blockers.fget(SimpleNamespace(name="store1"))
+			blockers = GatewayStore.archive_blockers.fget(SimpleNamespace(name="store1"))
 		self.assertIn("gw1-ap-south-1", blockers[0])
 		# A Broken gateway still points its agent.env here.
-		self.assertEqual(get_all.asked["Gateway Server"], {"state_store": "store1", "status": LIVE})
+		self.assertEqual(get_all.asked["Gateway Server"], {"gateway_store": "store1", "status": LIVE})
 
 	def test_an_empty_store(self):
 		with patch.object(frappe, "get_all", side_effect=rows({})):
-			self.assertEqual(GatewayStateStore.archive_blockers.fget(SimpleNamespace(name="store1")), [])
+			self.assertEqual(GatewayStore.archive_blockers.fget(SimpleNamespace(name="store1")), [])
 
 	def gateway_blockers(self, siblings, served):
 		region = SimpleNamespace(gateways=lambda exclude=None: siblings)
@@ -190,7 +190,7 @@ class TestANewInferenceServerTakesTheNetworksSingletons(unittest.TestCase):
 
 class TestEveryServerIsAServer(unittest.TestCase):
 	def test_every_one_shares_the_base_and_takes_its_machines_name(self):
-		for cls in (InferenceServer, IngressServer, GatewayServer, MonitoringAgent, GatewayStateStore):
+		for cls in (InferenceServer, IngressServer, GatewayServer, MonitoringAgent, GatewayStore):
 			with self.subTest(cls.__name__):
 				self.assertTrue(issubclass(cls, Server))
 				self.assertEqual(cls.get_generated_name(SimpleNamespace(machine="inf1-ap-south-1")), "inf1-ap-south-1")

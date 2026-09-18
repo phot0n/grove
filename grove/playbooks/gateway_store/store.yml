@@ -1,5 +1,5 @@
 ---
-# Provision a Gateway State Store: the one Redis its Network's gateways share, so a standalone
+# Provision a Gateway Store: the one Redis its Network's gateways share, so a standalone
 # replica's in-flight count is one counter across them. Holds everything a gateway's own Redis
 # did — keys, users, routes, usage, in-flight — so a dead store fails its gateways closed.
 #
@@ -19,7 +19,7 @@
           - redis_password | default('') | trim | length > 0
           - redis_bind_ip | default('') | trim | length > 0
         fail_msg: >-
-          redis_password and redis_bind_ip are required — provision from the Gateway State Store's
+          redis_password and redis_bind_ip are required — provision from the Gateway Store's
           Setup button, or pass the same extra-vars it does.
 
   roles:

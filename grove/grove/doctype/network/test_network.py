@@ -17,7 +17,7 @@ from grove.grove.doctype.network.network import (
 	Network,
 	inference_ingress_cidrs,
 	parse_security_group_ids,
-	state_store_ingress_cidrs,
+	store_ingress_cidrs,
 )
 
 
@@ -228,7 +228,7 @@ class TestFrontPorts(unittest.TestCase):
 			inference_security_group_ids=",".join(groups),
 			inference_security_group_id_list=list(groups),
 			inference_ingress_cidrs=["1.1.1.1/32"],
-			state_store_security_group_ids="",
+			store_security_group_ids="",
 			cloud_client=SimpleNamespace(
 				sync_ingress=lambda gid, port, cidrs: calls.append((gid, port, tuple(cidrs)))
 				or {"opened": [], "closed": []}
@@ -260,20 +260,20 @@ def gateway(private_ip, network="Mumbai", status="Active"):
 	return {"private_ip": private_ip, "network": network, "status": status}
 
 
-class TestStateStoreIngressCidrs(unittest.TestCase):
+class TestStoreIngressCidrs(unittest.TestCase):
 	"""Who may reach a store's Redis. It holds every key hash its gateways serve, so the list is
 	the Network's gateways and nothing else."""
 
 	def test_a_gateway_in_this_network_arrives_privately(self):
-		self.assertEqual(state_store_ingress_cidrs([gateway("10.0.61.225")], "Mumbai"), ["10.0.61.225/32"])
+		self.assertEqual(store_ingress_cidrs([gateway("10.0.61.225")], "Mumbai"), ["10.0.61.225/32"])
 
 	def test_a_gateway_in_another_network_is_not_let_in(self):
 		# Two VPCs can carve the same 10.x range, so its address may name another box here.
-		self.assertEqual(state_store_ingress_cidrs([gateway("10.0.61.225", network="Frankfurt")], "Mumbai"), [])
+		self.assertEqual(store_ingress_cidrs([gateway("10.0.61.225", network="Frankfurt")], "Mumbai"), [])
 
 	def test_a_terminated_or_unaddressed_gateway_contributes_nothing(self):
 		gateways = [gateway("10.0.61.225", status="Terminated"), gateway("")]
-		self.assertEqual(state_store_ingress_cidrs(gateways, "Mumbai"), [])
+		self.assertEqual(store_ingress_cidrs(gateways, "Mumbai"), [])
 
 
 class TestTheStorePortIsReconciledToo(unittest.TestCase):
@@ -282,9 +282,9 @@ class TestTheStorePortIsReconciledToo(unittest.TestCase):
 		network = SimpleNamespace(
 			name="NET-1",
 			inference_security_group_ids="",
-			state_store_security_group_ids="sg-store",
-			state_store_security_group_id_list=["sg-store"],
-			state_store_ingress_cidrs=["10.0.61.225/32"],
+			store_security_group_ids="sg-store",
+			store_security_group_id_list=["sg-store"],
+			store_ingress_cidrs=["10.0.61.225/32"],
 			cloud_client=SimpleNamespace(
 				sync_ingress=lambda gid, port, cidrs: calls.append((gid, port, tuple(cidrs)))
 				or {"opened": [], "closed": []}
