@@ -9,7 +9,8 @@ Nothing here reads or writes a doctype except `reconcile.py`.
 | `aws.py` | `EC2Client`. |
 | `runpod.py` | `RunPodClient`. |
 | `dns.py` | `Route53Client`, and the two-tier record design. **Deliberately not a `CloudClient`** — see below. |
-| `provisioner.py` | Turning a doc's wishes into a running instance. |
+| `provisioner.py` | Turning a doc's wishes into a running instance. A spawn retries only the provider's create call, up to the Pod's `provision_retries`, `SPAWN_RETRY_DELAY` apart; every lifecycle call leaves a `Pod Activity` row, and `fail()` writes the terminal one. |
+| `schedule.py` | The `*/1` job: keeps each Pod inside its daily Up From / Down From window — one scheduled spawn per window (`scheduled_for` marks the day, so a spawn that gave up or a Stop pressed by hand holds), a terminate whenever a live pod is outside it. Jobs are de-duplicated per pod. |
 | `reconcile.py` | The `*/2` job: the provider owns whether an instance is up, so this closes the drift lifecycle jobs leave behind. |
 
 ## Why Route53 is not a CloudClient
@@ -18,43 +19,25 @@ Nothing here reads or writes a doctype except `reconcile.py`.
 and adding its methods to that contract would break `RunPodClient`, which cannot implement any of
 them. So `Route53Client` stands alone and the doctype assembles its arguments.
 
-## The two DNS tiers
+## Gateway DNS: one multivalue set per Geography
 
-Customer traffic resolves through two record sets, because a Route53 **latency** RRSet is keyed on
-(name, type, **region**) and therefore holds exactly one row per region — which capped the fleet at
-one gateway per region until this existed.
+A Geography's gateways share one record set at its endpoint (`Geography.endpoint`, e.g. `eu.<zone>`),
+so each geography is its own set:
 
 ```
-api.<zone>              CNAME, latency, one row per region, health-checked by that region's
-  SetId=ap-south-1        calculated check          → ap-south-1.api.<zone>
-  SetId=us-east-1                                   → us-east-1.api.<zone>
-
-ap-south-1.api.<zone>   A, MULTIVALUE ANSWER, one row per GATEWAY, each with its own check
-  SetId=gw1-ap-south-1  HealthCheckId=hc-1          → 13.x.x.x
-  SetId=gw2-ap-south-1  HealthCheckId=hc-2          → 13.y.y.y
+in.<zone>   A, MULTIVALUE ANSWER, one row per GATEWAY in that geography, each with its own check
+  SetId=gw1-ap-south-1  HealthCheckId=hc-1   → 13.x.x.x
+  SetId=gw2-ap-south-1  HealthCheckId=hc-2   → 13.y.y.y
 ```
 
 One record per IP is the escape from "one health check per record": a multivalue row carries a single
-value and a single check, and Route53 drops the unhealthy rows out of the answer.
+value and a single check, and Route53 drops the unhealthy rows out of the answer. With **every** row
+unhealthy it still answers with up to eight of them, so the last gateway is never dropped from DNS —
+a gateway in maintenance still receives clients, and they get its 503 with Retry-After.
 
 **Ownership.** A Gateway Server owns its own name record, its multivalue row and its endpoint health
-check. Its **Region** owns the calculated check and the latency row — one row stands for every
-gateway in it, so the first gateway in creates the pair and the last one out removes it
-(`Region.sync_gateway_dns`).
-
-**The calculated check is what makes the latency tier honest.** Its children are that region's
-gateway checks at `HealthThreshold=1` — up while any one gateway is up. Without it, latency keeps
-answering with a region whose gateways have all died. Chosen over an alias with
-`EvaluateTargetHealth`, which is also healthy-if-any but fails *silently open*: a child row missing a
-check counts as healthy. That is also why the latency row is a **CNAME** rather than an alias — a
-CNAME carries `HealthCheckId` outright instead of inferring health from its target.
-
-## Two settings, both default on, both off for development
-
-| Grove Settings | Off means |
-|---|---|
-| `gateway_latency_routing` | No region tier. Every gateway's row sits in one multivalue set **at** `gateway_host` — no CNAME hop, and `Region.latency_reference` is never read, so a Region named `local` needs nothing. |
-| `gateway_health_checks` | No checks written at all. Both tiers still resolve, because Route53 counts an unchecked record as healthy. Only ejection is lost, and nothing is billed. |
+check, which is always created (`GatewayServer.ensure_health_check`) and probes pathway's `/healthz`
+on :80. An ingress gets only its own name record.
 
 ## Rules Route53 enforces that the code is shaped around
 
@@ -62,20 +45,11 @@ CNAME carries `HealthCheckId` outright instead of inferring health from its targ
   A DELETE that does not match leaves the record in place, which is a black hole for whatever share
   of customers resolve to a box that is gone. Rows whose old shape cannot be reconstructed are listed
   and deleted **verbatim**.
-- **A routing policy cannot be UPSERTed into another one.** Switching latency routing off finds the
-  *same* record set under a different policy: it has to be deleted and written again, not updated.
-  Switching it back on finds a *different* record set, because the replacement lives one name down —
-  that delete rides along in the same batch as the writes, so the shared name is never answerless.
-- **A CNAME cannot sit beside a record of any other type at the same name.** So simple mode does not
-  merely skip the region tier, it must tear it down *before* writing A records there.
-- **A health check cannot be deleted while a record set or a calculated check still names it.** Rows
-  come off first, always. Getting this backwards leaks a billed check on every terminate and nothing
-  surfaces it.
-- **A calculated check with no children and a threshold of 1 evaluates UNHEALTHY** — so a region whose
-  gateways carry no checks writes its row check-less rather than creating one.
-- **A latency row's `Region` must be an AWS region name.** A `Region` is named with its *provider's*
-  code, and RunPod's `EU-RO-1` is not one — hence `Region.latency_reference`, which is only a
-  reference point and names the nearest AWS region.
+- **A routing policy cannot be UPSERTed into another one.** A box whose row at the shared name was
+  written as a latency record finds the *same* record set under a different policy: it is deleted on
+  its own and written again, not updated (`_replace_other_policy_row`).
+- **A health check cannot be deleted while a record still names it.** Rows come off first, always.
+  Getting this backwards leaks a billed check on every terminate and nothing surfaces it.
 - **`CallerReference` is the idempotency token for a health check.** A crash between the create and
   the `db_set` that remembers the id would orphan a billed check answering to nobody *and* block its
   own retry forever, so `HealthCheckAlreadyExists` is recovered by scanning for the reference.

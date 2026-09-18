@@ -23,6 +23,7 @@
     dest: "/tmp/pathway-linux-{{ agent_arch }}"
     checksum: "sha256:{{ agent_release_url }}/sha256sums.txt"
     mode: "0755"
+  when: not agent_binary
 
 - name: stage the binary under the name the install task copies from
   ansible.builtin.copy:
@@ -30,3 +31,12 @@
     dest: /tmp/pathway
     mode: "0755"
     remote_src: true
+  when: not agent_binary
+
+# No checksum here: the bytes never leave the control plane's own disk on the way.
+- name: stage a local build instead
+  ansible.builtin.copy:
+    src: "{{ agent_binary }}"
+    dest: /tmp/pathway
+    mode: "0755"
+  when: agent_binary | length > 0

@@ -1,14 +1,14 @@
 {
  "actions": [],
- "allow_rename": 0,
  "autoname": "prompt",
  "creation": "2026-07-17 00:00:00",
  "doctype": "DocType",
  "engine": "InnoDB",
  "field_order": [
-  "name",
   "provider_type",
   "api_key",
+  "column_break_rqbl",
+  "resource_type",
   "status",
   "section_aws",
   "access_key_id",
@@ -18,26 +18,99 @@
   "gpu_types_html"
  ],
  "fields": [
-  {"fieldname": "name", "fieldtype": "Data", "label": "Name", "reqd": 1, "in_list_view": 1, "read_only": 1},
-  {"fieldname": "provider_type", "fieldtype": "Select", "label": "Provider", "options": "runpod\naws", "reqd": 1, "in_list_view": 1},
-  {"fieldname": "api_key", "fieldtype": "Password", "label": "API Key", "reqd": 1, "description": "Provider API key (encrypted). For AWS this is the secret access key."},
-  {"fieldname": "status", "fieldtype": "Select", "label": "Status", "options": "active\ninactive", "default": "active", "in_list_view": 1},
-  {"fieldname": "section_aws", "fieldtype": "Section Break", "label": "AWS", "depends_on": "eval:doc.provider_type=='aws'", "description": "One row per AWS account — IAM keys are account-scoped, not region-scoped. Region- and launch-scoped defaults (region code, Machine Image) live on Network instead, one per region."},
-  {"fieldname": "access_key_id", "fieldtype": "Data", "label": "Access Key ID", "description": "The secret half goes in API Key above."},
-  {"fieldname": "section_gpu_types", "fieldtype": "Section Break", "label": "GPU Types", "depends_on": "eval:doc.provider_type=='runpod'", "collapsible": 1},
-  {"fieldname": "gpu_types", "fieldtype": "JSON", "label": "GPU Types (raw)", "read_only": 1, "hidden": 1, "description": "Cached provider GPU-type list; refreshed by the Fetch GPU Types button (background job)."},
-  {"fieldname": "gpu_types_updated", "fieldtype": "Datetime", "label": "GPU Types Last Fetched", "read_only": 1},
-  {"fieldname": "gpu_types_html", "fieldtype": "HTML", "label": "GPU Types"}
+  {
+   "fieldname": "provider_type",
+   "fieldtype": "Select",
+   "in_list_view": 1,
+   "label": "Provider",
+   "options": "runpod\naws",
+   "reqd": 1
+  },
+  {
+   "description": "Set on save: Pod for RunPod, Machine for everything else. Machine and Pod only offer providers of their own type.",
+   "fieldname": "resource_type",
+   "fieldtype": "Select",
+   "in_list_view": 1,
+   "label": "Resource Type",
+   "options": "Machine\nPod",
+   "read_only": 1
+  },
+  {
+   "fieldname": "api_key",
+   "fieldtype": "Password",
+   "label": "API Key",
+   "reqd": 1
+  },
+  {
+   "default": "active",
+   "fieldname": "status",
+   "fieldtype": "Select",
+   "in_list_view": 1,
+   "label": "Status",
+   "options": "active\ninactive"
+  },
+  {
+   "depends_on": "eval:doc.provider_type=='aws'",
+   "fieldname": "section_aws",
+   "fieldtype": "Section Break",
+   "label": "AWS"
+  },
+  {
+   "fieldname": "access_key_id",
+   "fieldtype": "Data",
+   "label": "Access Key ID"
+  },
+  {
+   "collapsible": 1,
+   "depends_on": "eval:doc.provider_type=='runpod'",
+   "fieldname": "section_gpu_types",
+   "fieldtype": "Section Break",
+   "label": "GPU Types"
+  },
+  {
+   "description": "Cached provider GPU-type list; refreshed by the Fetch GPU Types button (background job).",
+   "fieldname": "gpu_types",
+   "fieldtype": "JSON",
+   "hidden": 1,
+   "label": "GPU Types (raw)",
+   "read_only": 1
+  },
+  {
+   "fieldname": "gpu_types_updated",
+   "fieldtype": "Datetime",
+   "label": "GPU Types Last Fetched",
+   "read_only": 1
+  },
+  {
+   "fieldname": "gpu_types_html",
+   "fieldtype": "HTML",
+   "label": "GPU Types"
+  },
+  {
+   "fieldname": "column_break_rqbl",
+   "fieldtype": "Column Break"
+  }
  ],
  "links": [],
- "modified": "2026-07-17 00:01:00",
+ "modified": "2026-09-16 18:25:01.668785",
  "modified_by": "Administrator",
  "module": "Grove",
  "name": "Cloud Provider",
  "owner": "Administrator",
  "permissions": [
-  {"create": 1, "delete": 1, "email": 1, "print": 1, "read": 1, "report": 1, "role": "System Manager", "share": 1, "write": 1}
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "System Manager",
+   "share": 1,
+   "write": 1
+  }
  ],
+ "row_format": "Dynamic",
  "sort_field": "modified",
  "sort_order": "DESC",
  "states": []

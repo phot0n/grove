@@ -42,8 +42,7 @@ class TestIsIdSafe(unittest.TestCase):
 			self.assertTrue(is_id_safe(name), name)
 
 	def test_an_underscore_is_refused(self):
-		# The one that matters: 'inf_a' and 'inf-a' both reach an id as 'inf_a', so the id no
-		# longer names one box.
+		# 'inf_a' and 'inf-a' both reach an id as 'inf_a', so it no longer names one box.
 		for name in ("inf_a", "_leading", "trailing_"):
 			self.assertFalse(is_id_safe(name), name)
 

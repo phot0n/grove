@@ -9,6 +9,8 @@ import unittest
 import frappe
 from frappe.tests import IntegrationTestCase
 
+from grove.grove.doctype.geography.test_geography import make_test_geography
+
 FALLBACK_URL = "http://fleet-wide.example.com/v1/write"
 REGIONAL_URL = "http://ap-south-1.example.com/v1/write"
 
@@ -23,12 +25,13 @@ class TestRemoteWriteUrl(IntegrationTestCase):
 		"""An agent on a box in its own Region, which may or may not name an endpoint."""
 		region = frappe.get_doc({
 			"doctype": "Region", "name": f"test-agent-region-{name}",
-			"label": name, "remote_write_url": remote_write_url,
+			"label": name, "remote_write_url": remote_write_url, "geography": make_test_geography(),
 		}).insert(ignore_permissions=True)
 		self.addCleanup(region.delete, ignore_permissions=True)
 
 		machine = frappe.get_doc({
-			"doctype": "Machine", "machine_name": f"test-agent-box-{name}", "region": region.name,
+			"doctype": "Machine", "name": f"test-agent-box-{name}", "region": region.name,
+			"machine_type": "Monitoring Agent",
 		}).insert(ignore_permissions=True)
 		self.addCleanup(machine.delete, ignore_permissions=True)
 

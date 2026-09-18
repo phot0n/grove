@@ -1,0 +1,22 @@
+# Rewrite config.json and SIGUSR1 — nothing else. No binary, no agent.env, no restart: the tunables
+# (maintenance among them) move under live streams.
+#
+# extra-vars: whatever config.json.j2 reads (PathwayHost.config_variables in grove/fleet.py).
+- hosts: all
+  become: true
+  gather_facts: false
+  vars:
+    grove_dir: "{{ playbook_dir }}"
+
+  tasks:
+    - name: config.json
+      ansible.builtin.template:
+        src: "{{ grove_dir }}/config.json.j2"
+        dest: /etc/pathway/config.json
+        mode: "0644"
+      notify: reload pathway config
+
+  handlers:
+    - name: reload pathway config
+      ansible.builtin.command: systemctl kill -s SIGUSR1 pathway
+      changed_when: true

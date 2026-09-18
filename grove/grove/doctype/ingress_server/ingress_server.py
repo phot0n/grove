@@ -5,17 +5,15 @@ import frappe
 from frappe.model.document import Document
 
 from grove import failure
-from grove.cloud_provider.dns import Route53Error
-from grove.fleet import FleetHost, gateway_agent_version
+from grove.fleet import PathwayHost, gateway_agent_release, gateway_agent_version
 from grove.grove.doctype.network.network import sync_fleet_ingress
-from grove.naming import GeneratedName
 
 
-class IngressServer(GeneratedName, FleetHost, Document):
-	"""One VPC's front door: the gateways dial it by name over a verified certificate, and it
-	dials the replicas in its own Network privately. It holds no tenant state — no keys, users,
-	groups, usage or catalog — which is the whole security payoff of the split, and why this is a
-	doctype of its own rather than a Gateway Server with a role flag."""
+class IngressServer(PathwayHost, Document):
+	"""One VPC's front door: the gateways dial it by name over a verified certificate, and it dials
+	the replicas in its own Network privately. It holds no tenant state — no keys, users, groups,
+	usage or catalog — which is the security payoff of the split, and why this is a doctype of its
+	own rather than a Gateway Server with a role flag."""
 
 	# begin: auto-generated types
 	# This code is auto-generated. Do not modify anything in this block.
@@ -29,23 +27,23 @@ class IngressServer(GeneratedName, FleetHost, Document):
 		admin_url: DF.Data | None
 		agent_version: DF.Data | None
 		data_token: DF.Password | None
+		frappe_public_key: DF.Code | None
+		geography: DF.Link | None
+		is_in_maintenance: DF.Check
 		machine: DF.Link
 		monitoring_agent: DF.Link | None
 		network: DF.Link
+		private_ip: DF.Data | None
 		public_ip: DF.Data | None
 		region: DF.Link | None
 		status: DF.Literal["Pending", "Installing", "Active", "Broken", "Terminated"]
 	# end: auto-generated types
 
-	# Its name is GROVE_INGRESS_ID and its record under the fleet zone, which is the only address a gateway reaches it at.
-	name_prefix = "ing"
-
 	def before_insert(self):
 		super().before_insert()
-		# Generated rather than typed: both fields are read-only, the agent refuses to start
-		# without a token, and a provision that fails on a blank one is a wasted twenty-minute
-		# play. Two separate secrets, never one: admin_token is the control plane's credential
-		# and data_token is what every gateway holds.
+		# Generated rather than typed: both fields are read-only, and the agent refuses to start
+		# without a token. Two separate secrets, never one — admin_token is the control plane's
+		# credential, data_token is what every gateway holds.
 		if not self.admin_token:
 			self.admin_token = frappe.generate_hash(length=48)
 		if not self.data_token:
@@ -53,71 +51,35 @@ class IngressServer(GeneratedName, FleetHost, Document):
 
 	def validate(self):
 		self.set_admin_url()
-		self.validate_machine_network()
-
-	def validate_machine_network(self):
-		"""The Network on this doc has to be the one its BOX is in.
-
-		Nothing downstream can catch a mismatch: the ingress would be given that Network's
-		replicas, be unable to reach any of them, and be left out of their security group — three
-		silences instead of one error. It also decides which boxes trust this ingress's private
-		address, and two VPCs can carve the same 10.x range."""
-		if not (self.network and self.machine):
-			return
-		box_network = frappe.db.get_value("Machine", self.machine, "network")
-		if box_network != self.network:
-			frappe.throw(
-				f"Machine {self.machine} is in Network {box_network or 'none'}, but this ingress "
-				f"says {self.network}. An ingress fronts the VPC its own box sits in."
-			)
 
 	def on_update(self):
 		if self.has_value_changed("status") and self.status == "Terminated":
 			self.remove_dns_records()
-		# An inference box only opens its front to addresses in the fleet, and this ingress's
-		# private address is one of them — so an ingress that arrived, moved or died changes what
-		# those groups must allow.
+		# This ingress's private address is one of the fleet addresses an inference box opens its
+		# front to, so arriving, moving or dying changes what those groups must allow.
 		if self.has_value_changed("status") or self.has_value_changed("machine"):
 			sync_fleet_ingress()
 
 	def on_trash(self):
-		# Before the doc goes, while its name still says which records are its own.
+		# While its name still says which records are its own.
 		self.remove_dns_records()
-		# Enqueued, so it recomputes after this delete commits and without this ingress in the set.
+		# Enqueued, so it recomputes after this delete commits and without this ingress.
 		sync_fleet_ingress()
 
-	@frappe.whitelist()
-	def sync_dns_records(self):
-		"""Button + provision step: point this box's own name at it. UPSERT, so a box that came
-		back on a new address is corrected by running it again.
-
-		One record and no shared name: a gateway reaches this ingress out of its route table, not
-		by resolving something that names several."""
-		client, settings = self.dns_client()
-		if not client:
-			return None
-		return client.upsert_ingress_records(
-			settings.fleet_zone, self.hostname, self.public_ip, self.name
+	@property
+	def archive_blockers(self):
+		"""A box routed through this ingress would lose the private path its gateways dial."""
+		boxes = frappe.get_all(
+			"Inference Server",
+			filters={"ingress": self.name, "status": ("!=", "Terminated")},
+			pluck="name",
 		)
-
-	def remove_dns_records(self):
-		"""This box's record, on the way out.
-
-		A record that is already gone is not an error worth blocking a deletion over; AWS says so
-		with InvalidChangeBatch, and only that code is tolerated."""
-		if not self.has_dns_records:
-			return None
-		client, settings = self.dns_client()
-		if not client:
-			return None
-		try:
-			return client.delete_ingress_records(
-				settings.fleet_zone, self.hostname, self.public_ip, self.name
-			)
-		except Route53Error as e:
-			if e.code != "InvalidChangeBatch":
-				raise
-			return None
+		if not boxes:
+			return []
+		return [
+			f"Inference Servers still routed through this ingress: {', '.join(boxes)}. "
+			"Point them at another ingress, or clear the field, first."
+		]
 
 	@frappe.whitelist()
 	def sync_replicas(self):
@@ -178,15 +140,16 @@ class IngressServer(GeneratedName, FleetHost, Document):
 		return {
 			"admin_token": self.get_password("admin_token"),
 			"data_token": self.get_password("data_token"),
-			"agent_version": gateway_agent_version(),
-			"ingress_id": self.name,
+			**gateway_agent_release(),
+			"ingress_id": self.short_name,
 			"ingress_hostname": self.hostname,
 			# nginx.conf declares a metrics server on :443 — grove_https puts the certificate and
 			# the htpasswd it reads on the box before OpenResty is asked to start.
 			**settings.scrape_auth_variables,
-			# The names this box answers to and the wildcard both of them share. Blank zone
-			# renders the pre-TLS config, exactly as it does for a gateway.
-			**settings.tls_variables,
+			# The names this box answers to and its geography's wildcard. Blank zone renders the
+			# pre-TLS config, exactly as it does for a gateway.
+			**self.tls_variables,
+			**self.config_variables,
 		}
 
 	@frappe.whitelist()
@@ -200,27 +163,29 @@ class IngressServer(GeneratedName, FleetHost, Document):
 		)
 
 	@failure.reports_failure(mark_broken=False)
-	def _deploy_agent(self):
+	def _deploy_agent(self, **play):
 		"""Install the pinned agent release on the box and rewrite both halves of its configuration.
+		`play` names the doc the play is run for, e.g. a Pathway Update.
 
 		Resolved here rather than at enqueue: the certificate key would otherwise be serialised into
 		the job payload and sit in Redis. Dropped entirely — agent.env names the certificate's PATH,
 		which is a role default, and deploy_tls owns writing the material itself."""
 		settings = frappe.get_single("Grove Settings")
-		tls_variables = settings.tls_variables
+		tls_variables = self.tls_variables
 		tls_variables.pop("fleet_tls_key", None)
 		play_name, rc = self.run_playbook(
 			"deploy_agent.yml",
 			extravars={
-				"agent_version": gateway_agent_version(),
+				**gateway_agent_release(),
 				"admin_token": self.get_password("admin_token"),
 				"data_token": self.get_password("data_token"),
-				"ingress_id": self.name,
+				"ingress_id": self.short_name,
 				"ingress_hostname": self.hostname,
 				**tls_variables,
 				**settings.scrape_auth_variables,
-				**settings.gateway_variables,
+				**self.config_variables,
 			},
+			**play,
 		)
 		self.record_agent_version(rc)
 		return play_name, rc

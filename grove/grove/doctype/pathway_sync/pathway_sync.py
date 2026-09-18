@@ -5,28 +5,24 @@ import frappe
 from frappe.model.document import Document
 from frappe.utils import add_days, cint, now_datetime
 
-# How long a sync run is worth keeping. Log Settings owns the number once an operator edits it
-# there; this is the default the hook seeds it with.
+# Log Settings owns the number once an operator edits it there; this seeds it.
 RETENTION_DAYS = 60
 
 
 class PathwaySync(Document):
-	"""One row per sync run (a log). The work lives in grove.pathway_sync
-	(sync_projection / full_sync) and grove.usage_pull, which build these docs, take
-	the doc's lock, run, then insert + finalize.
+	"""One row per sync run. The work lives in grove.pathway_sync and grove.usage_pull, which build
+	these docs, take the lock, run, then insert and finalize.
 
-	The advisory lock lives here and is named by `sync_type`, so runs of the same
-	type serialize (a slow one can't land a stale write after a newer one) while
-	different types (Projection vs Usage) run independently."""
+	The advisory lock is named by `sync_type`, so runs of the same type serialize — a slow one
+	cannot land a stale write after a newer one — while Projection and Usage run independently."""
 
 	def lock_name(self):
-		# GET_LOCK is server-global.
+		# GET_LOCK is server-global, hence the site in the name.
 		return f"grove_pathway_sync:{self.sync_type}:{frappe.local.site}"
 
 	def acquire_lock(self, wait=0):
-		"""Try to take this sync_type's lock. wait=0 → non-blocking (scheduled
-		runs skip if one is in flight); wait>0 → block up to N seconds (forced
-		runs queue behind the current one)."""
+		"""wait=0 → non-blocking, so a scheduled run skips if one is in flight. wait>0 → block up
+		to N seconds, so a forced run queues behind it."""
 		return frappe.db.sql("SELECT GET_LOCK(%s, %s)", (self.lock_name(), wait))[0][0] == 1
 
 	def release_lock(self):

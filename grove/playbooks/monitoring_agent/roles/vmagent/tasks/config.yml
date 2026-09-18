@@ -4,14 +4,26 @@
 # main.yml so config.yml can re-run just this much — changing a scrape interval should not
 # cost a binary download.
 
-- name: Create the config and buffer directories
+- name: Create the config directory
   ansible.builtin.file:
-    path: "{{ item }}"
+    path: "{{ vmagent_config_dir }}"
     state: directory
     mode: "0755"
-  loop:
-    - "{{ vmagent_config_dir }}"
-    - "{{ vmagent_buffer_path }}"
+
+- name: Create the buffer directory
+  ansible.builtin.file:
+    path: "{{ vmagent_buffer_path }}"
+    state: directory
+    owner: "{{ vmagent_user }}"
+    group: "{{ vmagent_user }}"
+    mode: "0755"
+
+# It spools here, and a box from before the cutover has root-owned buffer files it would fail on.
+# Ownership only — `file: recurse` would stamp the directory's mode onto every file.
+- name: Hand the existing buffer to vmagent
+  ansible.builtin.command: "chown -Rc {{ vmagent_user }}:{{ vmagent_user }} {{ vmagent_buffer_path }}"
+  register: vmagent_buffer_chown
+  changed_when: vmagent_buffer_chown.stdout | length > 0
 
 # In files, not the unit's argv: /proc/<pid>/cmdline is world-readable, and Ansible records
 # the argv it runs on the Ansible Task doc.
@@ -19,6 +31,7 @@
   ansible.builtin.copy:
     content: "{{ monitoring_remote_write_token }}"
     dest: "{{ vmagent_config_dir }}/remote_write.token"
+    owner: "{{ vmagent_user }}"
     mode: "0600"
   no_log: true
   notify: restart vmagent
@@ -29,6 +42,7 @@
   ansible.builtin.copy:
     content: "{{ monitoring_scrape_password }}"
     dest: "{{ vmagent_config_dir }}/scrape.password"
+    owner: "{{ vmagent_user }}"
     mode: "0600"
   no_log: true
   notify: restart vmagent

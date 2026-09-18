@@ -5,14 +5,17 @@
 fleet_tls_dir: /etc/grove/tls
 fleet_tls_cert_path: "{{ fleet_tls_dir }}/fleet.crt"
 fleet_tls_key_path: "{{ fleet_tls_dir }}/fleet.key"
+# Who reads the key: pathway runs as grove_user (see roles/grove_user), and 0600 means owner only.
+# A literal, because deploy_tls.yml runs this role on its own with no grove_user in scope.
+fleet_tls_key_owner: frappe
 
 # Pushed from Grove Settings, which is where the certificate is issued and stored. Blank on a
 # fleet with no zone: the role then writes nothing and nginx.conf renders its plaintext form.
 fleet_tls_cert: ""
 fleet_tls_key: ""
 
-# The two names the certificate above covers, and what nginx.conf keys its shape on. Defaulted
-# here rather than in the playbook so a play that forgets them renders the plaintext config
-# instead of failing on an undefined variable halfway through a template.
+# The names the certificate above covers. Defaulted here rather than in the playbook so a play that
+# forgets them renders the plaintext config instead of failing on an undefined variable halfway
+# through a template. gateway_host is the box's Geography endpoint.
 gateway_host: ""
 proxy_hostname: ""

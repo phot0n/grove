@@ -7,13 +7,12 @@ traceback, which you have to know to go looking for.
 
 Three things go wrong, and they surface differently:
 
-- **The job raises.** Nothing catches it, so the doc keeps whatever transitional status it was set
-  to on the way in. `reports_failure` covers this.
-- **A playbook returns non-zero.** `ansible_runner.run_play` returns `(name, 1)` and never raises,
-  so a failed play is only as visible as its caller chose to make it — and six callers discard the
-  code entirely. `AnsiblePlay.on_update` covers this, for every caller at once.
-- **A provider call dies mid-lifecycle.** `PodProvisioner.fail` deliberately swallows and returns;
-  it calls `report` directly.
+- **The job raises.** The doc keeps whatever transitional status it was set to on the way in.
+  `reports_failure` covers this.
+- **A playbook returns non-zero.** `run_play` returns `(name, 1)` and never raises, and six callers
+  discard the code entirely. `AnsiblePlay.on_update` covers every caller at once.
+- **A provider call dies mid-lifecycle.** `PodProvisioner.fail` swallows and returns; it calls
+  `report` directly.
 
 What it does NOT do is decide anything. Reporting is not error handling: `reports_failure` re-raises
 so the worker still fails the job and Frappe still writes its Error Log.
@@ -24,22 +23,21 @@ import functools
 import frappe
 from frappe.desk.doctype.notification_log.notification_log import enqueue_create_notification
 
-# Statuses a doc is only ever in while a job is working on it. A failure may overwrite one of these
-# and nothing else — a box that was torn down mid-play is Terminated, not Broken, and one that was
-# already Active before a config push failed has not stopped being Active.
+# Statuses a doc is only ever in while a job is working on it, and the only ones a failure may
+# overwrite: a box torn down mid-play is Terminated, and one already Active before a config push
+# failed has not stopped being Active.
 IN_PROGRESS = ("Installing", "Provisioning")
 
 
 def report(doctype, name, title, detail, *, mark_broken=False):
 	"""Put a failure where someone will see it.
 
-	Two audiences, because they miss each other: the toast reaches whoever is still on the page, and
-	the notification reaches them after they have closed it. Neither is durable — what is still
-	there next week is the Error Log and the doc's own Ansible Plays.
+	Two audiences, because they miss each other: the toast reaches whoever is still on the page,
+	the notification reaches them after they have closed it. Neither is durable — what is there
+	next week is the Error Log and the doc's own Ansible Plays.
 	"""
 	if not doctype or not name:
-		# A play with no reference doc — nothing to link a notification to. The job's Error Log is
-		# the record for that one.
+		# Nothing to link a notification to; the job's Error Log is the record.
 		return
 	frappe.local.grove_failure_reported = True
 
@@ -51,14 +49,11 @@ def report(doctype, name, title, detail, *, mark_broken=False):
 
 
 def reports_failure(mark_broken=False, doctype=None):
-	"""Decorator for something that runs in a worker. Reports, then re-raises.
+	"""Decorator for something that runs in a worker. Reports, then RE-RAISES: this is a reporting
+	layer, not a rescue, so the worker still fails the job and Frappe still writes the Error Log.
 
-	Re-raising is the point: this is a reporting layer, not a rescue. The worker still marks the job
-	failed and Frappe still writes the Error Log with its traceback — this only adds the half a
-	human sees.
-
-	Wraps both shapes Grove enqueues. A bound method finds the doc on `self`; a module-level job
-	function takes the docname as its first argument, and names its doctype here.
+	Wraps both shapes Grove enqueues — a bound method finds the doc on `self`, a module-level job
+	takes the docname first and names its doctype here.
 	"""
 
 	def decorate(method):
@@ -67,9 +62,9 @@ def reports_failure(mark_broken=False, doctype=None):
 			try:
 				return method(*args, **kwargs)
 			except Exception as error:
-				# A failed play already reported through AnsiblePlay.on_update. If the caller then
-				# raised on the same failure, this is the second half of one event, not a second
-				# event — same worker, same job, so frappe.local still remembers.
+				# A failed play already reported through AnsiblePlay.on_update, and a caller raising
+				# on the same failure is one event, not two. Same worker, same job, so frappe.local
+				# still remembers.
 				if not getattr(frappe.local, "grove_failure_reported", False):
 					failed = args[0] if args else None
 					report(
@@ -87,14 +82,12 @@ def reports_failure(mark_broken=False, doctype=None):
 
 
 def _mark_broken(doctype, name):
-	"""Stop the doc claiming it is still mid-install.
+	"""Stop the doc claiming it is still mid-install: a Gateway Server sat at Installing
+	indefinitely, looking like a slow provision rather than a dead one.
 
-	The status that was set on the way in is what made the original failure hard to find: a Gateway
-	Server sat at Installing indefinitely, looking like a slow provision rather than a dead one.
-
-	Only from a transitional status, and only when the doctype has somewhere to go. Written with
-	db.set_value to match every other status write on these paths — those are deliberately outside
-	the document lifecycle so a provision does not re-trigger a sync.
+	Only from a transitional status. Written with db.set_value to match every other status write on
+	these paths, which stay outside the document lifecycle so a provision does not re-trigger a
+	sync.
 	"""
 	meta = frappe.get_meta(doctype)
 	status_field = meta.get_field("status")

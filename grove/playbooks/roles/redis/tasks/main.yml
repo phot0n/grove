@@ -1,0 +1,71 @@
+---
+- name: install redis-server
+  ansible.builtin.apt:
+    name: redis-server
+    state: present
+    update_cache: true
+
+# Usage counters are the only thing a gateway ORIGINATES — keys, users, groups and routes are
+# projections the control plane can push again. appendfsync everysec: a crash can lose up to a
+# second of counts, traded for no fsync per request. The marker predates this role; renaming it
+# would write a second block on every existing gateway.
+- name: redis zero-loss persistence
+  ansible.builtin.blockinfile:
+    path: /etc/redis/redis.conf
+    marker: "# {mark} grove gateway zero-loss"
+    block: |
+      appendonly yes
+      appendfsync everysec
+      maxmemory-policy noeviction
+
+# A shared store only. bind and requirepass are read at start, so a change restarts: AOF is
+# already on by then, so the restart keeps the data.
+- name: redis listens for the gateways
+  ansible.builtin.blockinfile:
+    path: /etc/redis/redis.conf
+    marker: "# {mark} grove state store network"
+    block: |
+      bind {{ redis_bind }}
+      requirepass {{ redis_password }}
+  no_log: true
+  register: redis_network
+  when: redis_password | length > 0
+
+- name: restart redis onto its listen address and password
+  ansible.builtin.systemd:
+    name: redis-server
+    state: restarted
+  when: redis_network is changed
+
+- name: redis started
+  ansible.builtin.systemd:
+    name: redis-server
+    enabled: true
+    state: started
+
+# The block above is what a RESTART reads. This is what the process is doing right now, and the
+# two had silently diverged on a live box: the block landed, its `notify: restart redis` never
+# fired, and every run since reported the file unchanged — so it never notified again. Nothing
+# surfaced it, because a gateway with no AOF looks exactly like one with AOF until it restarts.
+#
+# A handler cannot fix that: it only fires when the file changes, and the file is already right.
+# So this reconciles the RUNNING config every time with CONFIG SET rather than a restart — a
+# restart without AOF would drop the pushed keys and routes and 401 every caller until the next sync.
+- name: enforce persistence on the running redis
+  ansible.builtin.shell: |
+    set -eu
+    changed=0
+    for setting in "appendonly yes" "appendfsync everysec" "maxmemory-policy noeviction"; do
+      key=${setting%% *}
+      want=${setting#* }
+      have=$(redis-cli config get "$key" | tail -1)
+      if [ "$have" != "$want" ]; then
+        redis-cli config set "$key" "$want" > /dev/null
+        changed=1
+      fi
+    done
+    echo "$changed"
+  # redis-cli reads the password from here, never argv. Blank sends no AUTH at all.
+  environment: "{{ {'REDISCLI_AUTH': redis_password} if redis_password else {} }}"
+  register: redis_runtime_persistence
+  changed_when: redis_runtime_persistence.stdout | trim == "1"

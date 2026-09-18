@@ -59,14 +59,13 @@ class TestRelay(unittest.TestCase):
 			patch.object(frappe, "cache", FakeCache()),
 		):
 			log_relay.relay(iter(["a", "b", "c"]), "Pod", "POD-1")
-		# The first line goes out at once (instant feedback); the rest wait out the 0.25s
-		# interval and land together, rather than one socketio publish each.
+		# The first line goes out at once; the rest wait out the interval and land together,
+		# rather than one socketio publish each.
 		self.assertEqual(published, [{"lines": ["a"]}, {"lines": ["b", "c"], "done": True}])
 
-	def test_a_stream_nobody_watches_ends_without_draining_the_source(self):
-		# The viewer stopped refreshing the key (Stop, or they navigated away and it expired).
-		# The generator must be abandoned, not exhausted — that is what kills `docker logs -f`
-		# and frees the background worker the job is holding.
+	def test_a_stream_nobody_watches_ends_without_Stopping_the_source(self):
+		# The viewer stopped refreshing the key. The generator must be ABANDONED, not exhausted —
+		# that is what kills `docker logs -f` and frees the worker.
 		consumed = []
 
 		def endless():

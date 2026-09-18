@@ -6,7 +6,7 @@
 #
 # Redis is rebuildable state here, not durable: the replica table is pushed by the control plane and
 # the in-flight counters are re-derived, so this box takes the default persistence rather than the
-# gateway's appendfsync always.
+# gateway's AOF.
 #
 # extra-vars: admin_token, data_token, agent_version, ingress_id, ingress_hostname, the fleet TLS
 # pair, the scrape hash.
@@ -39,6 +39,9 @@
           the Ingress Server's button, or pass the same extra-vars it does.
 
   roles:
+    - grove_user
+    - remove_cloud_user
+    - auditd
     # node_exporter before the binary: pathway publishes /metrics/node behind the htpasswd
     # grove_https writes, and a front that proxies to nothing answers 502 to every scrape. A
     # front box has no cards, so there is no dcgm_exporter here.
@@ -96,14 +99,34 @@
         state: present
         update_cache: true
 
-    - name: pathway directories
+    - name: pathway config directory
       ansible.builtin.file:
-        path: "{{ item }}"
+        path: /etc/pathway
         state: directory
         mode: "0755"
-      loop:
-        - /etc/pathway
-        - /var/log/pathway
+
+    - name: pathway log directory
+      ansible.builtin.file:
+        path: /var/log/pathway
+        state: directory
+        owner: "{{ grove_user }}"
+        group: "{{ grove_user }}"
+        mode: "0755"
+
+    # The process opens its logs itself, as grove_user, and a box provisioned before the cutover has
+    # root-owned ones it would refuse to append to. Ownership only: `file: recurse` would stamp the
+    # directory's mode onto payload.log too, and logrotate's `create 0640` owns the files' mode.
+    - name: hand the existing logs to the process
+      ansible.builtin.command: "chown -Rc {{ grove_user }}:{{ grove_user }} /var/log/pathway"
+      register: pathway_log_chown
+      changed_when: pathway_log_chown.stdout | length > 0
+
+    # payload.log is customer content. logrotate creates its files 0640; this keeps every file
+    # there at that, whatever wrote it — an earlier run of this play stamped 0755 onto them.
+    - name: keep the logs private
+      ansible.builtin.command: "find /var/log/pathway -type f ! -perm 0640 -exec chmod -c 0640 {} +"
+      register: pathway_log_mode
+      changed_when: pathway_log_mode.stdout | length > 0
 
     - name: access log rotation
       ansible.builtin.copy:
@@ -138,7 +161,7 @@
           GROVE_ACCESS_LOG=/var/log/pathway/access.log
           GROVE_ERROR_LOG=/var/log/pathway/error.log
           GROVE_CONFIG=/etc/pathway/config.json
-          GROVE_PID_FILE=/run/pathway.pid
+          GROVE_PID_FILE=/run/pathway/pathway.pid
         mode: "0600"
       no_log: true
       notify: restart pathway

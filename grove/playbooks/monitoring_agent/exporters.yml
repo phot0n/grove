@@ -1,6 +1,7 @@
 ---
-# Exporters for one box: node metrics, and GPU metrics when it has cards. Run by
-# machine.install_exporters via ansible_runner against a single-host inventory (hosts: all).
+# Exporters for one box: node metrics, and GPU metrics when it has cards, behind the scrape
+# htpasswd. Every Setup play installs the same; this is the re-run — a server's Update Scrape Auth
+# button — for a rotated Scrape Password or cards that appeared after Setup.
 #
 # Nothing here pushes anywhere and nothing here knows about a Monitoring Agent — these two
 # just listen. The agent that scrapes them is named on the box's Inference Server / Proxy

@@ -1,6 +1,6 @@
 # `serving/` — what starts an engine
 
-One class per engine kind, behind one contract. A placement (Pod, Model Deployment) asks an engine
+One class per engine kind, behind one contract. A placement (Pod, Model Replica) asks an engine
 what to run, what environment it needs, what proves it serves, and what the routing side may hold
 it to — and never branches on `engine_kind` itself.
 
@@ -16,7 +16,7 @@ package is pure: no site, no mocking.
 
 ## Adding an engine
 
-One file, one entry in `engine_class`'s dict. `Pod`, `Model Deployment` and `pathway_sync` do not
+One file, one entry in `engine_class`'s dict. `Pod`, `Model Replica` and `pathway_sync` do not
 change. The kind string is the `Engine Image.engine_kind` Select option, verbatim and lowercase.
 
 ## What belongs on the contract
@@ -34,13 +34,29 @@ start failing containers that have been serving fine.
 `warmup_request` is the one thing a custom image is asked to state rather than answer with an
 absence, and it is stated on the **Engine Image** (`warmup_path`, `warmup_body`) — which request
 proves an engine serves is a fact about the image, not about where it is placed, so a Pod and a
-Model Deployment of the same image warm up the same way. `VllmEngine` derives its own and ignores
+Model Replica of the same image warm up the same way. `VllmEngine` derives its own and ignores
 both fields; a custom image that names no path has no warmup, and the health gate is the whole
 proof.
 
 `args` and `repo` are both on the contract because the on-prem run script renders them into
 *separate* slots: the positional unquoted, every flag quoted. That quoting is also what stops an
 operator's Startup Command reaching the shell, so the two must not be collapsed into one string.
+
+## `--kv-cache-memory` is learned, not declared
+
+vLLM profiles memory on every boot and logs the exact figure that reproduces the allocation
+(`Replace gpu_memory_utilization config with --kv-cache-memory=N`). Passed back, the flag skips
+that profiling and the CUDA-graph memory estimate — the faster-startup trick its docs describe.
+
+The Model Replica owns the figure: `kv_cache_memory` is read off the container log by
+`learned_kv_cache_memory` after a healthy profiled boot, in `_post_play_state`, and the engine
+carries it only while `kv_cache_memory_for` still equals the key — a SHA-256 over image, card
+VRAM, and the command WITHOUT the flag. Any tuning change is a key miss, which means "profile again", not a
+failed boot. Of the two figures vLLM prints, the first (fit into requested memory) is taken, and
+the smallest across TP/PP ranks, since vLLM sizes the cache off the tightest worker.
+`--gpu-memory-utilization` is still emitted: vLLM ignores it for the cache once the figure is set,
+and `usable_vram_gb` still reads it. A boot that fails under the flag clears it, so the next Setup
+profiles from scratch — vLLM's own remedy for an OOM after the hardware moved.
 
 ## Context length is typed, not looked up
 
@@ -49,6 +65,10 @@ operator's Startup Command reaching the shell, so the two must not be collapsed 
 multiplier is 1024 and never 1000 — that is the number a repo's `config.json` declares, and the
 only one vLLM accepts without `VLLM_ALLOW_LONG_MAX_MODEL_LEN`. A bare number is already tokens, so
 every placement saved before the suffix existed reads back unchanged.
+
+A Model Replica carries the same field as an *override* of its deployment's, where blank means
+inherit — so blank on a replica falls through to the deployment, and blank on the deployment asks for
+the engine default. The two compose rather than colliding.
 
 Parsed once, in `Engine.__init__`, so both placements get it from the one builder they already
 share, and each `validate` writes the parsed number back onto the field — what is stored is

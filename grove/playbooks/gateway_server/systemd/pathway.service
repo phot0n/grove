@@ -4,6 +4,9 @@ After=network-online.target redis-server.service
 Wants=network-online.target redis-server.service
 
 [Service]
+User=frappe
+Group=frappe
+RuntimeDirectory=pathway
 ExecStart=/usr/local/bin/pathway
 # SIGHUP is the upgrade: a child inherits the listening sockets and starts serving while this
 # process drains behind it, so `systemctl reload` after a binary copy drops no connections. A binary
@@ -17,7 +20,7 @@ ExecReload=/bin/kill -HUP $MAINPID
 #
 # It MUST match GROVE_PID_FILE in agent.env. They drift and the handover breaks silently: systemd
 # keeps pointing at the process that exited, so the next `systemctl reload` signals nothing.
-PIDFile=/run/pathway.pid
+PIDFile=/run/pathway/pathway.pid
 
 KillSignal=SIGTERM
 # Longer than the drain (630s default) plus its lame-duck window, so systemd never SIGKILLs a
@@ -26,8 +29,8 @@ TimeoutStopSec=700
 Restart=on-failure
 RestartSec=2
 
-# Binds 80 and 443 without running as root for anything else. The capability is only needed for the
-# very first bind — an upgrade inherits the sockets rather than rebinding them.
+# What lets an unprivileged process bind 80 and 443. Ambient, so the upgrade child inherits it across
+# the exec — though it only needs it for the very first bind; an upgrade inherits the sockets.
 AmbientCapabilities=CAP_NET_BIND_SERVICE
 NoNewPrivileges=yes
 LimitNOFILE=65536

@@ -5,8 +5,9 @@
 # ansible_runner against a single-host inventory (hosts: all). Separate lifecycle from serve.yml
 # -- a box is provisioned once, then serves many models.
 #
-# The exporters install before engine_proxy because it proxies to them, and grove_https before
-# engine_proxy because a `listen 443 ssl` block with no certificate on disk stops nginx starting.
+# The exporters install before engine_proxy because it proxies to them, and fleet_tls/grove_https
+# before engine_proxy because a `listen 443 ssl` block with no certificate on disk stops nginx
+# starting. fleet_tls writes only on a standalone box, which is the only one handed the cert.
 - name: Provision a GPU inference host
   hosts: all
   become: true
@@ -14,10 +15,13 @@
   vars:
     monitoring_arch: "{{ 'arm64' if ansible_architecture == 'aarch64' else 'amd64' }}"
   roles:
+    - remove_cloud_user
+    - auditd
     - gpu_host
     - node_exporter
     - role: dcgm_exporter
       when: monitoring_has_gpu | bool
     - openresty
+    - fleet_tls
     - grove_https
     - engine_proxy

@@ -1,13 +1,11 @@
 # Copyright (c) 2026, Grove and contributors
 # For license information, please see license.txt
-"""AWS EC2 provider API client. Launches a GPU instance on one durable root volume, reads
-its state and IPs back, and reports what its instance type ships. Pure boto3 — no Frappe
-deps; Machine assembles the keys and the launch spec.
+"""AWS EC2 provider API client. Pure boto3, no Frappe deps — Machine assembles the keys and the
+launch spec.
 
-Only a root volume is attached: weights are hundreds of GB and must survive a stop, so they
-live on durable EBS. The local NVMe an instance type ships is left unmounted (the gpu_host
-role refuses ephemeral disks) — it is reported here only so an operator can see the scratch
-that is going unused."""
+Only a root volume is attached: weights are hundreds of GB and must survive a stop, so they live on
+durable EBS. The local NVMe a type ships is left unmounted, and reported here only so an operator
+can see the scratch going unused."""
 
 import time
 
@@ -16,33 +14,30 @@ from grove.utils import vram_gb_from_mib
 
 # EC2 states that are not a Machine status of their own.
 INSTANCE_STATUS = {
-	"pending": "Provisioning",
+	"pending": "Pending",
 	"running": "Active",
-	"stopping": "Draining",
-	"stopped": "Offline",
-	"shutting-down": "Draining",
+	"stopping": "Pending",
+	"stopped": "Stopped",
+	"shutting-down": "Pending",
 	"terminated": "Terminated",
 }
 
-# AWS spells x86 its own way. Everywhere else in Grove — Engine Image manifests, monitoring_arch
-# in the playbooks, Docker's own platform strings — it is amd64, and these values are compared
-# against those. arm64 is spelled the same on both sides.
+# AWS spells x86 its own way; everywhere else in Grove — manifests, playbooks, Docker platform
+# strings — it is amd64, and these are compared against those.
 ARCHITECTURE = {"x86_64": "amd64"}
-# What Grove will actually run a box as — the Machine's cpu_architecture Select, in Grove's own
-# names. Anything else AWS reports for a type (i386, on the older burstable families) is a mode
-# nothing here builds images for.
+# The Machine's cpu_architecture Select. Anything else AWS reports for a type (i386, on the older
+# burstable families) is a mode nothing here builds images for.
 RUNNABLE_ARCHITECTURES = ("amd64", "arm64")
 
 
 class AWSError(CloudClientError):
-	"""Carries AWS's own error code, so a caller can tell "the instance is gone"
-	(InvalidInstanceID.NotFound) from a credential or quota failure."""
+	"""Carries AWS's own error code, so a caller can tell InvalidInstanceID.NotFound from a
+	credential or quota failure."""
 
 
 def parse_instance_store(instance_type_info):
-	"""describe_instance_types → the local NVMe the type ships. Ephemeral: wiped on stop and
-	terminate, survives a reboot only, and it is not an EBS volume — no volume id, nothing in
-	describe_volumes. A type without local storage has no InstanceStorageInfo key at all."""
+	"""The local NVMe the type ships. Ephemeral — wiped on stop, survives a reboot only — and not
+	an EBS volume, so nothing in describe_volumes. A type without it has no key at all."""
 	storage = instance_type_info.get("InstanceStorageInfo") or {}
 	return {
 		"disks": sum(disk.get("Count") or 0 for disk in storage.get("Disks") or []),
@@ -51,8 +46,8 @@ def parse_instance_store(instance_type_info):
 
 
 def root_volume_id(instance):
-	"""This instance's root EBS volume id off its own BlockDeviceMappings, or None — block
-	device info can lag right behind a fresh launch, or the root could be instance-store."""
+	"""None when the block device info lags behind a fresh launch, or the root is
+	instance-store."""
 	root_device = instance.get("RootDeviceName")
 	for mapping in instance.get("BlockDeviceMappings") or []:
 		if mapping.get("DeviceName") == root_device:
@@ -61,39 +56,40 @@ def root_volume_id(instance):
 
 
 def parse_gpus(instance_type_info):
-	"""describe_instance_types → Machine GPU rows, one per card. Seeds the table at
-	provision time, when there is no driver on the box yet and so no nvidia-smi to ask.
-	Scan GPUs overwrites this with the box's own answer; AWS has no UUID to give."""
+	"""One scanned card per GPU, seeding a box at provision time when there is no driver to ask.
+	Scan GPUs replaces this with the box's own answer.
+
+	AWS has no UUID to give, so `device_id` falls back to the CUDA index — the placeholder a real
+	scan overwrites."""
 	gpus = []
 	for entry in (instance_type_info.get("GpuInfo") or {}).get("Gpus") or []:
 		memory_mib = (entry.get("MemoryInfo") or {}).get("SizeInMiB") or 0
 		for _ in range(entry.get("Count") or 0):
+			# One name for both: the placeholder id IS the slot, and `plan_reconcile` matches on
+			# it. Two `len(gpus)` calls that must agree is a card waiting to take its
+			# neighbour's identity.
+			index = len(gpus)
 			gpus.append({
-				"gpu_index": len(gpus),
+				"gpu_index": index,
 				"gpu_model": entry.get("Name") or "",
 				"vram_gb": vram_gb_from_mib(memory_mib),
-				"gpu_uuid": "",
+				"device_id": str(index),
 			})
 	return gpus
 
 
 def normalize_architecture(aws_architecture):
-	"""An AWS architecture name → Grove's own. Anything AWS adds passes through unmapped rather
-	than becoming a wrong answer; a blank stays blank, which is how an on-prem box reads."""
+	"""Anything AWS adds passes through unmapped rather than becoming a wrong answer; a blank stays
+	blank, which is how an on-prem box reads."""
 	return ARCHITECTURE.get(aws_architecture, aws_architecture or "")
 
 
 def parse_architecture(instance_type_info):
-	"""describe_instance_types → the architecture Grove will run this type as.
+	"""The architecture Grove will run this type as.
 
-	AWS returns a LIST, and not only for museum pieces: t2.micro answers
-	["i386", "x86_64"] to this day. Taking the first entry picked i386 there, which is not a value
-	the Machine's Select accepts, so provisioning the cheapest instance type in the catalogue failed
-	validation before it ever reached EC2.
-
-	So the first entry Grove actually supports wins, and the list order is not trusted. Anything
-	unrecognised still passes through unmapped rather than becoming a wrong answer — a new AWS
-	architecture should surface as itself, not as x86."""
+	AWS returns a LIST, and not only for museum pieces — t2.micro answers ["i386", "x86_64"] to
+	this day, and taking the first entry picked a value the Machine's Select does not accept. So
+	the first entry Grove SUPPORTS wins and the list order is not trusted."""
 	architectures = [
 		normalize_architecture(a)
 		for a in (instance_type_info.get("ProcessorInfo") or {}).get("SupportedArchitectures") or []
@@ -103,26 +99,24 @@ def parse_architecture(instance_type_info):
 
 
 def machine_status(ec2_state):
-	"""EC2 instance state → Machine status. An unknown state leaves the box Pending rather
-	than crashing a sync — AWS can add states, and a stale status is not worth an exception."""
+	"""An unknown state leaves the box Pending rather than crashing a sync: AWS can add states, and
+	a stale status is not worth an exception."""
 	return INSTANCE_STATUS.get(ec2_state, "Pending")
 
 
 def cloud_config(public_keys):
-	"""user-data that authorises Grove's own SSH keys for root, so Ansible and Machine's own
-	SSH (ssh_user defaults to root) can reach the box whatever the EC2 key pair is.
+	"""user-data authorising Grove's own SSH keys for root, so Ansible can reach the box whatever
+	the EC2 key pair is.
 
-	cloud-init always writes ssh_authorized_keys to root too, but with its default
-	disable_root: true, each key is wrapped in a forced command= that prints a message and
-	exits instead of giving a shell — the key is present but unusable. disable_root: false
-	is what actually grants root a real login with these keys."""
+	`disable_root: false` is load-bearing: cloud-init writes the keys either way, but its default
+	wraps each in a forced command= that prints a message instead of giving a shell."""
 	keys = "\n".join(f"  - {key}" for key in public_keys.splitlines() if key.strip())
 	return f"#cloud-config\ndisable_root: false\nssh_authorized_keys:\n{keys}\n" if keys else ""
 
 
 def build_ip_permission(rule):
-	"""One ingress rule ({protocol, from_port, to_port, cidr|source_group_id}) → a boto3
-	IpPermission dict. A rule names exactly one source: a CIDR, or a same-VPC security group."""
+	"""One ingress rule → a boto3 IpPermission. A rule names exactly one source: a CIDR, or a
+	same-VPC security group."""
 	permission = {
 		"IpProtocol": rule["protocol"], "FromPort": rule["from_port"], "ToPort": rule["to_port"],
 	}
@@ -139,8 +133,8 @@ def _port_rule(port, **source):
 
 
 class EC2Client(CloudClient):
-	"""One AWS account in one region. boto3 is imported on first use so a site without it
-	installed can still load the Machine doctype."""
+	"""One AWS account in one region. boto3 is imported on first use so a site without it can still
+	load the Machine doctype."""
 
 	def __init__(self, access_key_id, secret_access_key, region):
 		import boto3
@@ -163,14 +157,12 @@ class EC2Client(CloudClient):
 		root_volume_gb,
 		ssh_public_keys="",
 	):
-		"""Launch one instance, tagged with the Machine's name. The root volume is the only
-		disk attached and holds the engine images and the weights, so it is sized for them.
-		Returns the parsed instance — IPs may be absent until it runs, so poll_instance_ready.
+		"""Launch one instance, tagged with the Machine's name. IPs may be absent until it runs,
+		so poll_instance_ready.
 
-		ponytail: no second EBS volume — the gpu_host role's data-mount step always falls back
-		to root here. Add a data_volume_gb param + a second BlockDeviceMappings entry if a real
-		data volume is ever needed on AWS.
-		"""
+		ponytail: no second EBS volume — the gpu_host role's data-mount step always falls back to
+		root. Add a data_volume_gb param and a second BlockDeviceMappings entry if one is ever
+		needed."""
 		body = {
 			"ImageId": image_id,
 			"InstanceType": instance_type,
@@ -196,12 +188,9 @@ class EC2Client(CloudClient):
 		return self._parse_instance(instances[0])
 
 	def get_image_info(self, ami_id):
-		"""What launching from this AMI needs to agree with: {root_device_name, cpu_architecture}.
-
-		BlockDeviceMappings only resizes the root volume if it names the AMI's own root device
-		(/dev/sda1 on most Ubuntu images, /dev/xvda on some). The architecture is what an arm64
-		instance type has to be checked against — an AMI built for the other one launches without
-		complaint and then never boots."""
+		"""What launching from this AMI has to agree with. BlockDeviceMappings only resizes the
+		root volume if it names the AMI's own root device (/dev/sda1 on most Ubuntu images,
+		/dev/xvda on some), and a mismatched architecture launches happily and never boots."""
 		images = self._call(self.ec2.describe_images, ImageIds=[ami_id]).get("Images") or []
 		if not images:
 			raise AWSError(f"AMI {ami_id} not found in {self.region}")
@@ -222,8 +211,8 @@ class EC2Client(CloudClient):
 		raise AWSError(f"Instance {instance_id} not found")
 
 	def get_instance_type_info(self, instance_type):
-		"""This instance type's local storage, GPUs, architecture and whether it is bare metal,
-		already in Grove's own shape — one describe_instance_types call carries all four."""
+		"""Local storage, GPUs, architecture and bare metal, in Grove's own shape — one
+		describe_instance_types call carries all four."""
 		types = self._call(
 			self.ec2.describe_instance_types, InstanceTypes=[instance_type]
 		).get("InstanceTypes") or []
@@ -238,13 +227,11 @@ class EC2Client(CloudClient):
 		}
 
 	def poll_instance_ready(self, instance_id, timeout_sec=900, poll_interval_sec=10):
-		"""Poll until the instance is reachable: running, addressed, and past both of EC2's own
-		status checks.
+		"""Poll until the instance is running, addressed, and past both of EC2's status checks.
 
-		Running is not reachable. A bare metal instance reports running with a public IP about a
-		minute in and then spends another ten to twenty in firmware POST with nothing listening —
-		returning on the state alone hands Ansible a box that refuses the connection. Every
-		instance has the same gap; metal only makes it wide enough to always lose."""
+		Running is not reachable: a bare metal instance reports running with a public IP a minute
+		in and then spends ten to twenty more in firmware POST. Every instance has the same gap;
+		metal only makes it wide enough to always lose."""
 		start = time.time()
 		while time.time() - start < timeout_sec:
 			instance = self.get_instance(instance_id)
@@ -260,11 +247,10 @@ class EC2Client(CloudClient):
 		raise AWSError(f"Instance {instance_id} was not reachable within {timeout_sec}s")
 
 	def is_instance_reachable(self, instance_id):
-		"""Whether EC2 reports both of an instance's status checks passing — the system one for
-		the host under it, the instance one for the box itself.
+		"""Both status checks — the system one for the host under it, the instance one for the box.
 
-		IncludeAllInstances is load-bearing: without it the response silently omits any instance
-		that is not already running, and an empty list would be indistinguishable from an answer."""
+		IncludeAllInstances is load-bearing: without it the response silently omits an instance
+		that is not already running, and an empty list is indistinguishable from an answer."""
 		statuses = self._call(
 			self.ec2.describe_instance_status,
 			InstanceIds=[instance_id],
@@ -278,8 +264,8 @@ class EC2Client(CloudClient):
 		)
 
 	def allocate_static_ip(self, instance_id):
-		"""Allocate an Elastic IP and put it on the instance. Returns {public_ip, allocation_id}
-		— releasing one needs the allocation id, never the address."""
+		"""Allocate an Elastic IP and attach it. Releasing one needs the allocation id, never the
+		address."""
 		address = self._call(
 			self.ec2.allocate_address,
 			Domain="vpc",
@@ -293,8 +279,8 @@ class EC2Client(CloudClient):
 		return {"public_ip": address["PublicIp"], "allocation_id": address["AllocationId"]}
 
 	def release_static_ip(self, allocation_id):
-		"""Hand an Elastic IP back. Disassociated first — AWS refuses to release one that is
-		still attached, and an address left allocated is billed by the hour."""
+		"""Disassociated first: AWS refuses to release one still attached, and an address left
+		allocated is billed by the hour."""
 		addresses = self._call(
 			self.ec2.describe_addresses, AllocationIds=[allocation_id]
 		).get("Addresses") or []

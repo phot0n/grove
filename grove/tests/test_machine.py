@@ -99,9 +99,8 @@ class TestInstanceTypeFacts(unittest.TestCase):
 		self.assertEqual(parse_architecture({}), "")
 
 	def test_a_type_that_also_boots_32_bit_is_still_read_as_64(self):
-		# t2.micro answers ["i386", "x86_64"] to this day. Taking the first entry picked i386,
-		# which the Machine's Select rejects — so provisioning the cheapest type in the catalogue
-		# failed validation before it ever reached EC2.
+		# t2.micro answers ["i386", "x86_64"] to this day, and taking the first entry picked a
+		# value the Machine's Select rejects.
 		info = {"ProcessorInfo": {"SupportedArchitectures": ["i386", "x86_64"]}}
 		self.assertEqual(parse_architecture(info), "amd64")
 
@@ -140,8 +139,7 @@ class TestPollInstanceReady(unittest.TestCase):
 	"""The bare metal bug and its fix."""
 
 	def test_running_with_an_ip_is_not_ready_while_a_status_check_is_initializing(self, _sleep):
-		# Exactly the bare metal window: EC2 says running, the address is assigned, and nothing
-		# is listening. Returning here is what handed Ansible an unreachable box.
+		# The bare metal window: EC2 says running, the address is assigned, nothing is listening.
 		ec2 = client(instances=[instance()], statuses=[status(system="initializing")])
 		with self.assertRaises(AWSError) as caught:
 			ec2.poll_instance_ready("i-1", timeout_sec=1, poll_interval_sec=0)
@@ -162,7 +160,7 @@ class TestPollInstanceReady(unittest.TestCase):
 		self.assertEqual(ready["status"], "Active")
 
 	def test_a_pending_instance_is_not_probed_for_status(self, _sleep):
-		# No point asking, and it keeps the describe count down over a twenty-minute wait.
+		# Keeps the describe count down over a twenty-minute wait.
 		ec2 = client(instances=[instance(state="pending", public_ip=None)], statuses=[status()])
 		with self.assertRaises(AWSError):
 			ec2.poll_instance_ready("i-1", timeout_sec=1, poll_interval_sec=0)
@@ -175,8 +173,8 @@ class TestPollInstanceReady(unittest.TestCase):
 		self.assertIn("went terminated", str(caught.exception))
 
 	def test_status_is_asked_for_all_instances(self, _sleep):
-		# Without IncludeAllInstances the response omits anything not already running, and an
-		# empty list would read the same as a passing check.
+		# Without IncludeAllInstances the response omits anything not already running, and an empty
+		# list reads the same as a passing check.
 		ec2 = client(instances=[instance()], statuses=[status()])
 		ec2.poll_instance_ready("i-1", timeout_sec=60, poll_interval_sec=0)
 		self.assertTrue(ec2.ec2.last_status_kwargs["IncludeAllInstances"])

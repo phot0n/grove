@@ -1,26 +1,55 @@
 {
  "actions": [],
- "allow_rename": 0,
  "autoname": "prompt",
  "creation": "2026-08-12 00:00:00",
  "doctype": "DocType",
  "engine": "InnoDB",
  "field_order": [
+  "is_self_hosted",
+  "geography",
   "base_url",
   "api_version",
   "column_break_cred",
+  "anthropic_base_url",
   "api_key"
  ],
  "fields": [
   {
-   "description": "Where this vendor's API lives (https://api.anthropic.com). Blank means we serve it ourselves \u2014 that is what makes a provider third-party, so there is no separate type to keep in step with it.",
+   "default": "0",
+   "description": "The provider our own engines serve under: a Model with no provider is named here, and only its models can be deployed. Exactly one, and it dials nothing \u2014 a URL is what makes a vendor.",
+   "fieldname": "is_self_hosted",
+   "fieldtype": "Check",
+   "in_list_view": 1,
+   "label": "Self Hosted"
+  },
+  {
+   "depends_on": "eval:!doc.is_self_hosted",
+   "description": "Where this vendor account processes requests. Its models are routed only by gateways in this geography, so a regional front (eu.api.openai.com) is its own provider. Blank for our own engines, which take their geography from wherever they run.",
+   "fieldname": "geography",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "Geography",
+   "mandatory_depends_on": "eval:doc.base_url || doc.anthropic_base_url",
+   "options": "Geography"
+  },
+  {
+   "depends_on": "eval:!doc.is_self_hosted",
+   "description": "The vendor's OpenAI-compatible front (https://api.deepseek.com). The URL fields ARE the dialect declaration: each front set here makes this vendor's models reachable from that surface. Both blank means we serve the models ourselves \u2014 that is what makes a provider third-party, so there is no separate type to keep in step with it.",
    "fieldname": "base_url",
    "fieldtype": "Data",
-   "label": "Base URL",
+   "label": "OpenAI Base URL",
    "options": "URL"
   },
   {
-   "depends_on": "base_url",
+   "depends_on": "eval:!doc.is_self_hosted",
+   "description": "The vendor's Anthropic-compatible front \u2014 alone for an Anthropic-only vendor (https://api.anthropic.com), or next to the OpenAI one for a dual-front vendor (DeepSeek's https://api.deepseek.com/anthropic). Same key either way.",
+   "fieldname": "anthropic_base_url",
+   "fieldtype": "Data",
+   "label": "Anthropic Base URL",
+   "options": "URL"
+  },
+  {
+   "depends_on": "eval:doc.base_url || doc.anthropic_base_url",
    "description": "Sent as the vendor's version header on every request. Anthropic's is 2023-06-01.",
    "fieldname": "api_version",
    "fieldtype": "Data",
@@ -31,7 +60,7 @@
    "fieldtype": "Column Break"
   },
   {
-   "depends_on": "base_url",
+   "depends_on": "eval:doc.base_url || doc.anthropic_base_url",
    "description": "The credential we hold with this vendor. Pushed to every gateway as the route's own key; a customer's key never leaves us.",
    "fieldname": "api_key",
    "fieldtype": "Password",
@@ -39,7 +68,7 @@
   }
  ],
  "links": [],
- "modified": "2026-08-12 00:00:00",
+ "modified": "2026-09-17 12:00:00.000000",
  "modified_by": "Administrator",
  "module": "Grove",
  "name": "Model Provider",
@@ -57,6 +86,7 @@
    "write": 1
   }
  ],
+ "row_format": "Dynamic",
  "sort_field": "modified",
  "sort_order": "DESC",
  "states": []

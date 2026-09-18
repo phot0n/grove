@@ -1,0 +1,21 @@
+---
+# Push the fleet's wildcard certificate onto one standalone Inference Server and move nginx onto it.
+# Unlike pathway, nginx keeps the certificate it loaded, so a renewal needs a config test and a
+# reload. Run by grove.tls after a renewal: a reload is graceful, so it is safe on a serving box.
+- name: Install the fleet certificate on a standalone Inference Server
+  hosts: all
+  become: true
+  gather_facts: false
+
+  roles:
+    - fleet_tls
+
+  tasks:
+    - name: Check the engine proxy config
+      ansible.builtin.command: /usr/local/openresty/bin/openresty -t
+      changed_when: false
+
+    - name: Reload the engine proxy
+      ansible.builtin.systemd:
+        name: openresty
+        state: reloaded

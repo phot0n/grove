@@ -1,9 +1,5 @@
-# Copyright (c) 2026, Grove and contributors
+# Copyright (c) 2026, Frappe and contributors
 # For license information, please see license.txt
-"""`vllm serve` arguments, and the one request that proves the engine they started can serve. Both
-placements build them here: a Pod serves a Model in a container (command → dockerStartCmd) and a
-Model Deployment serves it in a container on a box (repo + args → the rendered run script).
-Model-intrinsic flags come from the Model, per-box tuning from whichever doc owns the placement."""
 
 import json
 import math
@@ -12,18 +8,19 @@ import shlex
 from grove.serving.base import Engine
 
 
-class VllmEngine(Engine):
-	"""An image whose entrypoint takes `vllm serve` arguments, so a placement derives them from
-	the Model."""
+# vLLM does not fall back to float16 — it raises `Bfloat16 is only supported on GPUs with compute
+# capability of at least 8.0` and exits.
+BF16_MIN_COMPUTE_CAPABILITY = 8.0
+FP8_MIN_COMPUTE_CAPABILITY = 8.9
+BF16 = ("bfloat16", "torch.bfloat16", "bf16")
 
-	# Not passed to vLLM: a placement that states nothing gets vLLM's own sizing, which reads the
-	# model and the KV cache it actually ended up with and is a better number than one imposed
-	# from here.
-	#
-	# So this is an assumption, not a contract, and the two can drift: vLLM's V1 default is 1024
-	# today but moves with the image tag, which is per Engine Image and defaults to `latest`.
-	# Drift only costs accuracy in the capacity gate — the engine queues what it cannot run, and a
-	# placement that needs the number held exactly should set max_num_seqs, which pins both sides.
+
+class VllmEngine(Engine):
+	"""An image whose entrypoint takes `vllm serve` arguments."""
+
+	# What the routing side assumes when the placement states nothing — never passed to vLLM, so
+	# the two can drift as the image tag moves. Drift only costs accuracy in the capacity gate;
+	# set max_num_seqs to pin both sides.
 	default_concurrency = 1024
 
 	@property
@@ -44,8 +41,8 @@ class VllmEngine(Engine):
 
 	@property
 	def usable_vram_gb(self):
-		"""VRAM vLLM may allocate across the placement's GPUs, 0 when the per-GPU VRAM
-		isn't known (on-prem rows unfilled, or the provider's GPU types not fetched)."""
+		"""VRAM vLLM may allocate across the placement's GPUs. 0 when the per-GPU figure is
+		unknown."""
 		if not self.gpu_vram_gb:
 			return 0
 		return self.gpu_count * self.gpu_vram_gb * self.gpu_memory_utilization
@@ -56,13 +53,19 @@ class VllmEngine(Engine):
 		return self.model.get("modality") == "embedding"
 
 	@property
+	def weight_dtype(self):
+		"""What the weights will be served in: the override, or what the repo asks for. `auto` is
+		not a third answer — it is vLLM reading `torch_dtype`, which is why the Model carries it."""
+		if self.dtype != "auto":
+			return self.dtype
+		return (self.model.get("torch_dtype") or "").strip()
+
+	@property
 	def placement_errors(self):
-		"""Why this GPU split cannot start, empty when it can. Checked before a deploy so
-		vLLM does not fail minutes in, on the box. Shape fields left blank on the Model skip
-		their check rather than block the deploy."""
+		"""Why this GPU split cannot start, empty when it can. Checked before a deploy so vLLM does
+		not fail minutes in, on the box. A blank Model field skips its check."""
 		errors = []
-		# Layers need not divide by the pipeline size — vLLM's get_pp_indices spreads the
-		# remainder across stages. Only the TP head split is a hard requirement.
+		# Layers need not divide by the pipeline size: get_pp_indices spreads the remainder.
 		if self.gpu_count % self.pipeline_parallel_size:
 			errors.append(
 				f"{self.gpu_count} GPUs do not divide evenly into "
@@ -75,6 +78,29 @@ class VllmEngine(Engine):
 				f"tensor-parallel size {self.tensor_parallel_size} — vLLM needs an even split. "
 				f"Use a GPU count whose tensor-parallel size divides {heads}."
 			)
+		# Capability, not capacity: a card can have room for the weights and still be unable to
+		# represent them. An unknown on either side skips the check.
+		if (
+			self.compute_capability
+			and self.weight_dtype.lower() in BF16
+			and self.compute_capability < BF16_MIN_COMPUTE_CAPABILITY
+		):
+			errors.append(
+				f"{self.model_name} is served in {self.weight_dtype}, which needs a GPU of compute "
+				f"capability {BF16_MIN_COMPUTE_CAPABILITY} or better — these are "
+				f"{self.compute_capability}. Set dtype to float16 on the deployment (or on one "
+				f"replica) to run it here, or place it on a newer card."
+			)
+		if (
+			self.compute_capability
+			and self.kv_cache_dtype.startswith("fp8")
+			and self.compute_capability < FP8_MIN_COMPUTE_CAPABILITY
+		):
+			errors.append(
+				f"An fp8 KV cache needs a GPU of compute capability "
+				f"{FP8_MIN_COMPUTE_CAPABILITY} or better — these are {self.compute_capability}. "
+				f"Clear kv_cache_dtype, or place this on a newer card."
+			)
 		if self.usable_vram_gb and self.weights_gb > self.usable_vram_gb:
 			errors.append(
 				f"{self.model_name}'s weights are {self.weights_gb} GB but these GPUs offer "
@@ -86,13 +112,11 @@ class VllmEngine(Engine):
 
 	@property
 	def warmup_request(self):
-		"""The smallest real inference this placement can serve, as {path, body} — proof the engine
-		runs a forward pass under the name the gateway routes on, which a 200 from /v1/models does
-		not give. Empty when the surface costs more to assert than the assertion is worth.
+		"""The smallest real inference this placement can serve, as {path, body} — proof of a
+		forward pass under the name the gateway routes on, which /v1/models does not give.
 
-		/v1/completions rather than /v1/chat/completions: chat needs a tokenizer chat template, and
-		a base repo without one answers 400 — a config answer, not a GPU one, on an engine that
-		serves fine. Both paths tokenize, schedule, prefill, decode once and detokenize."""
+		/v1/completions, not chat: chat needs a tokenizer template, and a base repo without one
+		answers 400 on an engine that serves fine. Both paths run the same pipeline."""
 		if self.model.get("modality") == "audio":
 			# Transcription wants a base64 audio file. Not worth carrying to prove one forward pass.
 			return {}
@@ -107,46 +131,46 @@ class VllmEngine(Engine):
 	def args(self):
 		"""The flags only, without the positional repo (the run script supplies that)."""
 		args = [
-			"--served-model-name", self.model_name, *self.aliases,
+			"--served-model-name", self.model_name,
 			"--host", self.host,
 			"--port", str(self.port),
 			"--tensor-parallel-size", str(self.tensor_parallel_size),
 			"--gpu-memory-utilization", str(self.gpu_memory_utilization),
 			"--max-model-len", str(self.max_model_len),
-			# Surfaces usage.prompt_tokens_details.cached_tokens so cached-token accounting
-			# works (billable = total - cached). Reporting-only.
+			# Surfaces cached_tokens so billing can credit prefix-cache hits. Reporting-only.
 			"--enable-prompt-tokens-details",
-			# Request-id tracing (native vLLM — no custom image/middleware). vLLM adopts the
-			# forwarded X-Request-Id as its request_id (chatcmpl-<id>), so this logs it and the
-			# response body id carries it. The response HEADER is set by the gateway, so we
-			# deliberately DON'T pass --enable-request-id-headers (it would echo a duplicate).
+			# vLLM adopts the forwarded X-Request-Id as its request_id, so this logs it and the
+			# body carries it. NOT --enable-request-id-headers: the gateway sets the response
+			# header, and that flag would echo a duplicate.
 			"--enable-log-requests",
-			# Logs the generated text alongside the request. vLLM emits both this and the
-			# received-request line at INFO, so the completion is on the box without DEBUG.
+			# Generated text, at INFO — so the completion is on the box without DEBUG.
 			"--enable-log-outputs",
-			# vLLM defaults system_fingerprint to "full", which is its exact version and build
-			# hash — `vllm-0.24.0-bf54a486` — on every response and on EVERY streaming frame.
-			# That hands a customer the engine build to look up known issues against, for a field
-			# no caller of ours uses. Stripped at the source: the alternative was rewriting each
-			# SSE frame in the gateway's body filter, which is a mutation of the streaming hot
-			# path to remove one string.
+			# Default leaks the exact vLLM build on every response and SSE frame. Stripped here;
+			# the gateway alternative rewrites the streaming hot path.
 			"--fingerprint-mode", "none",
 		]
+		# Learned off a profiled boot; vLLM then skips profiling and sizes the cache to this.
+		# --gpu-memory-utilization stays: vLLM ignores it for the cache when this is set, and the
+		# placement arithmetic (usable_vram_gb) still reads it.
+		if self.kv_cache_memory:
+			args += ["--kv-cache-memory", str(self.kv_cache_memory)]
 		if self.pipeline_parallel_size > 1:
 			args += ["--pipeline-parallel-size", str(self.pipeline_parallel_size)]
-		# Weight dtype is left to vLLM (it reads the repo's config.json); only the KV cache is
-		# worth overriding per box — fp8 halves it and buys context on a card that is short of it.
+		# Left to vLLM until a card cannot run what the repo asks for. `--dtype float16` is the
+		# remedy placement_errors names for a pre-Ampere card.
+		if self.dtype != "auto":
+			args += ["--dtype", self.dtype]
+		# fp8 halves the KV cache and buys context on a card short of it.
 		if self.kv_cache_dtype != "auto":
 			args += ["--kv-cache-dtype", self.kv_cache_dtype]
 		if self.max_num_batched_tokens:
 			args += ["--max-num-batched-tokens", str(self.max_num_batched_tokens)]
-		# Only when the placement states one. Unset means vLLM sizes it off the model and the KV
-		# cache it ends up with, which is a better number than any we would impose — see
-		# default_concurrency for what the routing side assumes in that case.
+		# Unset means vLLM sizes it off the model and the KV cache it ends up with, which beats
+		# any number imposed here. See default_concurrency for what routing assumes then.
 		if self.max_num_seqs:
 			args += ["--max-num-seqs", str(self.max_num_seqs)]
-		# A flag, not VLLM_ATTENTION_BACKEND: that env var is gone in vLLM 0.24 (nothing in
-		# the package reads it), so setting it silently left the engine auto-selecting.
+		# A flag, not VLLM_ATTENTION_BACKEND: that env var is gone in 0.24 and setting it
+		# silently left the engine auto-selecting.
 		if self.attention_backend != "auto":
 			args += ["--attention-backend", self.attention_backend]
 		if self.model.get("modality") == "text":
@@ -166,9 +190,8 @@ class VllmEngine(Engine):
 
 	@property
 	def streamer_config_args(self):
-		"""Streamer tuning: concurrency = ceil(weights / 4 GB chunks) — the AWS-benchmarked
-		figure; distributed lets each TP rank stream its own shard instead of a rank-0
-		broadcast. Empty when nothing needs saying."""
+		"""Streamer tuning. concurrency = ceil(weights / 4 GB), the AWS-benchmarked chunk size;
+		distributed lets each TP rank stream its own shard instead of a rank-0 broadcast."""
 		config = {}
 		if self.weights_gb:
 			config["concurrency"] = math.ceil(self.weights_gb / 4)
@@ -180,27 +203,20 @@ class VllmEngine(Engine):
 
 	@property
 	def command(self):
-		"""Repo + flags — the container's start command. Empty when the Model has no repo.
-		shlex-joined: the streamer's JSON arg carries braces a shell would brace-expand."""
+		"""Repo + flags, the container's start command. shlex-joined: the streamer's JSON arg
+		carries braces a shell would brace-expand."""
 		return shlex.join([self.repo, *self.args]) if self.repo else ""
 
 	def env(self, hf_home="", cache_root="", api_key="", hf_token="", streaming_env=None):
 		"""vLLM's own variables. Insertion order reproduces the on-prem env file line for line —
-		see Engine.env for why that matters."""
+		see Engine.env."""
 		env = {
-			# INFO, not DEBUG. DEBUG is not only louder: it turns on inductor's size/alignment
-			# asserts (vllm/config/compilation.py) and puts the custom-op dispatcher's per-op
-			# skip lines in the log, several per decode step. On a card whose kernels fall back
-			# a lot that is most of the throughput. What INFO keeps is the pair that makes a
-			# request readable end to end — the received-request line and the generated output.
-			# What it drops is the prompt text, which is a DEBUG-only line. Raise it per
-			# deployment with an Environment Variables row when a prompt has to be captured.
 			"VLLM_LOGGING_LEVEL": "INFO",
-			# Telemetry is off for every image: huggingface_hub reads this with a plain env lookup
-			# in every version, so unlike hf_transfer it cannot crash an image without extras.
+			# Safe on every image: a plain env lookup in every hub version, unlike hf_transfer.
 			"HF_HUB_DISABLE_TELEMETRY": "1",
 			# vLLM phones home on startup unless told not to.
 			"VLLM_NO_USAGE_STATS": "1",
+			"SAFETENSORS_LOAD_STRATEGY": "prefetch",
 		}
 		if self.is_streaming:
 			env.update(streaming_env or {})
@@ -208,8 +224,8 @@ class VllmEngine(Engine):
 			env["HF_TOKEN"] = hf_token
 		if self.allow_long_max_model_len:
 			env["VLLM_ALLOW_LONG_MAX_MODEL_LEN"] = "1"
-		# Only when the placement hands the engine its own HF cache. On a box Ansible pre-downloads
-		# with the host venv, so the container never fetches and the fast-transfer knob is moot.
+		# Only when the engine gets its own cache. Ansible pre-downloads on a box, so the
+		# container never fetches and the fast-transfer knob is moot.
 		if hf_home:
 			env["HF_HOME"] = hf_home
 			env["HF_XET_HIGH_PERFORMANCE"] = "1"

@@ -11,8 +11,8 @@ Read this with [`../CLAUDE.md`](../CLAUDE.md) (the rules) and the per-directory 
 ## The one rule everything follows
 
 **Grove is the source of truth; a box holds a projection it never edits.** Anything a gateway
-originates is only usage counters — a token count that is lost is money that is lost, which is why
-gateway Redis runs `appendfsync always`. Everything else can be pushed again, so nothing is ever
+originates is only usage counters, which is why gateway Redis runs AOF (`appendfsync everysec`: a
+crash loses at most a second of counts). Everything else can be pushed again, so nothing is ever
 read back out of a box to decide what is true.
 
 ## Two planes
@@ -21,6 +21,14 @@ read back out of a box to decide what is true.
 |---|---|---|
 | **Gateway Server** | groups, users, keys, the global route table | yes |
 | **Ingress Server** | one thing: the replica table for the boxes in its own Network | no |
+
+A gateway's Redis is its own on loopback, or its Network's **Gateway Store** once that store
+is Active and the gateway has been deployed onto it (`Gateway Server.gateway_store` records which).
+Gateways on one store share `inflight:<engine>`, so a standalone box they all dial directly is capped
+once across them rather than once per gateway. They share everything else too: a dead store fails
+its gateways closed. Gateways on different stores still count apart. A deploy never moves a live
+gateway between Redises: drain it first with **maintenance** (a
+`config.json` key: new requests 503, running ones finish, `GET /grove-admin/in-flight` counts them).
 
 The split is enforced by what each is *given*, not by a flag: an Ingress Server doctype has no
 tenant fields, and the agent in ingress mode mounts no endpoint to send them to. A box behind an
@@ -32,13 +40,13 @@ topology stays inside its VPC and several deployments behind one ingress fold in
 | File | Owns |
 |---|---|
 | `pathway_sync.py` | Every push to every box. A push that left no Pathway Sync row did not happen. |
-| `usage_pull.py` | Draining `usage:<prefix>` into monthly Usage Records. |
+| `usage_pull.py` | Stopping `usage:<prefix>` into monthly Usage Records. |
 | `access.py` | Which models a user may call, as the CSV each grant record carries. |
 | `serving/` | One class per engine kind: what starts it, what environment it needs, what proves it serves. |
 | `fleet.py` | What a named fleet box (Gateway/Ingress) does the same way, plus the fleet-wide settings readers. |
-| `naming.py` | `<prefix><n>-<region>`, e.g. `gw1-ap-south-1` — a box's name IS its DNS label and its request-id prefix. |
+| `naming.py` | A Machine's `<prefix><n>-<region>.<geography zone>`, e.g. `gw2-ap-south-1.local.frappe.dev` (no domain for a box whose geography has no zone, or one named before this), which its server doc takes. Its `short_name` (first label) is the DNS label under the zone and the request-id / agent id. |
 | `ansible.py` / `ansible_runner.py` | Running a playbook against a box, tracked as docs. |
-| `tls.py` | The fleet wildcard: issue over DNS-01, renew, push. |
+| `tls.py` | Each Geography's zone wildcard: issue over DNS-01, renew, push to that geography's boxes. |
 | `monitoring.py` / `log_relay.py` | Exporters on every box, and shipping their output. |
 | `failure.py` | `@reports_failure` — a long job that dies marks its doc Broken and says why. |
 | `api.py` | The whitelisted surface a customer's portal calls. |
@@ -90,10 +98,9 @@ fleet gets re-pushed over row order. Order means nothing on the wire; it exists 
 | Redis key | Written by | Holds |
 |---|---|---|
 | `key:<sha256(secret)>` | state push (keys) | whose the key is |
-| `user:<name>` | state push (users) | group, own allow/deny, over-budget flag |
-| `group:<name>` | state push (groups) | the model grant for everyone in it |
+| `user:<name>` | state push (users) | groups (comma list), own allow/deny, over-budget flag |
+| `model_group:<name>` | state push (groups) | the model grant for everyone in it |
 | `deploy:<model>` | state push (routes) | every placement of one model |
-| `catalog:public` | state push (groups) | the pooled public model list |
 | `grove:state_hash` | state push | per-section/bucket hashes of what the box holds |
 | `usage:<prefix>` | the agent | token counters, incl. `m:<metric>:<model>` fields |
 | `sticky:<session>` | the agent | session → engine, for prefix-cache reuse |
@@ -102,7 +109,8 @@ fleet gets re-pushed over row order. Order means nothing on the wire; it exists 
 
 Access is pushed as **three** records, one per thing that can change on its own: a group edit is one
 record however many members, a budget flip is one record however many keys, and the agent resolves
-all three at request time.
+all three at request time — unioning every group the user names before applying their own
+allow/deny.
 
 A model id is always `<provider>/<name>` (`frappe/qwen3.5-4b`). One id, one route key, one grant —
 the bare form was deliberately broken, because routing keys on `deploy:<id>` while access is matched
@@ -128,7 +136,7 @@ desyncs a grant from a route, and usage lands against the Grove model whatever t
 | When | Job | Note |
 |---|---|---|
 | `*/1` | `pathway_sync.sync_projection` | hash-gated: pushes each box only what it does not already hold; a fleet in sync logs nothing |
-| `*/2` | `usage_pull.pull_all` | drain is delete-on-read, so it is **1-shot, never retried** |
+| `*/2` | `usage_pull.pull_all` | drain is delete-on-read, so it is **1-shot, never retried**; a store is drained once, through its first writer that answers ("drained via") |
 | `*/2` | `cloud_provider.reconcile.sync_all` | the provider owns whether a pod is up; this closes the drift |
 | daily | `usage_pull.reactivate_rate_limited`, `tls.renew_fleet_certificate` | |
 
@@ -140,9 +148,16 @@ There is no separate backstop job: the hashes live on the box, so losing the sto
 them, which the very next tick reads as drift and heals. All Projection runs serialize on one
 MariaDB advisory lock, so a slow run cannot land a stale write after a newer one.
 
-A quiet tick still leaves a trace: every in-sync check and successful push stamps the box's
-`last_synced_at` (Gateway/Ingress Server). Failures never stamp it, so the timestamp going stale
-means the box is unreachable or rejecting pushes — and the Failed Pathway Sync rows say why.
+A quiet tick still leaves a trace on an Ingress Server: every in-sync check and successful push
+stamps its `last_synced_at`, and a stale stamp means the box is unreachable or rejecting pushes.
+Gateways carry no stamp — the Pathway Sync rows are their record.
+
+**A store is reached through its writers.** Each tick (and each usage pull) reaches a gateway on
+its own Redis directly, and a Gateway Store through the gateways marked **Gateway Store
+Writer**, tried in name order until one succeeds — every failed attempt still writes its row.
+Other gateways on the store are never pushed: they read what the writer wrote. A store with Active
+gateways but no Active writer writes a failed row naming the store; nothing is handed over
+automatically. The first gateway moved onto a store is marked for you.
 
 ## Gotchas worth knowing before you touch something
 

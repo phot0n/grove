@@ -9,11 +9,13 @@ the counter is asked for a number rather than derived from what already exists.
 """
 
 import unittest
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import frappe
 
-from grove.naming import next_deployment_name, next_server_name
+from grove.grove.doctype.machine.machine import NAME_PREFIX, Machine
+from grove.naming import next_machine_name, next_replica_name, short_name
 from grove.utils import is_id_safe, is_label_under, slugify
 
 ZONE = "grove.example.com"
@@ -31,8 +33,7 @@ class FakeSeries:
 
 
 def name(series, region="ap-south-1", prefix="gw"):
-	with patch.object(frappe, "db", frappe._dict(get_value=lambda *a, **k: region)):
-		return next_server_name(prefix, "MACHINE-1", counter=series)
+	return next_machine_name(prefix, region, counter=series)
 
 
 class TestServerNaming(unittest.TestCase):
@@ -49,8 +50,8 @@ class TestServerNaming(unittest.TestCase):
 		)
 
 	def test_each_region_counts_on_its_own(self):
-		# The point of keying the series on the region. A single counter would give
-		# gw1-ap-south-1 then gw2-us-east-1, and the number would stop meaning anything local.
+		# A single counter would give gw1-ap-south-1 then gw2-us-east-1, and the number would stop
+		# meaning anything local.
 		self.assertEqual(name(self.series, region="ap-south-1"), "gw1-ap-south-1")
 		self.assertEqual(name(self.series, region="us-east-1"), "gw1-us-east-1")
 		self.assertEqual(name(self.series, region="ap-south-1"), "gw2-ap-south-1")
@@ -62,8 +63,7 @@ class TestServerNaming(unittest.TestCase):
 		self.assertEqual(name(self.series, prefix="inf"), "inf1-ap-south-1")
 
 	def test_a_box_with_no_region_gets_no_suffix(self):
-		# A colo machine is in no Network and so has no region — which is what the name should
-		# say, rather than inventing one or trailing a bare '-'.
+		# A colo machine is in no Network and has no region, which is what the name should say.
 		self.assertEqual(name(self.series, region=""), "gw1")
 		self.assertEqual(name(self.series, region=""), "gw2")
 
@@ -72,8 +72,8 @@ class TestServerNaming(unittest.TestCase):
 		self.assertEqual(name(self.series), "gw1-ap-south-1")
 
 	def test_the_number_is_asked_for_not_derived_from_what_exists(self):
-		# A retired name is never handed to another box: the series climbs whether or not the doc
-		# that took the number is still there, where a max-of-existing-plus-one would reuse it.
+		# The series climbs whether or not the doc that took the number is still there, where a
+		# max-plus-one would reuse a retired name.
 		self.assertEqual(name(self.series), "gw1-ap-south-1")
 		self.series.current["gw-ap-south-1-"] = 7  # as if 2..7 were taken and then deleted
 		self.assertEqual(name(self.series), "gw8-ap-south-1")
@@ -83,7 +83,7 @@ class TestServerNaming(unittest.TestCase):
 		self.assertEqual(list(self.series.current), ["ing-us-east-1-"])
 
 	def test_every_prefix_produces_a_usable_name(self):
-		for prefix in ("gw", "ing", "inf"):
+		for prefix in NAME_PREFIX.values():
 			with self.subTest(prefix):
 				generated = name(FakeSeries(), prefix=prefix)
 				self.assertTrue(generated.startswith(prefix))
@@ -93,9 +93,41 @@ class TestServerNaming(unittest.TestCase):
 				self.assertTrue(is_label_under(f"{generated}.{ZONE}", ZONE), generated)
 
 	def test_a_region_that_is_not_a_label_is_slugged_into_one(self):
-		# Region doc names are AWS codes today, but nothing forces that — and a space or an
-		# underscore would otherwise reach a DNS record.
+		# Region doc names are AWS codes today, but nothing forces that.
 		self.assertEqual(name(self.series, region="AP South 1"), "gw1-ap-south-1")
+
+	def test_a_box_in_a_zone_is_named_for_its_whole_hostname(self):
+		# The domain shows which geography it is in at a glance; the count stays per region.
+		self.assertEqual(next_machine_name("gw", "ap-south-1", ZONE, counter=self.series), f"gw1-ap-south-1.{ZONE}")
+		self.assertEqual(name(self.series), "gw2-ap-south-1")
+
+	def test_the_short_name_is_the_first_label(self):
+		self.assertEqual(short_name(f"gw1-ap-south-1.{ZONE}"), "gw1-ap-south-1")
+		self.assertEqual(short_name("gw1-ap-south-1"), "gw1-ap-south-1")
+		self.assertTrue(is_id_safe(short_name(f"gw1-ap-south-1.{ZONE}")))
+
+
+class TestAMachineIsNamedByWhatItBacks(unittest.TestCase):
+	def generated(self, zone="", **fields):
+		"""What the Machine asks next_machine_name for: its prefix, region and its Geography's zone."""
+		machine = SimpleNamespace(**{"machine_type": "Inference", "region": "ap-south-1", **fields})
+		values = {("Region", "ap-south-1", "geography"): "in", ("Geography", "in", "fleet_zone"): zone}
+		with (
+			patch("grove.grove.doctype.machine.machine.next_machine_name", lambda *args: args),
+			patch.object(frappe, "db", SimpleNamespace(get_value=lambda *key: values[key])),
+			patch.object(frappe, "throw", side_effect=ValueError),
+		):
+			return Machine.get_generated_name(machine)
+
+	def test_the_type_picks_the_prefix(self):
+		self.assertEqual(self.generated()[0], "inf")
+
+	def test_its_geographys_zone_is_its_domain(self):
+		self.assertEqual(self.generated(zone=ZONE), ("inf", "ap-south-1", ZONE))
+
+	def test_a_machine_with_no_type_cannot_be_named(self):
+		with self.assertRaises(ValueError):
+			self.generated(machine_type="")
 
 
 class TestDeploymentNaming(unittest.TestCase):
@@ -106,7 +138,7 @@ class TestDeploymentNaming(unittest.TestCase):
 		self.series = FakeSeries()
 
 	def name(self, model="frappe/qwen3-8b", server="inf3-ap-south-1", region="ap-south-1"):
-		return next_deployment_name(model, server, region, counter=self.series)
+		return next_replica_name(model, server, region, counter=self.series)
 
 	def test_the_name_says_what_where_and_which_box(self):
 		self.assertEqual(self.name(), "qwen3-8b-ap-south-1-inf3-00001")
@@ -122,8 +154,7 @@ class TestDeploymentNaming(unittest.TestCase):
 		)
 
 	def test_a_region_code_goes_in_as_the_provider_writes_it(self):
-		# No shortening rule: AWS, GCP and Azure each code a region differently, and one fitted
-		# to AWS turns `asia-south1` and `southeastasia` into noise.
+		# No shortening rule: one fitted to AWS turns `asia-south1` into noise.
 		for region in ("asia-south1", "southeastasia", "EU-RO-1"):
 			with self.subTest(region):
 				self.assertIn(slugify(region), self.name(region=region))
@@ -139,16 +170,14 @@ class TestDeploymentNaming(unittest.TestCase):
 		)
 
 	def test_one_counter_serves_every_deployment(self):
-		# Keyed as the old `MD-{#####}` format was, so the numbers carry on from what exists
-		# rather than restarting onto names already taken.
+		# Keyed as the old `MD-{#####}` format was, so the numbers carry on.
 		self.name()
 		self.name(model="frappe/llama-70b", server="inf9-us-east-1", region="us-east-1")
 		self.assertEqual(list(self.series.current), ["MD-"])
 
 	def test_the_name_is_safe_as_a_container_name(self):
-		# It reaches Docker as `vllm-<name>` and nginx as /e/<name> — the deployment's own
-		# `_instance_slug` would otherwise rewrite it and the doc would name a container that
-		# is not the one running. Dots are legal there, and model ids carry them.
+		# It reaches Docker as `vllm-<name>` and nginx as /e/<name>, so `_instance_slug` rewriting
+		# it would have the doc name a container that is not the one running.
 		generated = self.name(model="acme/Qwen3.5 Coder")
 		self.assertEqual(generated, "qwen3.5-coder-ap-south-1-inf3-00001")
 		self.assertRegex(generated, r"^[a-z0-9._-]+$")

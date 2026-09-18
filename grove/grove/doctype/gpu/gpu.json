@@ -1,0 +1,119 @@
+{
+ "actions": [],
+ "autoname": "hash",
+ "creation": "2026-08-28 00:00:00",
+ "doctype": "DocType",
+ "engine": "InnoDB",
+ "field_order": [
+  "machine",
+  "gpu_type",
+  "device_id",
+  "column_break_card",
+  "gpu_index",
+  "vram_gb",
+  "compute_capability",
+  "section_claim",
+  "held_by"
+ ],
+ "fields": [
+  {
+   "description": "The box this card is in. A GPU belongs to a Machine, not to the Inference Server that happens to serve from it.",
+   "fieldname": "machine",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Machine",
+   "options": "Machine",
+   "read_only": 1,
+   "reqd": 1
+  },
+  {
+   "description": "Resolved from whatever the scan reported. A MIG slice resolves to its own type, not its parent's.",
+   "fieldname": "gpu_type",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "GPU Type",
+   "options": "GPU Type",
+   "read_only": 1
+  },
+  {
+   "description": "Exactly what CUDA_VISIBLE_DEVICES is given: GPU- for a whole card, MIG- for a slice, or the bare CUDA index on a cloud box seeded before any driver existed. Stable, which the index is not.",
+   "fieldname": "device_id",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Device ID",
+   "read_only": 1,
+   "reqd": 1
+  },
+  {
+   "fieldname": "column_break_card",
+   "fieldtype": "Column Break"
+  },
+  {
+   "description": "Ordering and display only. nvidia-smi order moves on a reseat, and a MIG slice has none at all, so nothing addresses a card by this.",
+   "fieldname": "gpu_index",
+   "fieldtype": "Int",
+   "label": "CUDA Index",
+   "read_only": 1
+  },
+  {
+   "fetch_from": "gpu_type.vram_gb",
+   "fieldname": "vram_gb",
+   "fieldtype": "Int",
+   "in_list_view": 1,
+   "label": "VRAM (GB)",
+   "read_only": 1
+  },
+  {
+   "description": "What the card can do, off its type. bfloat16 needs 8.0 and an fp8 KV cache needs 8.9, so a placement checks this before a play starts rather than letting vLLM raise on the box.",
+   "fetch_from": "gpu_type.compute_capability",
+   "fieldname": "compute_capability",
+   "fieldtype": "Float",
+   "label": "Compute Capability",
+   "precision": "1",
+   "read_only": 1
+  },
+  {
+   "fieldname": "section_claim",
+   "fieldtype": "Section Break",
+   "label": "Allocation"
+  },
+  {
+   "description": "The replica holding this card, or blank. Taken by a compare-and-swap, so two replicas cannot both win it. Being a column on the card rather than a row of its own is what stops a claim outliving the card it names.",
+   "fieldname": "held_by",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Held By",
+   "options": "Model Replica",
+   "read_only": 1
+  }
+ ],
+ "links": [],
+ "modified": "2026-08-29 02:14:34.667526",
+ "modified_by": "Administrator",
+ "module": "Grove",
+ "name": "GPU",
+ "naming_rule": "Random",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "System Manager",
+   "share": 1,
+   "write": 1
+  }
+ ],
+ "row_format": "Dynamic",
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": [],
+ "title_field": "gpu_type"
+}
