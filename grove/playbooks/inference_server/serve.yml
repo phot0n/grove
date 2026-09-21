@@ -1,7 +1,7 @@
 ---
-# Doctype-driven model serve. Run by model_deployment.deploy_model via
+# Doctype-driven model serve. Run by model_replica.deploy_model via
 # ansible_runner against a single-host inventory (hosts: all), with EVERY var
-# passed as extra-vars assembled from the Model ⊕ Model Deployment (no
+# passed as extra-vars assembled from the Model ⊕ Model Replica (no
 # group_vars). Host bootstrap (NVIDIA driver + data volume) is NOT here — it runs
 # once per box via provision.yml (Inference Server setup); deploy_model gates on
 # is_provisioned. This play just (re)serves the model.
@@ -13,12 +13,14 @@
 #
 # engine_proxy runs here as well as in provision.yml, so a box provisioned before it existed
 # picks it up on its next deploy — and so the vllm role has the reload handlers it notifies.
+# fleet_tls likewise: a standalone box's nginx names the fleet certificate, so it must be on disk.
 - name: Serve a model on a GPU inference host
   hosts: all
   become: true
   gather_facts: true
   roles:
     - openresty
+    - fleet_tls
     - grove_https
     - engine_proxy
     - vllm

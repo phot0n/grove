@@ -1,12 +1,14 @@
 ---
-# Provision a Grove Gateway Server: local Redis (zero-loss persistence) + the pathway binary,
-# which owns the whole data path — TLS, routing, auth, metering. Idempotent.
+# Provision a Grove Gateway Server: its Redis (loopback with zero-loss persistence, or the Network's
+# Gateway Store) + the pathway binary, which owns the whole data path — TLS, routing, auth,
+# metering. Idempotent.
 #
 # There is no OpenResty here any more. The play stops and disables it rather than ignoring it, so a
 # box provisioned before the cutover frees :80 and :443 for the process that now wants them.
 #
-# extra-vars: admin_token, agent_version, gateway_id, gateway_region, gateway_host, proxy_hostname,
-# the fleet TLS pair, the scrape hash, and the tunables in config.json.j2.
+# extra-vars: admin_token, agent_version, gateway_id, gateway_region, gateway_geography, gateway_host, proxy_hostname,
+# redis_addr, redis_password, redis_shared, the fleet TLS pair, the scrape hash, and the tunables in
+# config.json.j2.
 - hosts: all
   become: true
   gather_facts: true
@@ -34,12 +36,18 @@
   # no wildcard it comes up on :80 in the clear rather than refusing, which is the honest answer for
   # a fleet that has not been given a zone.
   roles:
+    - grove_user
+    - remove_cloud_user
+    - auditd
     # node_exporter before the binary: pathway publishes /metrics/node behind the htpasswd
     # grove_https writes, and a front that proxies to nothing answers 502 to every scrape. A
     # front box has no cards, so there is no dcgm_exporter here.
     - node_exporter
     - grove_https
     - fleet_tls
+    # On a shared store the Redis is the store's, installed by its own Setup.
+    - role: redis
+      when: not redis_shared
     - install_gateway_agent
 
   tasks:
@@ -87,66 +95,34 @@
         - "{{ grove_tls_cert }}"
         - "{{ grove_tls_key }}"
 
-    - name: install redis-server
-      ansible.builtin.apt:
-        name: redis-server
-        state: present
-        update_cache: true
-
-    # Usage counters are the only thing this box ORIGINATES — keys, users, groups and routes are
-    # projections the control plane can push again, but a token count that is lost is money that is
-    # lost. Hence appendfsync always rather than everysec.
-    - name: redis zero-loss persistence
-      ansible.builtin.blockinfile:
-        path: /etc/redis/redis.conf
-        marker: "# {mark} grove gateway zero-loss"
-        block: |
-          appendonly yes
-          appendfsync {{ redis_appendfsync | default('always') }}
-          maxmemory-policy noeviction
-
-    - name: redis started
-      ansible.builtin.systemd:
-        name: redis-server
-        enabled: true
-        state: started
-
-    # The block above is what a RESTART reads. This is what the process is doing right now, and the
-    # two had silently diverged on a live box: the block landed, its `notify: restart redis` never
-    # fired, and every run since reported the file unchanged — so it never notified again. The
-    # setting sat in the config, correct and inert, while Redis ran on the defaults for the life of
-    # the box. Nothing surfaced it, because a gateway with no AOF looks exactly like one with AOF
-    # until it restarts.
-    #
-    # A handler cannot fix that: it only fires when the file changes, and the file is already right.
-    # So this reconciles the RUNNING config every time, which is the only state that matters, and
-    # applies with CONFIG SET rather than a restart — a restart would drop the pushed keys and routes
-    # and 401 every caller until the next sync.
-    - name: enforce persistence on the running redis
-      ansible.builtin.shell: |
-        set -eu
-        changed=0
-        for setting in "appendonly yes" "appendfsync {{ redis_appendfsync | default('always') }}" "maxmemory-policy noeviction"; do
-          key=${setting%% *}
-          want=${setting#* }
-          have=$(redis-cli config get "$key" | tail -1)
-          if [ "$have" != "$want" ]; then
-            redis-cli config set "$key" "$want" > /dev/null
-            changed=1
-          fi
-        done
-        echo "$changed"
-      register: redis_runtime_persistence
-      changed_when: redis_runtime_persistence.stdout | trim == "1"
-
-    - name: pathway directories
+    - name: pathway config directory
       ansible.builtin.file:
-        path: "{{ item }}"
+        path: /etc/pathway
         state: directory
         mode: "0755"
-      loop:
-        - /etc/pathway
-        - /var/log/pathway
+
+    - name: pathway log directory
+      ansible.builtin.file:
+        path: /var/log/pathway
+        state: directory
+        owner: "{{ grove_user }}"
+        group: "{{ grove_user }}"
+        mode: "0755"
+
+    # The process opens its logs itself, as grove_user, and a box provisioned before the cutover has
+    # root-owned ones it would refuse to append to. Ownership only: `file: recurse` would stamp the
+    # directory's mode onto payload.log too, and logrotate's `create 0640` owns the files' mode.
+    - name: hand the existing logs to the process
+      ansible.builtin.command: "chown -Rc {{ grove_user }}:{{ grove_user }} /var/log/pathway"
+      register: pathway_log_chown
+      changed_when: pathway_log_chown.stdout | length > 0
+
+    # payload.log is customer content. logrotate creates its files 0640; this keeps every file
+    # there at that, whatever wrote it — an earlier run of this play stamped 0755 onto them.
+    - name: keep the logs private
+      ansible.builtin.command: "find /var/log/pathway -type f ! -perm 0640 -exec chmod -c 0640 {} +"
+      register: pathway_log_mode
+      changed_when: pathway_log_mode.stdout | length > 0
 
     - name: access log rotation
       ansible.builtin.copy:
@@ -171,7 +147,11 @@
           GROVE_ADMIN_TOKEN={{ admin_token }}
           GROVE_GATEWAY_ID={{ gateway_id | default('') }}
           GROVE_GATEWAY_REGION={{ gateway_region | default('') }}
-          GROVE_REDIS_ADDR=127.0.0.1:6379
+          GROVE_GATEWAY_GEOGRAPHY={{ gateway_geography | default('') }}
+          GROVE_REDIS_ADDR={{ redis_addr }}
+          {% if redis_password %}
+          GROVE_REDIS_PASSWORD={{ redis_password }}
+          {% endif %}
           GROVE_LISTEN_HTTP=:80
           GROVE_LISTEN_HTTPS=:443
           GROVE_PUBLIC_HOST={{ gateway_host | default('') }}
@@ -181,8 +161,9 @@
           GROVE_HTPASSWD={{ grove_metrics_htpasswd }}
           GROVE_ACCESS_LOG=/var/log/pathway/access.log
           GROVE_ERROR_LOG=/var/log/pathway/error.log
+          GROVE_PAYLOAD_LOG=/var/log/pathway/payload.log
           GROVE_CONFIG=/etc/pathway/config.json
-          GROVE_PID_FILE=/run/pathway.pid
+          GROVE_PID_FILE=/run/pathway/pathway.pid
         mode: "0600"
       no_log: true
       notify: restart pathway
@@ -211,6 +192,19 @@
         enabled: true
         state: started
         daemon_reload: true
+
+    # The gateway restarts onto the store first, so it never runs without a Redis.
+    - name: restart onto the new agent.env
+      ansible.builtin.meta: flush_handlers
+
+    # AOF stays on disk, so a box moved back to loopback starts from what it last held.
+    - name: stop the loopback redis a shared store replaced
+      ansible.builtin.systemd:
+        name: redis-server
+        state: stopped
+        enabled: false
+      failed_when: false
+      when: redis_shared
 
   handlers:
     - name: reload systemd

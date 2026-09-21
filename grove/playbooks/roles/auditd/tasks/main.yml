@@ -1,0 +1,34 @@
+---
+# Press's auditd role, cut to the rules: Ubuntu's stock auditd.conf already rotates (5 x 8 MB), where
+# press's keep_logs grows /var/log/audit onto the root volume holding the weights. Not immutable
+# (-e 2), so a rule change loads without rebooting a GPU box.
+- name: Install auditd
+  ansible.builtin.apt:
+    name: auditd
+    state: present
+
+- name: Keep auditd enabled and running
+  ansible.builtin.service:
+    name: auditd
+    state: started
+    enabled: true
+
+# Container storage pruned: every image layer carries its own su and passwd, and a rule on a layer
+# path breaks the whole rule load once that image is pruned.
+- name: List setuid and setgid binaries
+  ansible.builtin.command: >-
+    find / -xdev ( -path /var/lib/docker -o -path /var/lib/containerd -o -path /opt/vllm ) -prune
+    -o -type f ( -perm -4000 -o -perm -2000 ) -print
+  register: auditd_privileged_binaries
+  changed_when: false
+  failed_when: auditd_privileged_binaries.stdout_lines | length == 0
+  check_mode: false
+
+- name: Write the audit rules
+  ansible.builtin.template:
+    src: grove.rules.j2
+    dest: /etc/audit/rules.d/grove.rules
+    owner: root
+    group: root
+    mode: "0600"
+  notify: load audit rules

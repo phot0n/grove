@@ -1,13 +1,11 @@
 # Copyright (c) 2026, Grove and contributors
 # For license information, please see license.txt
-"""RunPod GPU cloud provider API client (REST v2 — v1 is deprecated and being retired).
-Spawns Secure-Cloud pods with a pool of direct-TCP ports (SSH + vLLM engine ports), injects
-SSH public keys, and reads the public IP + external port mapping back off the API (RunPod
-random-maps each exposed port). Pure HTTP client — no Frappe deps; the provisioner assembles
-keys/env/ports.
+"""RunPod GPU cloud provider API client (REST v2). Spawns Secure-Cloud pods with a pool of ports,
+injects SSH keys, and reads the public IP and external port mapping back — RunPod random-maps each
+exposed port. Pure HTTP, no Frappe deps.
 
-The parsed shapes this returns (see _parse_pod, list_gpu_types) are Grove's own vocabulary and
-outlive the provider's wire format — callers never see v2 field names."""
+The parsed shapes this returns are Grove's own vocabulary and outlive the provider's wire format:
+callers never see v2 field names."""
 
 import json
 import time
@@ -18,14 +16,11 @@ RUNPOD_API_URL = "https://api.runpod.io/v2"
 # A quiet pod sends nothing for long stretches; cut the read here and let the caller resume.
 LOG_READ_TIMEOUT = 65
 
-# CUDA + sshd base image. RunPod pods already ship NVIDIA drivers; this just needs an
-# OS + sshd so Ansible can connect. A Pod always names its own image (Engine Image link or
-# the manual field), so this is the fallback for direct API callers only.
+# A Pod always names its own image, so this is the fallback for direct API callers only.
 DEFAULT_IMAGE = "vllm/vllm-openai:latest"
 DEFAULT_CONTAINER_DISK_GB = 2
 
-# RunPod pod states that map onto a Pod status of their own. Everything else — CREATED,
-# RESTARTING, a state RunPod adds later — is a pod on its way up.
+# Everything else — CREATED, RESTARTING, a state RunPod adds later — is a pod on its way up.
 POD_STATUS = {
 	"RUNNING": "Running",
 	"EXITED": "Stopped",
@@ -36,9 +31,8 @@ POD_STATUS = {
 
 
 def pod_status(runpod_state):
-	"""RunPod pod state → Pod status. An unrecognised state reads Provisioning, never Stopped:
-	a pod that is slow to come up (or a state this client has not seen) must not be recorded as
-	one the operator stopped."""
+	"""An unrecognised state reads Provisioning, never Stopped: a pod slow to come up must not be
+	recorded as one the operator stopped."""
 	return POD_STATUS.get(runpod_state, "Provisioning")
 
 
@@ -51,8 +45,8 @@ class RunPodClient:
 		self.api_key = api_key
 
 	def _request(self, method, path, json_body=None):
-		"""One REST call. Bearer auth; raises RunPodError with the response body on
-		failure (RunPod returns a JSON error message worth surfacing)."""
+		"""One REST call. Raises with the response body — RunPod's JSON error message is worth
+		surfacing."""
 		headers = {
 			"Authorization": f"Bearer {self.api_key}",
 			"Content-Type": "application/json",
@@ -69,12 +63,11 @@ class RunPodClient:
 
 	@staticmethod
 	def proxy_url(pod_id, internal_port):
-		"""RunPod's HTTPS endpoint for a port exposed as http. RunPod terminates TLS with its own
-		certificate, so the pod serves plain http and carries none; the hostname is keyed on the
-		pod id, so unlike a direct-tcp mapping it survives a restart.
+		"""RunPod terminates TLS with its own certificate, so the pod serves plain http and carries
+		none. Keyed on the pod id, so unlike a direct-tcp mapping it survives a restart.
 
-		Cloudflare fronts it with a 100s connection cap: a response that starts streaming inside
-		that window is fine, one that is still buffering at 100s returns 524."""
+		Cloudflare fronts it with a 100s connection cap: a response still buffering at 100s
+		returns 524."""
 		return f"https://{pod_id}-{int(internal_port)}.proxy.runpod.net"
 
 	def _container_config(
@@ -89,8 +82,8 @@ class RunPodClient:
 		name=None,
 		container_registry_auth_id=None,
 	):
-		"""The container settings RunPod accepts on both create and PATCH, in v2 spelling.
-		Only the fields given are emitted, so a PATCH stays partial (omitted = left alone)."""
+		"""What RunPod accepts on both create and PATCH. Only the fields given are emitted, so a
+		PATCH stays partial."""
 		body = {
 			"name": name,
 			"image": image_name,
@@ -100,8 +93,7 @@ class RunPodClient:
 			"env": env,
 			"registry": container_registry_auth_id,
 		}
-		# v2 nests the persistent disk under mounts; its kind is fixed at create, so a restart
-		# must keep sending the same one.
+		# The disk's kind is fixed at create, so a restart must keep sending the same one.
 		persistent = {"size": volume_in_gb, "path": volume_mount_path}
 		if persistent := {k: v for k, v in persistent.items() if v is not None}:
 			body["mounts"] = {"persistent": persistent}
@@ -122,13 +114,9 @@ class RunPodClient:
 		args=None,
 		container_registry_auth_id=None,
 	):
-		"""Create an on-demand pod. `ports` is the pool list, e.g. ['22/tcp', '8080/http'], built
-		from the Pod's own Ports rows since the provider cannot hot-add later; `env` is a dict
-		(e.g. {"PUBLIC_KEY": <keys>} for SSH). `args` is appended to the image's entrypoint —
-		for a vLLM image whose entrypoint is `vllm serve`, that is the repo plus its flags.
-		`container_registry_auth_id` (see get_registry_auth_id) authenticates the pull for a
-		private image. Returns the parsed pod (see _parse_pod) — the endpoints are absent until
-		it runs, so poll_pod_ready()."""
+		"""Create an on-demand pod. `ports` is the pool list (e.g. ['22/tcp', '8080/http']), built
+		from the Pod's Ports rows since the provider cannot hot-add later. `args` is appended to
+		the image's entrypoint. Endpoints are absent until it runs, so poll_pod_ready()."""
 		config = self._container_config(
 			ports=ports, env=env, args=args, name=name,
 			image_name=image_name or DEFAULT_IMAGE,

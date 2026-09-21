@@ -1,9 +1,10 @@
 # Copyright (c) 2026, Grove and contributors
 # For license information, please see license.txt
-"""Registry of the torch.compile caches in the weights bucket — one row per (image digest,
-GPU, TP, model), the cache key's invalidation axes. The bucket is the one owner of this
-state: boxes push caches after their first healthy boot, Sync From Bucket mirrors what is
-there, and absence prunes. Deleting a row deletes its S3 prefix."""
+"""Registry of the torch.compile caches in the weights bucket — one row per (image digest, GPU, TP,
+model), the cache key's invalidation axes.
+
+The BUCKET owns this state: boxes push after their first healthy boot, Sync From Bucket mirrors what
+is there, and absence prunes. Deleting a row deletes its S3 prefix."""
 
 import frappe
 from frappe.model.document import Document
@@ -38,15 +39,14 @@ class CompileCache(Document):
 
 	@property
 	def prefix(self):
-		"""The S3 key prefix this row mirrors — same shape vllm-cache-sync.sh computes."""
+		"""The same shape vllm-cache-sync.sh computes on the box."""
 		return (
 			f"{PREFIX}{self.image_digest}/{self.gpu_model}"
 			f"/tp{self.tensor_parallel_size}/{self.model_slug}/"
 		)
 
 	def on_trash(self):
-		"""Deleting the row deletes the artifacts: the row only mirrors the bucket, so
-		leaving the objects there would resurrect it on the next sync."""
+		"""The row only mirrors the bucket, so leaving the objects would resurrect it next sync."""
 		if self.flags.from_sync:
 			return
 		bucket, client = bucket_and_client()
@@ -60,8 +60,8 @@ class CompileCache(Document):
 
 
 def bucket_and_client():
-	"""The bucket name + an S3 client on the mirror keys — the pair that stays on the
-	control plane, which is why row deletion is safe to wire to object deletion."""
+	"""The bucket name and an S3 client on the mirror keys — the pair that stays on the control
+	plane, which is why row deletion is safe to wire to object deletion."""
 	settings = frappe.get_single("Grove Settings")
 	env = settings.weights_s3_write_environment
 	if not env:
@@ -85,8 +85,7 @@ def list_keys(client, bucket, prefix):
 
 
 def entries_from_keys(objects):
-	"""Group raw S3 listings into one entry per cache key. A key that does not parse as
-	compile-cache/<digest>/<gpu>/tp<N>/<model>/<artifact...> is skipped, not guessed at."""
+	"""One entry per cache key. A key that does not parse is skipped, not guessed at."""
 	entries = {}
 	for obj in objects:
 		parts = obj["Key"].split("/")

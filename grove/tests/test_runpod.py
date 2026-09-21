@@ -114,8 +114,8 @@ class TestParsePod(unittest.TestCase):
 		self.assertEqual((parsed["ssh_port"], parsed["public_ip"]), (40022, "1.2.3.4"))
 
 	def test_the_public_ip_comes_from_a_direct_tcp_mapping(self):
-		# A RunPod http proxy port reports a CGNAT address, and entry order is not stable —
-		# taking the first ip would hand the gateway an unreachable host.
+		# A RunPod http proxy port reports a CGNAT address and entry order is not stable, so
+		# taking the first ip hands the gateway an unreachable host.
 		parsed = RunPodClient._parse_pod({
 			"id": "pod1",
 			"runtime": {"ports": [
@@ -186,8 +186,8 @@ class TestStreamLogs(unittest.TestCase):
 		})])
 
 	def test_separators_and_keepalive_comments_tick_without_a_line(self):
-		# A quiet stream is mostly blank lines and ':' comments. They carry no log line, but
-		# each one has to reach the caller — it is their only chance to notice Stop.
+		# A quiet stream is mostly blank lines and ':' comments. They carry no log line, but each
+		# has to reach the caller — their only chance to notice Stop.
 		events, _call = self.stream(["", ": keep-alive", 'data: {"line":"a"}'])
 		self.assertEqual([line for _id, line in events], [None, None, {"line": "a"}])
 
@@ -236,6 +236,8 @@ def serving_pod(
 	if streaming:
 		model["weights_s3_uri"] = "s3://grove-weights/models/Qwen--Qwen3-35B"
 	return SimpleNamespace(
+		provision_at=None,
+		terminate_at=None,
 		name="POD-1",
 		pod_id=pod_id,
 		serve_port=8080,
@@ -243,8 +245,8 @@ def serving_pod(
 		model="Qwen/Qwen3-35B",
 		health_path=health_path,
 		max_model_len=max_model_len,
-		# The real class, not a stub: an Engine takes a plain mapping and no site, so the pod
-		# simply carries the one its doctype property would have built.
+		# The real class: an Engine takes a plain mapping and no site, so the pod carries the one
+		# its doctype property would have built.
 		engine=build_engine(engine_kind, "qwen3-35b", model, port=8080, max_model_len=max_model_len),
 		ports=[
 			SimpleNamespace(internal_port=22, protocol="tcp", external_port=22001),
@@ -280,8 +282,8 @@ class TestPodEnv(unittest.TestCase):
 		self.assertEqual(env["TORCHINDUCTOR_CACHE_DIR"], "/data/vllm-cache/torchinductor")
 
 	def test_a_custom_image_gets_none_of_the_vllm_vars(self):
-		# hf_transfer may not be installed there; its env var would crash huggingface_hub.
-		# Telemetry is the exception: a plain env lookup, safe on any huggingface_hub.
+		# hf_transfer may not be installed, and its env var would crash huggingface_hub.
+		# Telemetry is the exception: a plain env lookup, safe on any version.
 		env = self.env(engine_kind="custom")
 		self.assertEqual(set(env), {"HF_HOME", "HF_HUB_DISABLE_TELEMETRY"})
 
@@ -291,7 +293,7 @@ class TestPodEnv(unittest.TestCase):
 
 	def test_a_streaming_pod_gets_the_bucket_env(self):
 		# Decided by the Model carrying a mirror, not by matching "runai_streamer" in the stored
-		# serve command — which an operator could also type into extra_serve_args.
+		# command — which an operator could type into extra_serve_args.
 		env = self.env(streaming=True)
 		self.assertEqual(env["AWS_ACCESS_KEY_ID"], "AKIA")
 
@@ -303,14 +305,13 @@ class TestEngineEndpoint(unittest.TestCase):
 	"""Which address the gateway is handed for a serving pod."""
 
 	def test_an_http_port_is_reached_through_the_provider_tls_proxy(self):
-		# The point of the whole arrangement: https, so the vLLM key is not on the wire in
-		# clear, and no certificate on the pod.
+		# https, so the key is not on the wire in clear, and no certificate on the pod.
 		endpoint = PodProvisioner(serving_pod()).engine_endpoint
 		self.assertEqual(endpoint, "https://abc123-8080.proxy.runpod.net")
 
 	def test_the_proxy_address_ignores_the_mapping_that_moves_on_restart(self):
-		# Keyed on the pod id alone, so a restart that re-maps every direct port leaves the
-		# gateway route valid.
+		# Keyed on the pod id, so a restart that re-maps every direct port leaves the route
+		# valid.
 		moved = serving_pod(public_ip="9.9.9.9", external_port=50999)
 		self.assertEqual(
 			PodProvisioner(moved).engine_endpoint, "https://abc123-8080.proxy.runpod.net"
@@ -586,6 +587,7 @@ class TestSyncOfAPodGoneFromTheProvider(unittest.TestCase):
 			PodProvisioner,
 			set_state=lambda self, values: None,
 			sync_model_published=lambda self: synced.append(True),
+			log=lambda self, *args, **kwargs: None,
 		):
 			self.assertEqual(provisioner.sync(), {"status": "Terminated"})
 		self.assertEqual(synced, [True])

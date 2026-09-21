@@ -1,0 +1,39 @@
+{#- Press's twelve rule files in one. arm64 has no legacy syscalls (open, chmod, unlink...) and a
+    name auditctl does not know aborts the whole load, so those are x86_64 only, as is b32. -#}
+{%- set x86 = ansible_architecture == 'x86_64' -%}
+{%- set user = '-F auid>=1000 -F auid!=4294967295' -%}
+{%- set access = ['openat', 'truncate', 'ftruncate'] + (['creat', 'open'] if x86 else []) -%}
+{%- set perm_mod = ['fchmod', 'fchmodat', 'fchown', 'fchownat'] + (['chmod', 'chown', 'lchown'] if x86 else []) -%}
+{%- set xattr = ['setxattr', 'lsetxattr', 'fsetxattr', 'removexattr', 'lremovexattr', 'fremovexattr'] -%}
+{%- set deletion = ['unlinkat', 'renameat', 'renameat2'] + (['unlink', 'rename'] if x86 else []) -%}
+{%- for arch in (['b64', 'b32'] if x86 else ['b64']) %}
+-a always,exit -F arch={{ arch }} -S {{ access | join(' -S ') }} -F exit=-EACCES {{ user }} -k access
+-a always,exit -F arch={{ arch }} -S {{ access | join(' -S ') }} -F exit=-EPERM {{ user }} -k access
+-a always,exit -F arch={{ arch }} -S {{ perm_mod | join(' -S ') }} {{ user }} -k perm_mod
+-a always,exit -F arch={{ arch }} -S {{ xattr | join(' -S ') }} {{ user }} -k perm_mod
+-a always,exit -F arch={{ arch }} -S {{ deletion | join(' -S ') }} {{ user }} -k delete
+-a always,exit -F arch={{ arch }} -C euid!=uid -F euid=0 {{ user }} -S execve -k actions
+-a always,exit -F arch={{ arch }} -S adjtimex -S settimeofday -S clock_settime{% if arch == 'b32' %} -S stime{% endif %} -k time-change
+-a always,exit -F arch={{ arch }} -S sethostname -S setdomainname -k system-locale
+{% endfor %}
+{# No trailing slashes: the kernel refuses one on a watch whose directory does not exist yet. #}
+-w /etc/localtime -p wa -k time-change
+-w /etc/group -p wa -k identity
+-w /etc/passwd -p wa -k identity
+-w /etc/gshadow -p wa -k identity
+-w /etc/shadow -p wa -k identity
+-w /etc/security/opasswd -p wa -k identity
+-w /etc/issue -p wa -k system-locale
+-w /etc/issue.net -p wa -k system-locale
+-w /etc/hosts -p wa -k system-locale
+-w /etc/hostname -p wa -k system-locale
+-w /etc/netplan -p wa -k system-locale
+-w /etc/apparmor -p wa -k MAC-policy
+-w /etc/apparmor.d -p wa -k MAC-policy
+-w /var/log/lastlog -p wa -k logins
+-w /var/run/faillock -p wa -k logins
+-w /etc/sudoers -p wa -k scope
+-w /etc/sudoers.d -p wa -k scope
+{% for path in auditd_privileged_binaries.stdout_lines %}
+-a always,exit -F path={{ path }} -F perm=x {{ user }} -k privileged
+{% endfor %}

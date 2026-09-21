@@ -37,6 +37,13 @@
   "ports",
   "section_env",
   "env",
+  "section_lifecycle",
+  "provision_at",
+  "terminate_at",
+  "column_break_lifecycle",
+  "provision_retries",
+  "provision_attempts",
+  "scheduled_for",
   "tab_vllm",
   "section_serve",
   "api_key",
@@ -49,7 +56,6 @@
   "attention_backend",
   "pipeline_parallel_size",
   "section_extra",
-  "aliases",
   "extra_serve_args",
   "serve_command",
   "tab_logs",
@@ -67,6 +73,7 @@
    "fieldname": "cloud_provider",
    "fieldtype": "Link",
    "label": "Cloud Provider",
+   "link_filters": "[[\"Cloud Provider\",\"resource_type\",\"=\",\"Pod\"]]",
    "options": "Cloud Provider",
    "reqd": 1
   },
@@ -79,7 +86,7 @@
    "read_only": 1
   },
   {
-   "description": "What this pod serves \u2014 and the key the gateway routes on, so every pod needs one. For a vLLM image the Model's intrinsic config (repo, quantization, parsers, \u2026) is read live at build time and only per-pod tuning is set in the Serving tab; for a custom image the Model is the route key alone.",
+   "description": "What this pod serves — and the key the gateway routes on, so every pod needs one. For a vLLM image the Model's intrinsic config (repo, quantization, parsers, …) is read live at build time and only per-pod tuning is set in the Serving tab; for a custom image the Model is the route key alone.",
    "fieldname": "model",
    "fieldtype": "Link",
    "in_list_view": 1,
@@ -101,7 +108,7 @@
    "read_only": 1
   },
   {
-   "description": "Provider's pod id. Blank until spawned; cleared on terminate. A restart respawns \u2192 new id.",
+   "description": "Provider's pod id. Blank until spawned; cleared on terminate. A restart respawns → new id.",
    "fieldname": "pod_id",
    "fieldtype": "Data",
    "in_list_view": 1,
@@ -129,7 +136,7 @@
    "reqd": 1
   },
   {
-   "description": "What the image serves, mirrored from the Engine Image. 'custom' derives no vLLM arguments \u2014 the image's own entrypoint runs, plus any Startup Command.",
+   "description": "What the image serves, mirrored from the Engine Image. 'custom' derives no vLLM arguments — the image's own entrypoint runs, plus any Startup Command.",
    "fetch_from": "engine_image.engine_kind",
    "fieldname": "engine_kind",
    "fieldtype": "Data",
@@ -192,7 +199,7 @@
    "label": "Environment"
   },
   {
-   "description": "Extra env injected into the container. Merged over provisioner defaults (PUBLIC_KEY, HF_HOME, VLLM_API_KEY) \u2014 user rows win on conflict.",
+   "description": "Extra env injected into the container. Merged over provisioner defaults (PUBLIC_KEY, HF_HOME, VLLM_API_KEY) — user rows win on conflict.",
    "fieldname": "env",
    "fieldtype": "Table",
    "label": "Env Vars",
@@ -228,7 +235,7 @@
    "fieldtype": "Column Break"
   },
   {
-   "description": "Internal port the engine listens on \u2014 must be in the Ports table (opened at spawn). Where the health gate is polled and the gateway route points, whatever the engine kind. Reached externally via its mapped port.",
+   "description": "Internal port the engine listens on — must be in the Ports table (opened at spawn). Where the health gate is polled and the gateway route points, whatever the engine kind. Reached externally via its mapped port.",
    "fieldname": "serve_port",
    "fieldtype": "Int",
    "label": "Serve Port"
@@ -239,6 +246,49 @@
    "fieldtype": "Table",
    "label": "Ports",
    "options": "Pod Port"
+  },
+  {
+   "collapsible": 1,
+   "fieldname": "section_lifecycle",
+   "fieldtype": "Section Break",
+   "label": "Lifecycle"
+  },
+  {
+   "description": "Start of this pod's daily window. Inside the window the every-minute tick spawns it if it has no provider pod — once per day, with the retries below; outside, it terminates it. Blank both = only by the buttons. A window may cross midnight.",
+   "fieldname": "provision_at",
+   "fieldtype": "Time",
+   "label": "Up From"
+  },
+  {
+   "description": "End of the daily window: from this time the tick terminates the provider pod, volume included. Must differ from Up From.",
+   "fieldname": "terminate_at",
+   "fieldtype": "Time",
+   "label": "Down From"
+  },
+  {
+   "fieldname": "column_break_lifecycle",
+   "fieldtype": "Column Break"
+  },
+  {
+   "default": "3",
+   "description": "How many more times a spawn asks the provider for a pod after the first ask fails — no capacity, transient API errors. Only the create call is retried: a pod that got an id is brought up once. 0 = one ask.",
+   "fieldname": "provision_retries",
+   "fieldtype": "Int",
+   "label": "Provision Retries"
+  },
+  {
+   "description": "Create calls the last spawn made.",
+   "fieldname": "provision_attempts",
+   "fieldtype": "Int",
+   "label": "Provision Attempts",
+   "read_only": 1
+  },
+  {
+   "description": "The day the tick last opened this pod's window. One scheduled spawn per window, whatever became of it — a Stop pressed inside the window holds.",
+   "fieldname": "scheduled_for",
+   "fieldtype": "Date",
+   "label": "Scheduled For",
+   "read_only": 1
   },
   {
    "depends_on": "eval:doc.engine_kind != 'custom'",
@@ -264,7 +314,7 @@
   },
   {
    "default": "auto",
-   "description": "\u2192 --kv-cache-dtype. fp8 halves the KV cache, which buys context on a card short of VRAM, at some accuracy. auto = the weights' own dtype.",
+   "description": "→ --kv-cache-dtype. fp8 halves the KV cache, which buys context on a card short of VRAM, at some accuracy. auto = the weights' own dtype.",
    "fieldname": "kv_cache_dtype",
    "fieldtype": "Select",
    "label": "KV Cache Dtype",
@@ -279,21 +329,21 @@
   },
   {
    "default": "1024",
-   "description": "\u2192 --max-num-seqs. Sequences the engine runs concurrently, and the gateway's admission cap: requests in flight on this engine are held to it, and one that would exceed it goes to another replica or is refused with 429. Blank = 1024, passed explicitly rather than left to the image's own default, so the gateway caps at the number the engine is actually running. Also bounds how much KV cache the batch can want, so lower it when a full batch OOMs.",
+   "description": "→ --max-num-seqs. Sequences the engine runs concurrently, and the gateway's admission cap: requests in flight on this engine are held to it, and one that would exceed it goes to another replica or is refused with 429. Blank = 1024, passed explicitly rather than left to the image's own default, so the gateway caps at the number the engine is actually running. Also bounds how much KV cache the batch can want, so lower it when a full batch OOMs.",
    "fieldname": "max_num_seqs",
    "fieldtype": "Int",
    "label": "Max Num Seqs"
   },
   {
    "default": "auto",
-   "description": "\u2192 --attention-backend on the serve command. auto = let vLLM pick.",
+   "description": "→ --attention-backend on the serve command. auto = let vLLM pick.",
    "fieldname": "attention_backend",
    "fieldtype": "Select",
    "label": "Attention Backend",
    "options": "auto\nFLASH_ATTN\nXFORMERS\nFLASHINFER"
   },
   {
-   "description": "\u2192 --max-model-len. Per-box cap for the KV cache; \u2264 the model's native context. Blank = 8192. Takes a suffix \u2014 32k, 128k, 1m \u2014 or a plain token count.",
+   "description": "→ --max-model-len. Per-box cap for the KV cache; ≤ the model's native context. Blank = 8192. Takes a suffix — 32k, 128k, 1m — or a plain token count.",
    "fieldname": "max_model_len",
    "fieldtype": "Data",
    "label": "Max Model Len"
@@ -301,7 +351,7 @@
   {
    "default": "0",
    "depends_on": "max_model_len",
-   "description": "\u2192 VLLM_ALLOW_LONG_MAX_MODEL_LEN=1. vLLM refuses to start when Max Model Len exceeds the context the repo's config.json declares. Tick to override that guard (e.g. RoPE-extended serving). Wrong values give garbage output instead of an error, so only tick when the longer context is intended.",
+   "description": "→ VLLM_ALLOW_LONG_MAX_MODEL_LEN=1. vLLM refuses to start when Max Model Len exceeds the context the repo's config.json declares. Tick to override that guard (e.g. RoPE-extended serving). Wrong values give garbage output instead of an error, so only tick when the longer context is intended.",
    "fieldname": "allow_long_max_model_len",
    "fieldtype": "Check",
    "label": "Allow Long Max Model Len"
@@ -310,12 +360,6 @@
    "fieldname": "section_extra",
    "fieldtype": "Section Break",
    "label": "Extra"
-  },
-  {
-   "description": "Extra --served-model-name values (comma/space separated); old client model-names keep working.",
-   "fieldname": "aliases",
-   "fieldtype": "Small Text",
-   "label": "Aliases"
   },
   {
    "description": "Freeform extra `vllm serve` flags appended verbatim, e.g. --kv-cache-dtype fp8 --max-num-seqs 64.",
@@ -331,7 +375,7 @@
    "read_only": 1
   },
   {
-   "description": "Derived from the fields above \u2192 the pod's dockerStartCmd. Read-only; the api-key rides VLLM_API_KEY env, not shown here.",
+   "description": "Derived from the fields above → the pod's dockerStartCmd. Read-only; the api-key rides VLLM_API_KEY env, not shown here.",
    "fieldname": "serve_command",
    "fieldtype": "Code",
    "label": "Serve Command",
@@ -340,14 +384,14 @@
   },
   {
    "depends_on": "eval:doc.engine_kind == 'custom'",
-   "description": "Arguments appended to the image's own entrypoint (dockerStartCmd). Used only by a custom-kind image \u2014 a vLLM image runs the derived Serve Command on the Serving tab instead. Leave blank to run the image exactly as built.",
+   "description": "Arguments appended to the image's own entrypoint (dockerStartCmd). Used only by a custom-kind image — a vLLM image runs the derived Serve Command on the Serving tab instead. Leave blank to run the image exactly as built.",
    "fieldname": "startup_command",
    "fieldtype": "Small Text",
    "label": "Startup Command"
   },
   {
    "default": "/health",
-   "description": "Path polled on the serve port to decide the container is actually serving: status stays Loading until it answers 200. Blank means no gate \u2014 the pod reads Running as soon as the provider says the container is up, which is earlier than it serves. A Model-serving pod falls back to vLLM's /health.",
+   "description": "Path polled on the serve port to decide the container is actually serving: status stays Loading until it answers 200. Blank means no gate — the pod reads Running as soon as the provider says the container is up, which is earlier than it serves. A Model-serving pod falls back to vLLM's /health.",
    "fieldname": "health_path",
    "fieldtype": "Data",
    "label": "Health Path"

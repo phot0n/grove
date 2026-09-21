@@ -23,6 +23,7 @@
   ansible.builtin.template:
     src: scrape.yml.j2
     dest: "{{ vmagent_config_dir }}/scrape.yml"
+    owner: "{{ vmagent_user }}"
     mode: "0600"
   no_log: true
   notify: restart vmagent

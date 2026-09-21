@@ -9,10 +9,9 @@ import requests
 import frappe
 from frappe.model.document import Document
 
-# Docker Hub's registry API is not served from the hosts its refs name — `docker.io` is a
-# website, and the CLI rewrites the host on its way out. Blank counts too: an image path with
-# no host at all is Docker Hub's by convention. A one-segment repository there is shorthand for
-# the library/ namespace, which the API does not accept.
+# Docker Hub's registry API is not served from the hosts its refs name: `docker.io` is a website
+# and the CLI rewrites the host on its way out. Blank counts too. A one-segment repository there is
+# shorthand for library/, which the API does not accept.
 DOCKER_HUB_REGISTRY = "registry-1.docker.io"
 DOCKER_HUB_HOSTS = ("", "docker.io", "index.docker.io", "registry.hub.docker.com")
 DOCKER_HUB_LIBRARY = "library"
@@ -43,17 +42,15 @@ class EngineImage(Document):
 		warmup_path: DF.Data | None
 	# end: auto-generated types
 
-	"""A container image an engine (e.g. vLLM) is spawned from. The registry host and the
-	pull credentials come from the linked Engine Image Provider, so they stay shared across
-	every image in that registry."""
+	"""A container image an engine is spawned from. Host and pull credentials come from the linked
+	Engine Image Provider, so they stay shared across every image in that registry."""
 
 	def validate(self):
 		self.full_image = self.get_full_image()
 		self.validate_warmup_body()
 
 	def validate_warmup_body(self):
-		"""A body that does not parse here would parse at deploy time instead, on the box, minutes
-		in — and an array or a string is not a request body any of our callers can send."""
+		"""A body that does not parse here would parse on the box instead, minutes in."""
 		if not self.warmup_body:
 			return
 		try:
@@ -64,8 +61,8 @@ class EngineImage(Document):
 			frappe.throw("Warmup Body must be a JSON object, e.g. {\"model\": \"…\", \"input\": \"ping\"}.")
 
 	def get_full_image(self):
-		"""'<registry host>/<image path>' — the ref handed to the cloud provider. A path that
-		already carries the host is left alone."""
+		"""The ref handed to the cloud provider. A path that already carries the host is left
+		alone."""
 		provider = frappe.get_cached_doc("Engine Image Provider", self.image_provider)
 		host = (provider.registry_host or "").strip().rstrip("/")
 		path = (self.image_path or "").strip().lstrip("/")
@@ -92,20 +89,17 @@ class EngineImage(Document):
 
 	@property
 	def api_registry_host(self):
-		"""The host to make registry API calls against — the ref host for everyone except
-		Docker Hub, whose API lives somewhere its refs never mention."""
+		"""The ref host for everyone except Docker Hub, whose API lives elsewhere."""
 		return DOCKER_HUB_REGISTRY if self.is_docker_hub else self.registry_host
 
 	@frappe.whitelist()
 	def fetch_size(self):
-		"""Button: read what this image weighs off its own registry, so a box can be sized
-		against a real number. This is the compressed download the manifest reports."""
+		"""Button: what this image weighs, off its own registry — the compressed download the
+		manifest reports."""
 		repository, reference = self.split_image_path()
 		registry = self.api_registry_host
 		manifest = self.get_manifest(registry, repository, reference)
-		# A multi-arch tag points at one manifest per platform; the layers live one level down.
-		# Which one is this image's own architecture — the size is what a box of that shape
-		# downloads, and the variants differ.
+		# A multi-arch tag points at one manifest per platform, and the variants differ in size.
 		if manifests := manifest.get("manifests"):
 			digest = next(
 				(
@@ -128,9 +122,8 @@ class EngineImage(Document):
 		return size_gb
 
 	def split_image_path(self):
-		"""'vllm/vllm-openai:v0.24.0' → ('vllm/vllm-openai', 'v0.24.0') — the two halves the
-		registry API addresses a manifest by. The host is dropped when the path repeats it, a
-		bare repository means :latest, and a one-segment name on Docker Hub is library/."""
+		"""'vllm/vllm-openai:v0.24.0' → ('vllm/vllm-openai', 'v0.24.0'), the two halves the API
+		addresses a manifest by. A bare repository means :latest."""
 		path = (self.image_path or "").strip().lstrip("/")
 		if self.registry_host and path.startswith(f"{self.registry_host}/"):
 			path = path[len(self.registry_host) + 1:]
@@ -139,8 +132,7 @@ class EngineImage(Document):
 			repository, _, reference = path.partition("@")
 		else:
 			repository, _, reference = path.rpartition(":")
-			# No colon at all leaves the repository empty; a colon belonging to a host:port
-			# leaves a slash in what would be the tag. Neither is a reference.
+			# No colon leaves the repository empty; a host:port colon leaves a slash in the tag.
 			if not repository or "/" in reference:
 				repository, reference = path, "latest"
 		if self.is_docker_hub and "/" not in repository:
@@ -162,12 +154,11 @@ class EngineImage(Document):
 				f"{registry} returned {response.status_code} for {repository}:{reference} — the "
 				"image is missing, or the provider's credentials do not reach it."
 			)
-		return registry_json(response, f"{registry}'s manifest for {repository}")
+		return response.json()
 
 	def pull_auth_header(self, registry, repository):
-		"""Authorization for a pull, via the registry's own auth challenge — the same flow
-		every OCI registry implements, so Docker Hub, GHCR and a private one need no branching.
-		A registry that does not challenge (or does not use Bearer) gets no header."""
+		"""Via the registry's own auth challenge — the flow every OCI registry implements, so
+		Docker Hub, GHCR and a private one need no branching. No challenge, no header."""
 		challenge = requests.get(f"https://{registry}/v2/", timeout=30).headers.get(
 			"Www-Authenticate", ""
 		)
@@ -184,15 +175,15 @@ class EngineImage(Document):
 		)
 		if not response.ok:
 			frappe.throw(f"{registry} refused a pull token for {repository} ({response.status_code}).")
-		body = registry_json(response, f"{registry}'s token endpoint")
+		body = response.json()
 		token = body.get("token") or body.get("access_token")
 		return {"Authorization": f"Bearer {token}"} if token else {}
 
 
 def engine_tuning(engine_image):
-	"""(engine_kind, the knobs the IMAGE contributes) for a placement's Engine — the warmup request,
-	whose shape only the image knows. A blank image reads as vllm, so a placement can build an
-	engine before its own mandatory check has run."""
+	"""(engine_kind, the knobs the IMAGE contributes) — the warmup request, whose shape only the
+	image knows. A blank image reads as vllm, so a placement can build an engine before its own
+	mandatory check has run."""
 	if not engine_image:
 		return "vllm", {}
 	kind, path, body = frappe.get_cached_value(
@@ -200,16 +191,3 @@ def engine_tuning(engine_image):
 	)
 	return kind, {"warmup_path": path, "warmup_body": body}
 
-
-def registry_json(response, what):
-	"""A registry response's JSON body, or a readable failure. A host that is not a registry
-	API answers 200 with an HTML page, and json() alone reports only that it choked on a '<'."""
-	try:
-		return response.json()
-	except ValueError:
-		frappe.throw(
-			f"{what} did not return JSON — it answered "
-			f"{response.headers.get('Content-Type') or 'with no content type'}. Check the Engine "
-			"Image Provider's Registry Host: a registry's API is rarely the host its images are "
-			"named after."
-		)

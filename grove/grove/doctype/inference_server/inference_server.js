@@ -1,73 +1,56 @@
 frappe.ui.form.on('Inference Server', {
 	refresh(frm) {
+		show_front_warning(frm);
 		if (frm.is_new()) return;
-		if (frm.doc.machine) {
-			frm.add_custom_button(__('Setup'), () => {
-				frm.call('setup').then(() => frm.reload_doc());
-			});
-			// The exporters listen on 9100/9400 for the Monitoring Agent above to scrape —
-			// restrict those ports to that agent in the security group.
-			frm.add_custom_button(__('Install Exporters'), () => frm.call('install_exporters'));
+
+		if (frm.doc.status !== 'Terminated') {
+			if (!frm.doc.is_provisioned) {
+				frm.add_custom_button(__('Setup'), () => {
+					frm.call('setup').then(() => frm.reload_doc());
+				});
+			}
+			if (frm.doc.is_standalone) {
+				frm.add_custom_button(__('Sync DNS Records'), () => frm.call('sync_dns_records'), __('TLS'));
+				frm.add_custom_button(__('Deploy Fleet Certificate'), () => frm.call('deploy_tls'), __('TLS'));
+			}
+			// The exporters listen on 9100/9400 for the agent above to scrape.
+			frm.add_custom_button(__('Update Scrape Auth'), () => frm.call('update_scrape_auth'));
+			frm.add_custom_button(__('Archive'), () => {
+				frappe.confirm(
+					__('Archive {0}? Its Machine is terminated — the box and everything on its disk are gone — and this server leaves the fleet. Refused while anything still depends on it.', [frm.doc.name]),
+					() => frm.call('archive').then(() => frm.reload_doc()),
+				);
+			}, __('Danger'));
 		}
 		render_gpus(frm);
 	},
+
+	ingress: show_front_warning,
+
+	is_standalone(frm) {
+		// The Ingress field hides once this is ticked, and a hidden value would fail the save.
+		if (frm.doc.is_standalone && frm.doc.ingress) frm.set_value('ingress', '');
+		show_front_warning(frm);
+	},
 });
 
-// GPU allocation is derived, never stored: the server recomputes it from the Machine's cards
-// and the Active Model Deployments on this box, so it is correct the moment one is deployed or
-// torn down. Nothing to sync, nothing to go stale.
+// A warning, not a save error: Setup is what refuses a box with no front. A box set up before the
+// choice existed still serves by IP, so it keeps the warning with its own wording.
+function show_front_warning(frm) {
+	const has_no_front = frm.doc.status !== 'Terminated' && !frm.doc.ingress && !frm.doc.is_standalone;
+	const message = frm.doc.is_provisioned
+		? __('Set up with no Ingress Server and not Standalone — the gateways dial it by IP, and Standalone is fixed on a set-up box.')
+		: __('No Ingress Server and not Standalone — Setup will refuse this box. Pick the ingress that fronts it, or tick Standalone to have the gateways dial it directly.');
+	frm.set_intro(has_no_front ? message : '', 'orange');
+}
+
+// Derived, never stored: recomputed from the Machine's cards and the Active replicas on this box,
+// so it is correct the moment one is deployed or torn down.
 function render_gpus(frm) {
-	const field = frm.fields_dict.gpus_html;
-	if (!field) return;
-	const wrap = field.$wrapper;
-
 	frm.call('get_gpu_allocation').then((r) => {
-		const gpus = r.message || [];
-		if (!gpus.length) {
-			wrap.html(
-				`<p class="text-muted">${__("No GPUs on this server's Machine — add them to the Machine's GPU table.")}</p>`,
-			);
-			return;
-		}
-
-		const esc = frappe.utils.escape_html;
-		const colour = { Free: 'green', Allocated: 'blue', Conflict: 'red' };
-		const rows = gpus
-			.map((g) => {
-				const used_by = (g.deployments || [])
-					.map(
-						(d) =>
-							`<a href="/app/model-deployment/${encodeURIComponent(d.name)}">${esc(d.model || d.name)}</a>`,
-					)
-					.join(', ');
-				return `<tr>
-					<td style="text-align:right">${g.gpu_index}</td>
-					<td>${esc(g.gpu_model || '')}</td>
-					<td style="text-align:right">${g.vram_gb || ''}</td>
-					<td><span class="indicator-pill ${colour[g.status]}">${__(g.status)}</span></td>
-					<td>${used_by || `<span class="text-muted">—</span>`}</td>
-				</tr>`;
-			})
-			.join('');
-
-		const free = gpus.filter((g) => g.status === 'Free').length;
-		const clash = gpus.some((g) => g.status === 'Conflict');
-
-		wrap.html(`
-			<div class="text-muted" style="margin-bottom:6px">
-				${__('{0} of {1} free', [free, gpus.length])} ·
-				${__('derived from Active Model Deployments')}
-				${clash ? ` · <span style="color:var(--red-500)">${__('same GPU claimed twice')}</span>` : ''}
-			</div>
-			<table class="table table-bordered" style="margin:0">
-				<thead><tr>
-					<th style="text-align:right">${__('CUDA')}</th>
-					<th>${__('Type')}</th>
-					<th style="text-align:right">${__('VRAM GB')}</th>
-					<th>${__('Status')}</th>
-					<th>${__('Used By')}</th>
-				</tr></thead>
-				<tbody>${rows}</tbody>
-			</table>`);
+		grove.render_gpu_table(frm.fields_dict.gpus_html?.$wrapper, r.message || [], {
+			empty: __("No GPUs on this server's Machine — run Scan GPUs on it."),
+			note: __("this box's Machine, live"),
+		});
 	});
 }

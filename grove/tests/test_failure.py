@@ -63,8 +63,7 @@ class TestReportReachesEveryAudience(unittest.TestCase):
 			self.assertEqual("no admin token", detail)
 
 	def test_a_play_with_no_reference_doc_is_skipped(self):
-		# Nothing to link a notification to. The Error Log is the record for that one —
-		# announcing it against a blank doc would be worse than not announcing it.
+		# Nothing to link a notification to; the Error Log is the record.
 		with Recorder() as rec:
 			failure.report(None, None, "Play failed", "detail")
 			failure.report("Gateway Server", None, "Play failed", "detail")
@@ -86,8 +85,7 @@ class TestTheDecoratorReportsAndReraises(unittest.TestCase):
 		return SimpleNamespace(doctype="Gateway Server", name="gw-1")
 
 	def test_the_exception_still_reaches_the_worker(self):
-		# Reporting is not rescuing. If this swallowed, RQ would mark the job successful and Frappe
-		# would write no Error Log — the traceback would be gone entirely.
+		# Reporting is not rescuing: swallowing marks the job successful and writes no Error Log.
 		@failure.reports_failure()
 		def provision(self):
 			raise ValueError("no admin token")
@@ -110,16 +108,16 @@ class TestTheDecoratorReportsAndReraises(unittest.TestCase):
 		self.assertEqual([("Gateway Server", "gw-1")], rec.statuses)
 
 	def test_a_module_level_job_names_its_doctype(self):
-		# The Model Deployment jobs are functions taking a docname, not methods with a self.
-		@failure.reports_failure(doctype="Model Deployment")
-		def deploy_model(model_deployment):
+		# The Model Replica jobs are functions taking a docname, not methods with a self.
+		@failure.reports_failure(doctype="Model Replica")
+		def deploy_model(model_replica):
 			raise ValueError("engine did not come up")
 
 		with Recorder() as rec:
 			with self.assertRaises(ValueError):
 				deploy_model("MD-00007")
 		doctype, name, title, _ = rec.toasts[0]
-		self.assertEqual(("Model Deployment", "MD-00007"), (doctype, name))
+		self.assertEqual(("Model Replica", "MD-00007"), (doctype, name))
 		self.assertEqual("Deploy model failed", title)
 
 	def test_a_leading_underscore_does_not_reach_the_operator(self):
@@ -178,13 +176,13 @@ class TestMarkingBrokenIsNarrow(unittest.TestCase):
 		self.assertTrue(self.run_mark("Provisioning"))
 
 	def test_a_terminated_box_is_left_alone(self):
-		# Torn down mid-play is gone, not broken — and calling it Broken would put it back in front
-		# of anyone filtering for boxes to fix.
+		# Torn down mid-play is gone, not broken — Broken puts it in front of anyone filtering for
+		# boxes to fix.
 		self.assertFalse(self.run_mark("Terminated"))
 
 	def test_an_already_active_box_is_left_alone(self):
-		# A failed config push against a live box has not stopped it serving. Marking it Broken here
-		# would drop it out of the route table over a failed deploy.
+		# A failed config push has not stopped a live box serving; Broken drops it out of the route
+		# table.
 		self.assertFalse(self.run_mark("Active"))
 
 	def test_a_doctype_with_nowhere_to_go_is_left_alone(self):

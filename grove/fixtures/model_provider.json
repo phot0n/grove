@@ -1,6 +1,7 @@
 [
  {
   "doctype": "Model Provider",
+  "is_self_hosted": 1,
   "name": "frappe"
  }
 ]

@@ -18,6 +18,9 @@
     name: "{{ dcgm_packages }}"
     state: present
     update_cache: true
+  # ~1 GB of CUDA libraries, silent for minutes — detached + poll so a dropped SSH session can't abort it.
+  async: 1800
+  poll: 15
 
 # Both units ship with the packages. The exporter's own unit already declares
 # Wants=/After=nvidia-dcgm.service and listens on :9400, so there is nothing here to template.

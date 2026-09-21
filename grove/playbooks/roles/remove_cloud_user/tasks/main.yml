@@ -1,0 +1,13 @@
+---
+# Press "prepare server" (its aws/oci/scaleway roles): the cloud image's default user carries passwordless
+# sudo and nothing on a Grove box needs it — Grove's keys land on root at launch. In every Setup play, not
+# just where a service account is made. Guarded so a play connected as ubuntu never saws off the branch it
+# sits on, and non-fatal for a box that never had one. `remove` takes /home/ubuntu.
+- name: Remove the cloud image's ubuntu user
+  ansible.builtin.user:
+    name: ubuntu
+    state: absent
+    remove: true
+    force: true
+  when: (ansible_user | default('root')) != 'ubuntu'
+  failed_when: false

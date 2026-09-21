@@ -1,0 +1,132 @@
+{
+ "actions": [],
+ "autoname": "prompt",
+ "creation": "2026-09-17 00:00:00",
+ "doctype": "DocType",
+ "engine": "InnoDB",
+ "field_order": [
+  "label",
+  "fleet_zone",
+  "column_break_htfv",
+  "endpoint",
+  "fleet_certificate_tab",
+  "section_fleet_tls",
+  "fleet_tls_expires_on",
+  "fleet_tls_last_run",
+  "fleet_tls_cert",
+  "fleet_tls_key",
+  "fleet_tls_last_output"
+ ],
+ "fields": [
+  {
+   "description": "Human-friendly name, e.g. Europe. The record's Name (e.g. eu) is what a pinned user's 403 names and what each gateway is told it serves.",
+   "fieldname": "label",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Label"
+  },
+  {
+   "description": "Public host clients in this geography hit, e.g. api.eu.grove.example.com. Exactly one label under the Fleet Zone, because that is all the wildcard certificate covers. Every gateway in this geography answers for it behind one health-checked DNS set. Fixed while any gateway is live.",
+   "fieldname": "endpoint",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Endpoint",
+   "reqd": 1,
+   "unique": 1
+  },
+  {
+   "description": "This geography's public Route53 hosted zone, e.g. eu.grove.example.com. Every box in it is named . and serves one wildcard certificate for the zone, which also covers the Endpoint. Blank = no TLS: its boxes serve in the clear on port 80. The DNS Provider in Grove Settings must own it.",
+   "fieldname": "fleet_zone",
+   "fieldtype": "Data",
+   "label": "Fleet Zone",
+   "reqd": 1
+  },
+  {
+   "fieldname": "section_fleet_tls",
+   "fieldtype": "Section Break"
+  },
+  {
+   "description": "Read off the certificate below. Renewal is a daily job that only acts inside certbot's 30-day window, so this date moving is how you know it is alive.",
+   "fieldname": "fleet_tls_expires_on",
+   "fieldtype": "Datetime",
+   "label": "Expires On",
+   "read_only": 1
+  },
+  {
+   "description": "When certbot last ran, whether or not it changed anything.",
+   "fieldname": "fleet_tls_last_run",
+   "fieldtype": "Datetime",
+   "label": "Last certbot Run",
+   "read_only": 1
+  },
+  {
+   "description": "The full chain every box in this geography serves. Written by Issue Fleet Certificate; pushed to each Active box here on provision and on renewal.",
+   "fieldname": "fleet_tls_cert",
+   "fieldtype": "Small Text",
+   "label": "Certificate",
+   "read_only": 1
+  },
+  {
+   "description": "Its private key, encrypted here and on no box in this database. One key per geography: a compromised box can impersonate every name under this zone, so treat a box breach as a reason to reissue.",
+   "fieldname": "fleet_tls_key",
+   "fieldtype": "Password",
+   "label": "Private Key",
+   "read_only": 1
+  },
+  {
+   "description": "What that run printed, successful or not. A renewal that was not yet due says so here and changes nothing else \u2014 which is the normal nightly result.",
+   "fieldname": "fleet_tls_last_output",
+   "fieldtype": "Code",
+   "label": "Last certbot Output",
+   "read_only": 1
+  },
+  {
+   "fieldname": "fleet_certificate_tab",
+   "fieldtype": "Tab Break",
+   "label": "Fleet Certificate"
+  },
+  {
+   "fieldname": "column_break_htfv",
+   "fieldtype": "Column Break"
+  }
+ ],
+ "links": [
+  {
+   "group": "Placement",
+   "link_doctype": "Region",
+   "link_fieldname": "geography"
+  },
+  {
+   "group": "Placement",
+   "link_doctype": "Gateway Server",
+   "link_fieldname": "geography"
+  },
+  {
+   "group": "Vendors",
+   "link_doctype": "Model Provider",
+   "link_fieldname": "geography"
+  }
+ ],
+ "modified": "2026-09-17 10:47:12.752751",
+ "modified_by": "Administrator",
+ "module": "Grove",
+ "name": "Geography",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "System Manager",
+   "share": 1,
+   "write": 1
+  }
+ ],
+ "row_format": "Dynamic",
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": []
+}

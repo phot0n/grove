@@ -1,7 +1,7 @@
 ---
-# ── Instance identity (multi-tenant box: one container + port per Model Deployment) ─
+# ── Instance identity (multi-tenant box: one container + port per Model Replica) ─
 # A box runs many vLLM instances at once. Each is keyed by a unique slug (provision passes
-# the Model Deployment name) → its OWN container name + port + key file + run script. The
+# the Model Replica name) → its OWN container name + port + key file + run script. The
 # weights/compile caches below stay box-shared so co-located instances don't re-download.
 vllm_instance: default
 vllm_unit: "vllm-{{ vllm_instance }}"
@@ -16,7 +16,7 @@ vllm_hf_home: "{{ vllm_home }}/hf"
 vllm_api_key_file: "{{ vllm_home }}/keys/{{ vllm_instance }}.key"
 
 # ── Engine image ────────────────────────────────────────────────────────────
-# Required (Model Deployment → Engine Image). The image owns the vLLM version and its whole
+# Required (Model Replica → Engine Image). The image owns the vLLM version and its whole
 # toolchain; the box only supplies the driver. Registry credentials are for a private
 # registry only — a public pull needs neither.
 vllm_image: ""

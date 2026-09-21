@@ -10,8 +10,14 @@
 
   A file the gateway cannot read is REFUSED WHOLE and the running configuration is kept — so a bad
   render is one error line in the journal, never a gateway that quietly reverted to defaults.
+
+  `maintenance` is rendered only while on: a binary older than the key refuses the file, so a box
+  that is not in maintenance gets the same bytes as before it existed.
 #}
 {
+{% if gateway_maintenance | default(false) %}
+  "maintenance": true,
+{% endif %}
   "log_level": {{ gateway_log_level | default('info') | to_json }},
   "synthetic_session_ttl": {{ (synthetic_session_ttl | default('0') or '0') | to_json }},
   "upstream_tls_verify": {{ (upstream_tls_verify | default(false)) | to_json }},

@@ -1,0 +1,130 @@
+{
+ "actions": [],
+ "autoname": "hash",
+ "creation": "2026-09-16 00:00:00",
+ "doctype": "DocType",
+ "engine": "InnoDB",
+ "field_order": [
+  "release",
+  "repo",
+  "column_break_servers",
+  "ingresses",
+  "gateways",
+  "column_break_status",
+  "status",
+  "started_at",
+  "ended_at",
+  "section_servers",
+  "servers",
+  "error"
+ ],
+ "fields": [
+  {
+   "description": "Grove Settings' Pathway Release when this update was created. Every deploy refuses to run once Grove Settings pins anything else.",
+   "fieldname": "release",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Release",
+   "read_only": 1
+  },
+  {
+   "description": "Grove Settings' Pathway Repo when this update was created.",
+   "fieldname": "repo",
+   "fieldtype": "Data",
+   "label": "Repo",
+   "read_only": 1
+  },
+  {
+   "fieldname": "column_break_servers",
+   "fieldtype": "Column Break"
+  },
+  {
+   "default": "0",
+   "description": "Adds every Active Ingress Server as a row when the update is created, and allows Ingress Server rows.",
+   "fieldname": "ingresses",
+   "fieldtype": "Check",
+   "label": "Ingresses",
+   "set_only_once": 1
+  },
+  {
+   "default": "0",
+   "description": "Adds every Active Gateway Server as a row when the update is created, and allows Gateway Server rows.",
+   "fieldname": "gateways",
+   "fieldtype": "Check",
+   "label": "Gateways",
+   "set_only_once": 1
+  },
+  {
+   "fieldname": "column_break_status",
+   "fieldtype": "Column Break"
+  },
+  {
+   "default": "Pending",
+   "fieldname": "status",
+   "fieldtype": "Select",
+   "in_list_view": 1,
+   "label": "Status",
+   "no_copy": 1,
+   "options": "Pending\nRunning\nStopped\nSuccess\nFailure",
+   "read_only": 1
+  },
+  {
+   "fieldname": "started_at",
+   "fieldtype": "Datetime",
+   "in_list_view": 1,
+   "label": "Started At",
+   "no_copy": 1,
+   "read_only": 1
+  },
+  {
+   "fieldname": "ended_at",
+   "fieldtype": "Datetime",
+   "label": "Ended At",
+   "no_copy": 1,
+   "read_only": 1
+  },
+  {
+   "fieldname": "section_servers",
+   "fieldtype": "Section Break",
+   "label": "Servers"
+  },
+  {
+   "description": "Pending rows are deployed one at a time, in table order. A failed deploy stops the update; Continue passes over it. Add or remove rows whenever the update is not running.",
+   "fieldname": "servers",
+   "fieldtype": "Table",
+   "label": "Servers",
+   "options": "Pathway Update Server",
+   "read_only_depends_on": "eval:doc.status=='Running' || (doc.status=='Pending' && doc.started_at)"
+  },
+  {
+   "fieldname": "error",
+   "fieldtype": "Code",
+   "label": "Error",
+   "no_copy": 1,
+   "read_only": 1
+  }
+ ],
+ "links": [],
+ "modified": "2026-09-16 00:00:00",
+ "modified_by": "Administrator",
+ "module": "Grove",
+ "name": "Pathway Update",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "System Manager",
+   "share": 1,
+   "write": 1
+  }
+ ],
+ "row_format": "Dynamic",
+ "sort_field": "creation",
+ "sort_order": "DESC",
+ "states": []
+}

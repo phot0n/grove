@@ -1,10 +1,9 @@
 # The two files the gateway writes itself: the per-request access line, and warnings and worse
 # mirrored out of the process log. The rest of the process log goes to journald, which rotates itself.
 #
-# copytruncate rather than a signal: the three signals pathway takes all mean something else
-# (upgrade, reload, drain), and inventing a fourth so logrotate can reopen a file is not worth it.
-# The cost is that a write landing during the copy can be lost; for an access log, one line under
-# rotation is cheaper than a signal that means two things.
+# create rather than copytruncate: pathway's log writer follows the rename itself (it reopens
+# the path when the inode moves), so no signal is needed — and copytruncate both loses whatever
+# lands during the copy and truncates the inode a log collector is still reading from.
 /var/log/pathway/access.log
 /var/log/pathway/error.log {
 	daily
@@ -13,6 +12,6 @@
 	notifempty
 	compress
 	delaycompress
-	copytruncate
-	su root root
+	create 0640 frappe frappe
+	su frappe frappe
 }

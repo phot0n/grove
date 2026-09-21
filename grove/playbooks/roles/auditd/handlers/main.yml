@@ -1,0 +1,5 @@
+---
+# Not press's masked `service auditd restart`: its `warn:` arg is gone from ansible-core, so the
+# handler always failed silently and the rules never loaded. augenrules exits with auditctl's rc.
+- name: load audit rules
+  ansible.builtin.command: augenrules --load

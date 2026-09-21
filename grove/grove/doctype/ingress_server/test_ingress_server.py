@@ -19,8 +19,8 @@ DOCTYPE = Path(__file__).parent / "ingress_server.json"
 TENANT_DOCTYPES = {
 	"Grove API Key",
 	"Grove User",
-	"Grove User Group",
 	"Model",
+	"Model Group",
 	"Usage Record",
 }
 
@@ -41,12 +41,17 @@ class TestAnIngressHoldsNoTenantState(unittest.TestCase):
 		passwords = [f["fieldname"] for f in self.fields if f["fieldtype"] == "Password"]
 		self.assertEqual(sorted(passwords), ["admin_token", "data_token"])
 
-	def test_it_knows_exactly_one_network(self):
-		# An ingress reaches its own VPC privately and no other, so this is required and set once.
+	def test_it_knows_exactly_one_network_and_it_is_its_boxs(self):
+		# An ingress reaches its own VPC privately and no other. Mirrored read-only off the Machine,
+		# so it cannot disagree with the box — what a validation against the Machine used to check.
+		from grove.grove.doctype.ingress_server.ingress_server import IngressServer
+
 		[network] = [field for field in self.fields if field["fieldname"] == "network"]
 		self.assertEqual(network["options"], "Network")
 		self.assertTrue(network["reqd"])
-		self.assertTrue(network["set_only_once"])
+		self.assertEqual(network["fetch_from"], "machine.network")
+		self.assertTrue(network["read_only"])
+		self.assertFalse(hasattr(IngressServer, "validate_machine_network"))
 
 
 if __name__ == "__main__":

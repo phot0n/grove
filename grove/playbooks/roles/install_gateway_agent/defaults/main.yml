@@ -1,5 +1,9 @@
 ---
-# Where the agent is released. Named once so the download and its checksum can never drift apart,
-# and so a fork only has to change this line.
-agent_repo: phot0n/pathway
+# Where the agent is released. Named once so the download and its checksum can never drift apart.
+# agent_repo (owner/name) has no default: Grove Settings' Pathway Repo passes it.
 agent_release_url: "https://github.com/{{ agent_repo }}/releases/download/{{ agent_version }}"
+
+# A dev deploy: a build sitting on the control plane, shipped instead of the release. Only where the
+# bytes come from changes — the box is provisioned exactly as with a release, unit and user included.
+# Blank = the pinned release above.
+agent_binary: ""

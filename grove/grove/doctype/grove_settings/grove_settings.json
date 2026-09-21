@@ -6,14 +6,12 @@
  "field_order": [
   "gateway_tab",
   "section_gateway",
-  "gateway_host",
-  "gateway_agent_version",
-  "fleet_zone",
+  "pathway_release",
+  "pathway_repo",
   "synthetic_session_ttl",
   "column_break_tls",
   "dns_provider",
   "acme_email",
-  "acme_staging",
   "weights_bucket_tab",
   "section_weights_bucket",
   "weights_bucket",
@@ -31,13 +29,8 @@
   "sd_token",
   "scrape_password",
   "scrape_password_hash",
-  "fleet_certificate_tab",
-  "section_fleet_tls",
-  "fleet_tls_expires_on",
-  "fleet_tls_last_run",
-  "fleet_tls_cert",
-  "fleet_tls_key",
-  "fleet_tls_last_output"
+  "pod_tab",
+  "pod_geography"
  ],
  "fields": [
   {
@@ -46,23 +39,23 @@
    "label": "Gateway"
   },
   {
-   "description": "Public host clients hit, e.g. api.grove.example.com; used to build the base_url returned by provision_endpoint. With a Fleet Zone set it must be exactly one label under it, because that is all a wildcard certificate covers, and it resolves to every proxy through GeoDNS.",
-   "fieldname": "gateway_host",
-   "fieldtype": "Data",
-   "label": "Gateway Host"
+   "description": "The geography every Pod serves inside: only its gateways route to Pods. Blank routes no Pod anywhere.",
+   "fieldname": "pod_geography",
+   "fieldtype": "Link",
+   "label": "Pod Geography",
+   "options": "Geography"
   },
   {
    "default": "v0.0.1",
-   "description": "pathway release every box in the fleet installs, as a tag in the agent's own repo. Read at the start of each play, so pinning or rolling back is this field plus a Deploy Agent on each box \u2014 not a control-plane deploy. Each box records what it actually took in its own Agent Version.",
-   "fieldname": "gateway_agent_version",
+   "fieldname": "pathway_release",
    "fieldtype": "Data",
-   "label": "Gateway Agent Version"
+   "label": "Pathway Release"
   },
   {
-   "description": "Public DNS zone the proxies live in, e.g. grove.example.com. Every proxy is reachable at its own name inside the zone (proxy-name dot zone) and serves one wildcard certificate for the whole zone, which is what lets them all answer for the same Gateway Host behind GeoDNS. Blank = no TLS: boxes keep serving /v1 and /grove-admin in the clear on port 80.",
-   "fieldname": "fleet_zone",
+   "description": "GitHub repo the release is downloaded from, as owner/name \u2014 a fork of pathway points this at itself. Its releases must carry the same assets (pathway-linux-amd64, pathway-linux-arm64, sha256sums.txt) and be public. Required: Deploy Agent and Setup refuse a blank one.",
+   "fieldname": "pathway_repo",
    "fieldtype": "Data",
-   "label": "Fleet Zone"
+   "label": "Pathway Repo"
   },
   {
    "default": "0",
@@ -76,10 +69,11 @@
    "fieldtype": "Column Break"
   },
   {
-   "description": "Whose credentials own the zone above: they answer the DNS-01 challenge and write each proxy's records. AWS only \u2014 the zone must be a public Route53 hosted zone in that account.",
+   "description": "Whose credentials own every Geography's zone: they answer each DNS-01 challenge and write each box's records. AWS only \u2014 every zone must be a public Route53 hosted zone in that account.",
    "fieldname": "dns_provider",
    "fieldtype": "Link",
    "label": "DNS Provider",
+   "link_filters": "[[\"Cloud Provider\",\"provider_type\",\"=\",\"aws\"]]",
    "options": "Cloud Provider"
   },
   {
@@ -87,53 +81,6 @@
    "fieldname": "acme_email",
    "fieldtype": "Data",
    "label": "ACME Email"
-  },
-  {
-   "default": "0",
-   "description": "Issue from Let's Encrypt's staging CA \u2014 untrusted by clients, but not rate-limited. Leave on until the issuance works end to end: production allows five certificates a week for one name.",
-   "fieldname": "acme_staging",
-   "fieldtype": "Check",
-   "label": "Use ACME Staging"
-  },
-  {
-   "fieldname": "section_fleet_tls",
-   "fieldtype": "Section Break",
-   "label": "Fleet Certificate"
-  },
-  {
-   "description": "Read off the certificate below. Renewal is a daily job that only acts inside certbot's 30-day window, so this date moving is how you know it is alive.",
-   "fieldname": "fleet_tls_expires_on",
-   "fieldtype": "Datetime",
-   "label": "Expires On",
-   "read_only": 1
-  },
-  {
-   "description": "The full chain every proxy serves. Written by Issue Fleet Certificate; pushed to each Active proxy on provision and on renewal.",
-   "fieldname": "fleet_tls_cert",
-   "fieldtype": "Small Text",
-   "label": "Certificate",
-   "read_only": 1
-  },
-  {
-   "description": "Its private key, encrypted here and on no box in this database. One key for the whole fleet: a compromised proxy can impersonate every name under the zone, so treat a box breach as a reason to reissue.",
-   "fieldname": "fleet_tls_key",
-   "fieldtype": "Password",
-   "label": "Private Key",
-   "read_only": 1
-  },
-  {
-   "description": "When certbot last ran, whether or not it changed anything.",
-   "fieldname": "fleet_tls_last_run",
-   "fieldtype": "Datetime",
-   "label": "Last certbot Run",
-   "read_only": 1
-  },
-  {
-   "description": "What that run printed, successful or not. A renewal that was not yet due says so here and changes nothing else \u2014 which is the normal nightly result.",
-   "fieldname": "fleet_tls_last_output",
-   "fieldtype": "Code",
-   "label": "Last certbot Output",
-   "read_only": 1
   },
   {
    "fieldname": "section_monitoring",
@@ -175,11 +122,6 @@
    "fieldname": "monitoring_extra_labels",
    "fieldtype": "Small Text",
    "label": "Extra Labels"
-  },
-  {
-   "fieldname": "fleet_certificate_tab",
-   "fieldtype": "Tab Break",
-   "label": "Fleet Certificate"
   },
   {
    "fieldname": "gateway_tab",
@@ -237,11 +179,16 @@
    "fieldname": "monitoring_tab",
    "fieldtype": "Tab Break",
    "label": "Monitoring"
+  },
+  {
+   "fieldname": "pod_tab",
+   "fieldtype": "Tab Break",
+   "label": "Pod"
   }
  ],
  "issingle": 1,
  "links": [],
- "modified": "2026-08-17 00:41:45.339773",
+ "modified": "2026-09-17 10:52:41.546936",
  "modified_by": "Administrator",
  "module": "Grove",
  "name": "Grove Settings",

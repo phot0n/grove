@@ -1,6 +1,6 @@
 ---
 # Update Engine Config: re-render one instance's env file and run script, replace its container
-# if either moved, wait for it to answer. Run by model_deployment.reconfigure_deployment with the
+# if either moved, wait for it to answer. Run by model_replica.reconfigure_deployment with the
 # same extra-vars serve.yml gets, so the two can never render differently.
 #
 # Deliberately NOT serve.yml with skip_tags. This play assumes the box is already provisioned,

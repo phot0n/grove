@@ -3,6 +3,7 @@
 """How a doc reaches its playbooks. Pure — the runner is stubbed, so nothing is queued and no
 box is touched; what is asserted is the project folder, the Machine and the play's owner."""
 
+import json
 import unittest
 import unittest.mock
 from pathlib import Path
@@ -47,8 +48,8 @@ class TestPlaybookMachine(unittest.TestCase):
 		self.assertEqual(AnsibleHost.playbook_machine.fget(server), "MACHINE-1")
 
 	def test_a_server_with_no_box_is_refused_rather_than_guessed_at(self):
-		# Without this it would fall through to the server's own name and look up a Machine
-		# that does not exist — or worse, one that happens to share the name.
+		# Without it, the lookup falls through to the server's own name and finds no Machine — or
+		# one that happens to share it.
 		server = SimpleNamespace(doctype="Inference Server", name="INF-1", machine=None)
 		with self.assertRaises(Exception):
 			AnsibleHost.playbook_machine.fget(server)
@@ -74,8 +75,8 @@ class TestRunPlaybook(unittest.TestCase):
 		self.assertEqual(called["machine_name"], "MACHINE-1")
 
 	def test_a_shared_play_is_taken_from_the_doctype_that_owns_it(self):
-		# exporters.yml is a Monitoring Agent play; it runs against Inference and Gateway Server
-		# boxes, which is what `project` is for.
+		# exporters.yml is a Monitoring Agent play run against other boxes — what `project` is
+		# for.
 		called = self.run_playbook(
 			host("Gateway Server", "PROXY-1", "MACHINE-2"), "exporters.yml", project="Monitoring Agent"
 		)
@@ -100,7 +101,7 @@ class TestEveryRoleAPlaybookNamesResolves(unittest.TestCase):
 		folders = {path.parent.name for path in self.playbooks()}
 		self.assertEqual(
 			folders,
-			{"machine", "inference_server", "gateway_server", "ingress_server", "monitoring_agent"},
+			{"machine", "inference_server", "gateway_server", "ingress_server", "monitoring_agent", "gateway_store"},
 		)
 
 	def test_every_role_resolves_in_its_own_folder_or_the_shared_one(self):
@@ -143,9 +144,12 @@ class FakeRunner:
 	def update_play(self, values):
 		pass
 
+	def record_public_key(self, key):
+		self.key = key
 
-class TestNoTaskIsLeftRunning(unittest.TestCase):
-	"""A `meta:` task starts but never reports a result, so nothing closed its row."""
+
+class CallbackCase(unittest.TestCase):
+	"""A callback wired to a FakeRunner, and results shaped like Ansible's."""
 
 	def callback(self):
 		from grove.ansible_runner import AnsibleCallback
@@ -159,8 +163,14 @@ class TestNoTaskIsLeftRunning(unittest.TestCase):
 	def start(self, callback, name):
 		callback.v2_playbook_on_task_start(SimpleNamespace(get_name=lambda: name), False)
 
-	def result(self, changed=False):
-		return SimpleNamespace(_result={"changed": changed}, _task=SimpleNamespace(name="x"))
+	def result(self, changed=False, action="command", **fields):
+		return SimpleNamespace(
+			_result={"changed": changed, **fields}, _task=SimpleNamespace(name="x", action=action)
+		)
+
+
+class TestNoTaskIsLeftRunning(CallbackCase):
+	"""A `meta:` task starts but never reports a result, so nothing closed its row."""
 
 	def test_a_meta_task_is_closed_by_the_one_that_follows_it(self):
 		callback, runner = self.callback()
@@ -188,6 +198,118 @@ class TestNoTaskIsLeftRunning(unittest.TestCase):
 		callback.v2_runner_on_failed(self.result())
 		self.start(callback, "next")
 		self.assertEqual(runner.tasks["t0"]["status"], "failed")
+
+
+class TestTheBoxesOwnKeyComesBack(CallbackCase):
+	"""grove_user generates frappe's keypair on the box; the user module hands the public half back, and
+	press's runner writes it on the server doc. Same here: the doc the play ran for."""
+
+	def test_the_key_the_user_module_generated_lands_on_the_server(self):
+		callback, runner = self.callback()
+		self.start(callback, "Create the frappe user")
+		callback.v2_runner_on_ok(
+			self.result(action="ansible.builtin.user", name="frappe", ssh_public_key="ssh-ed25519 AAAA frappe@box")
+		)
+		self.assertEqual(runner.key, "ssh-ed25519 AAAA frappe@box")
+
+	def test_only_frappes_key_and_only_when_there_is_one(self):
+		# The ubuntu removal is a user task too and reports no key; root has no field to land on.
+		callback, runner = self.callback()
+		self.start(callback, "Remove the cloud image's ubuntu user")
+		callback.v2_runner_on_ok(self.result(action="ansible.builtin.user", name="ubuntu"))
+		self.start(callback, "root")
+		callback.v2_runner_on_ok(self.result(action="ansible.builtin.user", name="root", ssh_public_key="ssh-ed25519 AAAA"))
+		self.assertFalse(hasattr(runner, "key"))
+
+	def test_a_command_that_happens_to_print_a_key_is_not_one(self):
+		callback, runner = self.callback()
+		self.start(callback, "cat the key")
+		callback.v2_runner_on_ok(self.result(name="frappe", ssh_public_key="ssh-ed25519 AAAA"))
+		self.assertFalse(hasattr(runner, "key"))
+
+
+class TestTheKeyHasAFieldToLandOn(unittest.TestCase):
+	"""record_public_key writes on whatever doc the play ran for, so every doctype whose Setup carries
+	grove_user needs the field — a missing column fails inside a callback Ansible swallows."""
+
+	DOCTYPES = ("gateway_server", "ingress_server", "monitoring_agent", "gateway_store")
+
+	def test_every_server_that_gets_the_account_has_the_field(self):
+		doctypes = Path(__file__).resolve().parents[1] / "grove" / "doctype"
+		for name in self.DOCTYPES:
+			with self.subTest(name):
+				doc = json.loads((doctypes / name / f"{name}.json").read_text())
+				field = next(f for f in doc["fields"] if f["fieldname"] == "frappe_public_key")
+				self.assertEqual("Code", field["fieldtype"])
+				self.assertEqual(1, field["read_only"])
+
+
+class TestEveryPlayThatPutsSomethingOnABoxCreatesTheUserFirst(unittest.TestCase):
+	"""Files land owned by grove_user and units run as it, so the role that creates it goes ahead
+	of every role and task that assumes it. The plays that only re-write such files (deploy_tls,
+	reconfigure, deploy_agent) deliberately do not carry it — they fail loudly on a box that was
+	never provisioned with it, or are guarded."""
+
+	PLAYS = (
+		"gateway_server/gateway.yml", "ingress_server/ingress.yml", "gateway_store/store.yml",
+		"monitoring_agent/agent.yml", "monitoring_agent/config.yml", "monitoring_agent/push_targets.yml",
+	)
+
+	def test_grove_user_is_the_first_role(self):
+		for name in self.PLAYS:
+			with self.subTest(name):
+				[play] = yaml.safe_load((PLAYBOOKS / name).read_text())
+				self.assertEqual("grove_user", play["roles"][0])
+
+	def test_the_user_is_pinned_to_one_uid_and_gets_its_own_key(self):
+		defaults = yaml.safe_load((SHARED_ROLES / "grove_user/defaults/main.yml").read_text())
+		self.assertEqual(2000, defaults["grove_user_uid"])
+		tasks = yaml.safe_load((SHARED_ROLES / "grove_user/tasks/main.yml").read_text())
+		create = tasks[0]["ansible.builtin.user"]
+		self.assertEqual("{{ grove_user_uid }}", create["uid"])
+		self.assertTrue(create["generate_ssh_key"])
+
+
+class TestEverySetupPlayRemovesTheCloudImagesUser(unittest.TestCase):
+	"""The image's ubuntu carries passwordless sudo and nothing needs it. Its own role, listed by every
+	Setup play, so the inference box — which has no service account — loses it too."""
+
+	PLAYS = (
+		"inference_server/provision.yml", "gateway_server/gateway.yml",
+		"ingress_server/ingress.yml", "monitoring_agent/agent.yml", "gateway_store/store.yml",
+	)
+
+	def test_every_setup_play_lists_the_role(self):
+		for name in self.PLAYS:
+			with self.subTest(name):
+				[play] = yaml.safe_load((PLAYBOOKS / name).read_text())
+				roles = [r if isinstance(r, str) else r["role"] for r in play["roles"]]
+				self.assertIn("remove_cloud_user", roles)
+
+	def test_the_removal_never_saws_off_the_branch_the_play_sits_on(self):
+		[remove] = yaml.safe_load((SHARED_ROLES / "remove_cloud_user/tasks/main.yml").read_text())
+		self.assertEqual("ubuntu", remove["ansible.builtin.user"]["name"])
+		self.assertEqual("absent", remove["ansible.builtin.user"]["state"])
+		self.assertIn("ansible_user", remove["when"])
+		self.assertFalse(remove["failed_when"])
+
+
+class TestOneServiceAccount(unittest.TestCase):
+	"""Roles that run on their own (deploy_tls, reconfigure, config.yml) restate the account as a
+	literal default. This is what keeps those literals one name."""
+
+	def test_every_literal_names_the_same_account(self):
+		grove_user = yaml.safe_load((SHARED_ROLES / "grove_user/defaults/main.yml").read_text())["grove_user"]
+		literals = {
+			"fleet_tls_key_owner": yaml.safe_load((SHARED_ROLES / "fleet_tls/defaults/main.yml").read_text())["fleet_tls_key_owner"],
+			"vmagent_user": yaml.safe_load((PLAYBOOKS / "monitoring_agent/roles/vmagent/defaults/main.yml").read_text())["vmagent_user"],
+		}
+		for unit in ("gateway_server/systemd/pathway.service", "ingress_server/systemd/pathway.service"):
+			user = next(l for l in (PLAYBOOKS / unit).read_text().splitlines() if l.startswith("User="))
+			literals[unit] = user.removeprefix("User=")
+		for name, value in literals.items():
+			with self.subTest(name):
+				self.assertEqual(grove_user, value)
 
 
 class FakeExecutor:
@@ -229,8 +351,7 @@ class TestTheRunCodeComesFromAnsible(unittest.TestCase):
 		self.assertEqual(self.rc_of(4), 4)  # RUN_UNREACHABLE_HOSTS
 
 	def test_a_stopped_play_is_never_a_success(self):
-		# The strategy unwinds with whatever rc its tasks earned, usually 0 — but the operator
-		# asked for it not to finish.
+		# The strategy unwinds with whatever rc its tasks earned, usually 0.
 		self.assertEqual(self.rc_of(0, stopped=True), 1)
 
 

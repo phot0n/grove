@@ -9,7 +9,7 @@ engine_proxy_port: 443
 # distro's default site and the `default_server` collision it used to cause.
 engine_proxy_conf: /usr/local/openresty/nginx/conf/nginx.conf
 
-# One file per Model Deployment, written by the vllm role and included by the server block.
+# One file per Model Replica, written by the vllm role and included by the server block.
 # Nothing else writes here, so a file with no deployment behind it is a teardown that was missed.
 engine_proxy_engines_dir: /etc/grove/nginx/engines
 

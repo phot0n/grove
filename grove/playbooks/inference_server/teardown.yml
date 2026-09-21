@@ -1,7 +1,7 @@
 ---
 # Tear down ONE vLLM instance on a multi-tenant box: its container, the run script and env
 # file that would otherwise restart it, and its key file. Run by
-# model_deployment.teardown_deployment with extra-var vllm_instance. Deliberately leaves the
+# model_replica.teardown_deployment with extra-var vllm_instance. Deliberately leaves the
 # box-shared weights/compile caches and the pulled image intact — sibling instances and
 # redeploys still use them.
 - name: Tear down a vLLM instance
