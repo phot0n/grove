@@ -1,4 +1,4 @@
-# Copyright (c) 2026, Grove and contributors
+# Copyright (c) 2026, Frappe and contributors
 # See license.txt
 """What a gateway in one Geography is given. Routes are built only from what runs inside it, and every
 user goes to every gateway carrying the pin the gateway enforces. Pure — the rows are faked."""

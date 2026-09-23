@@ -1,4 +1,4 @@
-# Copyright (c) 2026, Grove and contributors
+# Copyright (c) 2026, Frappe and contributors
 # For license information, please see license.txt
 """The shared log relay: batching, ticks, and the liveness key a viewer keeps refreshing.
 Pure — realtime and the cache are stubbed, so no site or redis."""

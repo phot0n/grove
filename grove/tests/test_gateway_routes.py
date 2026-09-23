@@ -1,4 +1,4 @@
-# Copyright (c) 2026, Grove and contributors
+# Copyright (c) 2026, Frappe and contributors
 # See license.txt
 """The table a GATEWAY is given: one row per model, naming ingresses and direct engines.
 

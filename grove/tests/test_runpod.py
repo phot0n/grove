@@ -1,4 +1,4 @@
-# Copyright (c) 2026, Grove and contributors
+# Copyright (c) 2026, Frappe and contributors
 # For license information, please see license.txt
 """RunPod request/response shaping, and what a Restart may apply in place. Pure — the HTTP
 call is stubbed and both docs are passed in, so no site or network."""

@@ -1,4 +1,4 @@
-# Copyright (c) 2026, Grove and contributors
+# Copyright (c) 2026, Frappe and contributors
 # For license information, please see license.txt
 """Standalone cloud Pod lifecycle via provider APIs. A Pod is self-contained: it holds its own
 spawn spec and, for a serving pod, the vLLM config. Pods are NOT backed by a Machine — Machine +

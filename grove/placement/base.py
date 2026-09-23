@@ -1,4 +1,4 @@
-# Copyright (c) 2026, Grove and contributors
+# Copyright (c) 2026, Frappe and contributors
 # For license information, please see license.txt
 """Which box a new replica goes on. One Scorer per preference, composed in order by a named policy,
 and `placement_policy` is the one place that dispatch happens.

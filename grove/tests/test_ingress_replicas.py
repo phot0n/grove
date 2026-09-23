@@ -1,4 +1,4 @@
-# Copyright (c) 2026, Grove and contributors
+# Copyright (c) 2026, Frappe and contributors
 # See license.txt
 """The table one ingress is given: every Active replica it OWNS, dialled privately.
 

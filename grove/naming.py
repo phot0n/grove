@@ -1,4 +1,4 @@
-# Copyright (c) 2026, Grove and contributors
+# Copyright (c) 2026, Frappe and contributors
 # For license information, please see license.txt
 """How a Machine names itself (`gw1-ap-south-1`), how the server doc on it takes that name, and how
 a Model Replica names itself off those parts (`qwen3-8b-ap-south-1-inf3-00007`).

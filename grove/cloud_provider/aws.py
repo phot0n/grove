@@ -1,4 +1,4 @@
-# Copyright (c) 2026, Grove and contributors
+# Copyright (c) 2026, Frappe and contributors
 # For license information, please see license.txt
 """AWS EC2 provider API client. Pure boto3, no Frappe deps — Machine assembles the keys and the
 launch spec.

@@ -1,4 +1,4 @@
-# Copyright (c) 2026, Grove and contributors
+# Copyright (c) 2026, Frappe and contributors
 # See license.txt
 """What a Monitoring Agent is told to scrape. Pure: the http_sd payload and the scrape config,
 no site and no box.

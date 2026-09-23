@@ -1,4 +1,4 @@
-# Copyright (c) 2026, Grove and contributors
+# Copyright (c) 2026, Frappe and contributors
 # See license.txt
 """grove.api runs under permission checks, not around them: the reads go through
 frappe.get_list and the writes through a plain save, so the Grove Control role has to carry

@@ -1,4 +1,4 @@
-# Copyright (c) 2026, Grove and contributors
+# Copyright (c) 2026, Frappe and contributors
 # See license.txt
 """What the Deploy Agent button ships. Pure — the doc is a SimpleNamespace and run_playbook is
 recorded, so no site and no SSH.

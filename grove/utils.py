@@ -1,4 +1,4 @@
-# Copyright (c) 2026, Grove and contributors
+# Copyright (c) 2026, Frappe and contributors
 # For license information, please see license.txt
 """Small helpers shared across the app. Nothing here reaches into a doctype; keep it that way."""
 

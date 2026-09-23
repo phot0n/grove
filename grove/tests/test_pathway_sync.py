@@ -1,4 +1,4 @@
-# Copyright (c) 2026, Grove and contributors
+# Copyright (c) 2026, Frappe and contributors
 # See license.txt
 """What Grove pushes to a proxy: the routing table, and the three access records a request
 resolves through — group, then user, then key — plus the hash gate that decides whether a

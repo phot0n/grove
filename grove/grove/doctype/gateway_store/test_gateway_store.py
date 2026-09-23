@@ -1,4 +1,4 @@
-# Copyright (c) 2026, Grove and contributors
+# Copyright (c) 2026, Frappe and contributors
 # See license.txt
 """One store per Network, and what a gateway is told about it. Pure: frappe's data calls are
 stubbed, so no site."""

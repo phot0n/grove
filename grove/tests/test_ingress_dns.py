@@ -1,4 +1,4 @@
-# Copyright (c) 2026, Grove and contributors
+# Copyright (c) 2026, Frappe and contributors
 # See license.txt
 """The name an ingress is reached by. Pure — boto3 is replaced by a fake, so no site and no network.
 

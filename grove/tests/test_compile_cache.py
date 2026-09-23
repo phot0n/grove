@@ -1,4 +1,4 @@
-# Copyright (c) 2026, Grove and contributors
+# Copyright (c) 2026, Frappe and contributors
 # See license.txt
 """Compile Cache registry: how raw S3 listings group into one row per cache key. Pure —
 the listings are passed in, no site and no bucket."""

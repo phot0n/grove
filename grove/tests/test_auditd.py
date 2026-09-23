@@ -1,4 +1,4 @@
-# Copyright (c) 2026, Grove and contributors
+# Copyright (c) 2026, Frappe and contributors
 # See license.txt
 """The auditd rules file. auditctl stops at the first line it rejects, and augenrules then leaves
 the box with only the rules above it, so every line must be a rule the box's arch can load."""

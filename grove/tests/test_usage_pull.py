@@ -1,4 +1,4 @@
-# Copyright (c) 2026, Grove and contributors
+# Copyright (c) 2026, Frappe and contributors
 # See license.txt
 """The usage pull ADDs deltas into monthly Usage Records. A key with traffic used to cost a full
 document save per pull — load, child-table diff, modified bump, and a budget sum in on_update —

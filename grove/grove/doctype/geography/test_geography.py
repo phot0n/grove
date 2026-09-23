@@ -1,4 +1,4 @@
-# Copyright (c) 2026, Grove and contributors
+# Copyright (c) 2026, Frappe and contributors
 # See license.txt
 """A Geography's endpoint is a name the fleet certificate covers, and one DNS set names it. Pure — the
 docs are stubs, so no site."""

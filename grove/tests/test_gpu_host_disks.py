@@ -1,4 +1,4 @@
-# Copyright (c) 2026, Grove and contributors
+# Copyright (c) 2026, Frappe and contributors
 # See license.txt
 """The gpu_host role's data-disk selection. Pure — evaluates the role's own expressions
 against captured lsblk output, no site and no box.

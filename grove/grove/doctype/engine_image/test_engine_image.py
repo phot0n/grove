@@ -1,4 +1,4 @@
-# Copyright (c) 2026, Grove and contributors
+# Copyright (c) 2026, Frappe and contributors
 # See license.txt
 """Splitting an image ref into what the registry API addresses a manifest by, and checking the
 warmup body an image carries. Pure — both read fields off the doc, so no registry call."""

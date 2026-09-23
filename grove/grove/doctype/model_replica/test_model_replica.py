@@ -1,4 +1,4 @@
-# Copyright (c) 2026, Grove and contributors
+# Copyright (c) 2026, Frappe and contributors
 # See license.txt
 """Engine env assembly and box-local port allocation. Pure — the deployment is passed in and
 the sibling lookup is stubbed with a small table, so no site needed."""

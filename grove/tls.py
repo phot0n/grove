@@ -1,4 +1,4 @@
-# Copyright (c) 2026, Grove and contributors
+# Copyright (c) 2026, Frappe and contributors
 # For license information, please see license.txt
 """One wildcard certificate per Geography, for its zone: issued here on the control plane, stored
 on the Geography, pushed to that geography's boxes by Ansible.

@@ -1,4 +1,4 @@
-# Copyright (c) 2026, Grove and contributors
+# Copyright (c) 2026, Frappe and contributors
 # See license.txt
 """The multivalue set a gateway is reached through, and the two URLs Grove derives from it. Pure —
 boto3 is replaced by a fake and the docs are SimpleNamespaces, so no site and no network.

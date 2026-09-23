@@ -1,4 +1,4 @@
-# Copyright (c) 2026, Grove and contributors
+# Copyright (c) 2026, Frappe and contributors
 # For license information, please see license.txt
 """VllmEngine argument assembly. Pure — the Model row is passed in, so no site needed."""
 
