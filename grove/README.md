@@ -174,6 +174,12 @@ changes history there exactly as it does in `spent` — grouped by model, API ke
 a date range, with a total row; export from the report toolbar. Revenue only: margin against the
 cost card is not built.
 
+**Nothing here is deleted.** No role holds `delete` on Grove User, Grove API Key, Grove Credit,
+Usage Record, Lost Usage, Gateway Spend, Credit Discrepancy, Model Pricing, Model or Model Provider
+(`tests/test_delete_permissions.py` pins the list). A key is revoked, a pricing is superseded, a
+credit is corrected by another entry. DocPerm does not bind Administrator or `ignore_permissions`;
+Grove Credit's `on_trash` refuses those too.
+
 **The balance.** Every `Grove User` is prepaid unless marked **Free**. Top-ups are `Grove Credit`
 entries — an append-only ledger, one doc per top-up or negative correction (with a note), never
 edited or deleted; a control client calls `api.add_credit(email, amount, note)` or posts one
