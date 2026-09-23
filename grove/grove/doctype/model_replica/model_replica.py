@@ -74,7 +74,7 @@ class ModelReplica(Document):
 	# end: auto-generated types
 
 	# No on_update sync hook: any change here moves the routes snapshot hash and
-	# grove.pathway_sync.sync_projection pushes it on the next tick.
+	# grove.pathway.projection.sync_projection pushes it on the next tick.
 
 	@property
 	def deployment(self):

@@ -85,7 +85,7 @@ def fake_cached_doc(doctype, name):
 
 
 def routes():
-	from grove import pathway_sync
+	from grove.pathway import routes
 
 	with (
 		patch.object(frappe, "get_all", side_effect=FakeQuery()),
@@ -96,7 +96,7 @@ def routes():
 			side_effect=lambda *a, **k: frappe._dict(get_password=lambda *a, **k: "secret"),
 		),
 	):
-		return pathway_sync._gateway_routes("in")
+		return routes.gateway_routes("in")
 
 
 class TestAVendorModelIsRoutable(unittest.TestCase):

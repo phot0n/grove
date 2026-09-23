@@ -16,7 +16,7 @@ package is pure: no site, no mocking.
 
 ## Adding an engine
 
-One file, one entry in `engine_class`'s dict. `Pod`, `Model Replica` and `pathway_sync` do not
+One file, one entry in `engine_class`'s dict. `Pod`, `Model Replica` and `pathway/routes.py` do not
 change. The kind string is the `Engine Image.engine_kind` Select option, verbatim and lowercase.
 
 ## What belongs on the contract

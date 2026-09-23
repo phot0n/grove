@@ -10,7 +10,7 @@ RETENTION_DAYS = 60
 
 
 class PathwaySync(Document):
-	"""One row per sync run. The work lives in grove.pathway_sync and grove.usage_pull, which build
+	"""One row per sync run. The work lives in grove.pathway (projection, usage), which builds
 	these docs, take the lock, run, then insert and finalize.
 
 	The advisory lock is named by `sync_type`, so runs of the same type serialize — a slow one
@@ -30,18 +30,6 @@ class PathwaySync(Document):
 
 	@staticmethod
 	def clear_old_logs(days=RETENTION_DAYS):
-		"""Drop runs older than `days`. Frappe's Log Settings calls this nightly; the signature is
-		its LogType protocol, which is also what puts Pathway Sync in that form's list.
-
-		This table grows on a timer rather than on use — two scheduled runs each write a doc every
-		two minutes whether or not anything moved (the projection push, and the usage drain since
-		it moved off */5), which fills this window with on the order of 86,000 docs, each with a
-		row per box and a payload on each row. Two months is long enough to answer "what did the
-		fleet do last week" and short enough that the answer stays fast.
-
-		The child rows go first and by join, not by collecting parent names into an IN list: at
-		this size that list is tens of thousands of ids, and a delete that has to be handed every
-		one of them is the kind that gets killed halfway and leaves the table half cleared."""
 		cutoff = add_days(now_datetime(), -cint(days))
 		frappe.db.sql(
 			"""DELETE FROM `tabPathway Sync Row`
@@ -54,8 +42,6 @@ class PathwaySync(Document):
 
 @frappe.whitelist(methods=["POST"])
 def force_sync_all():
-	"""Button (list view): force-push the complete snapshot to every Active gateway and ingress,
-	skipping the hash gate. Enqueued — a forced run waits on the tick's lock."""
 	frappe.only_for("System Manager")
-	frappe.enqueue("grove.pathway_sync.full_sync", queue="short", trigger="Manual")
+	frappe.enqueue("grove.pathway.projection.full_sync", queue="short", trigger="Manual")
 	frappe.msgprint("Force sync queued for every Active box.", alert=True)

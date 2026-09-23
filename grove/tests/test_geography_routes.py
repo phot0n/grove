@@ -8,7 +8,9 @@ from unittest.mock import patch
 
 import frappe
 
-from grove import pathway_sync
+from grove.pathway import projection, run, snapshot
+from grove.pathway.routes import gateway_routes
+from grove.pathway.run import Target
 
 ZONE = "grove.example.com"
 MODELS = [
@@ -68,7 +70,7 @@ def routes(geography):
 		patch.object(frappe, "db", frappe._dict(get_value=lambda *args: ZONE, get_single_value=lambda *args: POD_GEOGRAPHY)),
 		patch.object(frappe, "get_doc", side_effect=lambda *a, **k: frappe._dict(get_password=lambda *a, **k: "secret")),
 	):
-		return pathway_sync._gateway_routes(geography)
+		return gateway_routes(geography)
 
 
 class TestRoutesStayInTheirGeography(unittest.TestCase):
@@ -96,12 +98,15 @@ class TestRoutesStayInTheirGeography(unittest.TestCase):
 
 class TestEveryUserCarriesTheirPin(unittest.TestCase):
 	def users(self, rows):
+		def get_all(doctype, **kwargs):
+			return [frappe._dict(row) for row in rows] if doctype == "Grove User" else []
+
 		with (
-			patch.object(pathway_sync, "model_rows", return_value={}),
-			patch.object(pathway_sync, "group_rows", return_value={}),
-			patch.object(frappe, "get_all", return_value=[frappe._dict(row) for row in rows]),
+			patch.object(snapshot, "model_rows", return_value={}),
+			patch.object(snapshot, "group_rows", return_value={}),
+			patch.object(frappe, "get_all", side_effect=get_all),
 		):
-			return {user["name"]: user for user in pathway_sync._effective_users()}
+			return {user["name"]: user for user in snapshot.effective_users()}
 
 	def test_pinned_and_unpinned_users_both_reach_every_gateway(self):
 		users = self.users([
@@ -114,31 +119,40 @@ class TestEveryUserCarriesTheirPin(unittest.TestCase):
 
 
 class TestOneSnapshotPerGeography(unittest.TestCase):
-	def test_each_gateway_gets_its_geographys_snapshot_built_once(self):
+	"""One snapshot per (geography, Redis): two gateways on one store share it, a box on its own
+	Redis in the same geography gets its own — the prepaid ceilings differ per Redis."""
+
+	def test_each_gateway_gets_its_pairs_snapshot_built_once(self):
 		built, pushed = [], []
-		geographies = {"gw-in-1": "in", "gw-in-2": "in", "gw-eu-1": "eu"}
+		geographies = {"gw-in-1": "in", "gw-in-2": "in", "gw-in-3": "in", "gw-eu-1": "eu"}
+		stores = {"gw-in-1": "store-in", "gw-in-2": "store-in"}
 
-		def snapshot(geography):
-			built.append(geography)
-			return {"geography": geography}
+		def build(geography, redis=None, shared=None):
+			built.append((geography, redis))
+			return {"geography": geography, "redis": redis}
 
-		def sync_target(server_type, name, snapshot, force):
-			pushed.append((name, snapshot["geography"]))
+		def push_target(target, desired, force):
+			pushed.append((target.name, desired["geography"], desired["redis"]))
 			return None
 
-		run = unittest.mock.Mock(results=[])
-		run.acquire_lock.return_value = True
+		doc = unittest.mock.Mock(results=[])
+		doc.acquire_lock.return_value = True
 		with (
-			patch.object(pathway_sync, "_new_run", return_value=run),
-			patch.object(pathway_sync, "sync_targets", return_value=[(None, [name]) for name in geographies]),
-			patch.object(pathway_sync, "_active_ingresses", return_value=[]),
-			patch.object(pathway_sync, "gateway_geography", side_effect=geographies.get),
-			patch.object(pathway_sync, "gateway_snapshot", side_effect=snapshot),
-			patch.object(pathway_sync, "_sync_target", side_effect=sync_target),
+			patch.object(run, "new_run", return_value=doc),
+			patch.object(run, "sync_targets", return_value=[(None, [name]) for name in geographies]),
+			patch.object(projection, "active_ingresses", return_value=[]),
+			patch.object(snapshot, "gateway_geography", side_effect=geographies.get),
+			patch.object(snapshot, "gateway_redis", side_effect=lambda gateway: stores.get(gateway, gateway)),
+			patch.object(snapshot, "gateway_snapshot", side_effect=build),
+			patch.object(Target, "resolve", side_effect=lambda kind, name: Target(kind, name, "u", "t")),
+			patch.object(projection, "push_target", side_effect=push_target),
+			patch.object(frappe, "db", frappe._dict(commit=lambda: None)),
 		):
-			pathway_sync.sync_projection()
-		self.assertEqual(sorted(built), ["eu", "in"])
-		self.assertEqual(sorted(pushed), [("gw-eu-1", "eu"), ("gw-in-1", "in"), ("gw-in-2", "in")])
+			projection.sync_projection()
+		self.assertEqual(sorted(built), [("eu", "gw-eu-1"), ("in", "gw-in-3"), ("in", "store-in")])
+		self.assertEqual(sorted(pushed), [
+			("gw-eu-1", "eu", "gw-eu-1"), ("gw-in-1", "in", "store-in"), ("gw-in-2", "in", "store-in"), ("gw-in-3", "in", "gw-in-3"),
+		])
 
 
 if __name__ == "__main__":

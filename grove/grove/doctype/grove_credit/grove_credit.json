@@ -1,0 +1,66 @@
+{
+ "actions": [],
+ "autoname": "hash",
+ "creation": "2026-09-22 00:00:00",
+ "doctype": "DocType",
+ "engine": "InnoDB",
+ "field_order": [
+  "grove_user",
+  "amount",
+  "note"
+ ],
+ "fields": [
+  {
+   "fieldname": "grove_user",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "Grove User",
+   "options": "Grove User",
+   "reqd": 1,
+   "search_index": 1
+  },
+  {
+   "description": "A top-up. Negative to correct, with a note saying why. Never edited or deleted \u2014 a wrong entry is corrected by another.",
+   "fieldname": "amount",
+   "fieldtype": "Currency",
+   "in_list_view": 1,
+   "label": "Amount (USD)",
+   "reqd": 1
+  },
+  {
+   "fieldname": "note",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Note"
+  }
+ ],
+ "links": [],
+ "modified": "2026-09-23 17:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "Grove",
+ "name": "Grove Credit",
+ "naming_rule": "Random",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "email": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "System Manager",
+   "share": 1,
+   "write": 1
+  },
+  {
+   "create": 1,
+   "read": 1,
+   "role": "Grove Control"
+  }
+ ],
+ "row_format": "Dynamic",
+ "sort_field": "creation",
+ "sort_order": "DESC",
+ "states": [],
+ "track_changes": 1
+}

@@ -372,7 +372,7 @@ class FakeProxy:
 class TestDerivedNames(unittest.TestCase):
 	"""hostname and admin_url are derived, never typed. admin_url has to name ONE box — Gateway
 	Host deliberately names them all — and https on a name the wildcard covers is what makes
-	`requests` verify the certificate without a line of change in pathway_sync."""
+	`requests` verify the certificate without a line of change in the projection."""
 
 	def settings(self, zone):
 		"""The box's Geography's zone. frappe.db is a Local proxy with no site bound, so the attribute

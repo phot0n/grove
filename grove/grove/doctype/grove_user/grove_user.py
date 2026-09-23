@@ -6,8 +6,9 @@ from frappe.model.document import Document
 
 
 class GroveUser(Document):
-	"""Grove's per-user policy: their groups, which models they may call, and their monthly token
-	budget. All of it belongs to the PERSON — their keys are credentials and share this budget.
+	"""Grove's per-user policy: their groups, which models they may call, and their prepaid
+	balance (every user has one unless marked Free). All of it belongs to the PERSON — their keys
+	are credentials and share this balance.
 	No doc means no group and no allow, so the user reaches no models at all.
 
 	The gateway holds it the same way: one user:<name> record every key points at, so an access
@@ -24,12 +25,14 @@ class GroveUser(Document):
 		from grove.grove.doctype.model_group_row.model_group_row import ModelGroupRow
 
 		allow: DF.Table[GroveModelRow]
+		balance: DF.Currency
 		deny: DF.Table[GroveModelRow]
+		free: DF.Check
 		geography: DF.Link | None
 		log_payloads: DF.Check
-		max_tokens: DF.Int
 		model_groups: DF.TableMultiSelect[ModelGroupRow]
 		rate_limited: DF.Check
+		spent: DF.Currency
 		user: DF.Link
 	# end: auto-generated types
 
@@ -38,6 +41,19 @@ class GroveUser(Document):
 		both = {row.model for row in self.allow} & {row.model for row in self.deny}
 		if both:
 			frappe.throw(f"{', '.join(sorted(both))} is in both Allow and Deny")
+		if not self.is_new():
+			# save() writes every column and the pull writes these two behind the form's back, so a
+			# form left open across a pull would write its old totals back as free credit.
+			live = frappe.db.get_value("Grove User", self.name, ["spent", "balance"], as_dict=True, for_update=True)
+			self.spent, self.balance = live.spent, live.balance
+		# Mirrors pricing.settle, which on_update then runs for real: free is never gated.
+		self.rate_limited = int(not self.free and (self.balance or 0) <= 0)
+
+	def on_update(self):
+		"""The verdict is re-decided from what was just saved — the same writer the pull uses."""
+		from grove.pricing import settle
+
+		settle(self.name)
 
 
 GROVE_USER_ROLE = "Grove User"
@@ -69,13 +85,8 @@ def for_email(email):
 	return frappe.db.get_value("Grove User", {"user": email}) if email else None
 
 
-def monthly_budget(grove_user):
-	"""Billable tokens (uncached prompt + completion) this user may spend per calendar month, 0 = unlimited."""
-	return frappe.db.get_value("Grove User", grove_user, "max_tokens") or 0
-
-
 def set_rate_limited(grove_user, limited):
-	"""Flip the 429 gate for `grove_user`. Held here, not on the keys, because the budget is
+	"""Flip the 429 gate for `grove_user`. Held here, not on the keys, because the balance is
 	the person's — storing it per key let a blocked user mint a fresh one and walk past their
 	own cap. The next sync pushes one record, not one per key they hold.
 	Returns True when something actually changed."""

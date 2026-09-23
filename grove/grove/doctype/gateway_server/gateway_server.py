@@ -5,7 +5,7 @@ import frappe
 from frappe.model.document import Document
 
 from grove import failure
-from grove import pathway_sync
+from grove.pathway import projection
 from grove.cloud_provider.dns import Route53Error
 from grove.fleet import (
 	PathwayHost,
@@ -124,7 +124,7 @@ class GatewayServer(PathwayHost, Document):
 	@frappe.whitelist()
 	def check_state(self):
 		"""Button: which sections a tick would push, pushing nothing."""
-		result = pathway_sync.check_state("Gateway Server", self.name)
+		result = projection.check_state("Gateway Server", self.name)
 		if result["in_sync"]:
 			frappe.msgprint(f"{self.name} holds the current desired state.", alert=True)
 		else:
@@ -139,7 +139,7 @@ class GatewayServer(PathwayHost, Document):
 		"""Button: push the COMPLETE key set + routing table to this proxy now
 		(logged on a Pathway Sync doc)."""
 		frappe.enqueue(
-			"grove.pathway_sync.full_sync",
+			"grove.pathway.projection.full_sync",
 			queue="short",
 			proxies=[self.name],
 			trigger="Manual",

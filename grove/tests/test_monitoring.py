@@ -165,7 +165,7 @@ class TestBoxesAreScrapedPrivatelyWhereTheyCanBe(unittest.TestCase):
 		)
 
 	def test_an_engine_on_a_private_box_keeps_its_public_identity(self):
-		# `engine` joins back to the route pathway_sync pushes, `instance` tells two engines on one
+		# `engine` joins back to the route the projection pushes, `instance` tells two engines on one
 		# box apart. Neither may follow the address.
 		entry = engine_entry(
 			"https://10.0.0.5/e/md-00007", {"deployment": "MD-00007"}, address="172.31.0.9"
@@ -252,7 +252,7 @@ class TestEngineTargets(unittest.TestCase):
 		self.assertNotEqual(first["labels"]["instance"], second["labels"]["instance"])
 
 	def test_an_engine_without_a_url_is_not_a_target(self):
-		# Mid-provision deployments and loading pods hold "" — pathway_sync's filter too.
+		# Mid-provision deployments and loading pods hold "" — the projection's filter too.
 		self.assertIsNone(engine_entry("", self.LABELS))
 		self.assertIsNone(engine_entry(None, self.LABELS))
 

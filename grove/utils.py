@@ -4,6 +4,7 @@
 
 import os
 import re
+from datetime import datetime, timezone
 
 import frappe
 
@@ -74,6 +75,11 @@ def is_label_under(name, zone):
 	apex nor `api.eu.grove.example.com`."""
 	suffix = f".{zone}"
 	return name.endswith(suffix) and "." not in name[: -len(suffix)]
+
+
+def utc_today():
+	"""The billing day off OUR clock: usage days, price windows and top-ups all read it."""
+	return datetime.now(timezone.utc).date()
 
 
 def slugify(text):

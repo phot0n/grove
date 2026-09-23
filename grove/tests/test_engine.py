@@ -55,7 +55,7 @@ class TestEngineDispatch(unittest.TestCase):
 			build_engine("vllm", "qwen3-35b", dict(CHAT_MODEL), port=8080, nonsense=1)
 
 	def test_every_engine_states_a_default_concurrency(self):
-		# The ABC cannot enforce a class attribute, and pathway_sync reads this off the CLASS —
+		# The ABC cannot enforce a class attribute, and the projection reads this off the CLASS —
 		# a missing one is an AttributeError mid-tick.
 		for kind in ("vllm", "custom"):
 			with self.subTest(kind):
@@ -179,7 +179,7 @@ class TestCustomEngine(unittest.TestCase):
 		self.assertEqual(self.engine(warmup_body='{"input": "ping"}').warmup_request, {})
 
 	def test_grove_mints_it_no_key(self):
-		# pathway_sync ships the key as the route's internal_key, so minting one sends a bearer to
+		# the projection ships the key as the route's internal_key, so minting one sends a bearer to
 		# an image that never asked.
 		self.assertFalse(self.engine().has_api_key)
 

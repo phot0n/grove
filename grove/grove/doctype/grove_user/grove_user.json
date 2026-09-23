@@ -6,12 +6,14 @@
  "engine": "InnoDB",
  "field_order": [
   "user",
+  "geography",
   "model_groups",
   "column_break_head",
-  "max_tokens",
+  "free",
+  "balance",
+  "spent",
   "rate_limited",
   "log_payloads",
-  "geography",
   "section_allow",
   "allow",
   "section_deny",
@@ -39,10 +41,30 @@
    "fieldtype": "Column Break"
   },
   {
-   "description": "Billable tokens (uncached prompt + completion) this user may consume per calendar month (UTC); blank/0 = unlimited. SHARED across every API Key they hold \u2014 the keys are just credentials, the budget is the person's. Enforced by the control plane against the month's Usage Records; when reached, this user is flagged Rate Limited and pushed to the gateways as one record, so every key they hold is refused at once (reactive, resets each month).",
-   "fieldname": "max_tokens",
-   "fieldtype": "Int",
-   "label": "Max Tokens / Month"
+   "default": "0",
+   "description": "Pricing is ignored for this user: usage is still recorded and priced into Spent, but never gated. Off means prepaid \u2014 \u03a3 top-ups \u2212 Spent at 0 \u2192 Rate Limited until topped up, shared by every key they hold.",
+   "fieldname": "free",
+   "fieldtype": "Check",
+   "in_list_view": 1,
+   "label": "Free"
+  },
+  {
+   "description": "\u03a3 Grove Credit entries \u2212 Spent, written by pricing.settle on every pull, top-up and save. Top up by adding a Grove Credit.",
+   "fieldname": "balance",
+   "fieldtype": "Currency",
+   "in_list_view": 1,
+   "label": "Balance (USD)",
+   "precision": "6",
+   "read_only": 1
+  },
+  {
+   "description": "USD of usage priced so far, incremented by the pull and rebuilt nightly from the day rows.",
+   "fieldname": "spent",
+   "fieldtype": "Currency",
+   "in_list_view": 1,
+   "label": "Spent (USD)",
+   "precision": "6",
+   "read_only": 1
   },
   {
    "default": "0",
@@ -102,9 +124,24 @@
    "group": "Usage",
    "link_doctype": "Usage Record",
    "link_fieldname": "user"
+  },
+  {
+   "group": "Usage",
+   "link_doctype": "Gateway Spend",
+   "link_fieldname": "grove_user"
+  },
+  {
+   "group": "Usage",
+   "link_doctype": "Credit Discrepancy",
+   "link_fieldname": "grove_user"
+  },
+  {
+   "group": "Usage",
+   "link_doctype": "Grove Credit",
+   "link_fieldname": "grove_user"
   }
  ],
- "modified": "2026-09-17 15:05:51.778533",
+ "modified": "2026-09-23 17:00:00.000000",
  "modified_by": "Administrator",
  "module": "Grove",
  "name": "Grove User",
@@ -134,5 +171,6 @@
  "sort_field": "modified",
  "sort_order": "DESC",
  "states": [],
- "title_field": "user"
+ "title_field": "user",
+ "track_changes": 1
 }

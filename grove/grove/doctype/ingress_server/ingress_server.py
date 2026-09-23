@@ -90,7 +90,7 @@ class IngressServer(PathwayHost, Document):
 		doc like every other. A button that reports "queued" and then leaves no record of whether
 		it worked is the one you end up debugging by ssh."""
 		frappe.enqueue(
-			"grove.pathway_sync.full_sync",
+			"grove.pathway.projection.full_sync",
 			queue="short",
 			proxies=[],
 			ingresses=[self.name],

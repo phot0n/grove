@@ -1,10 +1,9 @@
-# Copyright (c) 2026, Grove and contributors
-# For license information, please see license.txt
-
 from frappe.model.document import Document
 
 
-class UsageModelRow(Document):
+class ModelPricingRate(Document):
+	"""One counter's sell rate (child)."""
+
 	# begin: auto-generated types
 	# This code is auto-generated. Do not modify anything in this block.
 
@@ -13,15 +12,11 @@ class UsageModelRow(Document):
 	if TYPE_CHECKING:
 		from frappe.types import DF
 
-		cached_tokens: DF.Int
-		completion_tokens: DF.Int
-		last_pulled: DF.Datetime | None
-		model: DF.Link | None
+		counter: DF.Literal['input_tokens', 'cached_tokens', 'cache_write_tokens', 'cache_write_1h_tokens', 'completion_tokens', 'audio_seconds', 'request_count']
 		parent: DF.Data
 		parentfield: DF.Data
 		parenttype: DF.Data
-		prompt_tokens: DF.Int
-		request_count: DF.Int
+		rate: DF.Currency
 	# end: auto-generated types
 
 	pass

@@ -41,11 +41,11 @@ class TestTheControlRoleReachesOnlyWhatItServes(IntegrationTestCase):
 		self.assertIsInstance(api.available_models(), list)
 		self.assertEqual(api.usage(["nobody@example.com"])["model_summary"], [])
 
-	def test_usage_model_rows_resolve_permission_through_their_parent(self):
+	def test_usage_counter_rows_resolve_permission_through_their_parent(self):
 		# A child doctype holds no permissions of its own, so this is a PermissionError
 		# without parent_doctype however the role is granted.
 		frappe.get_list(
-			"Usage Model Row",
+			"Usage Counter Row",
 			filters={"parenttype": "Usage Record"},
 			fields=["model"],
 			parent_doctype="Usage Record",
@@ -57,9 +57,13 @@ class TestTheControlRoleReachesOnlyWhatItServes(IntegrationTestCase):
 				frappe.get_list(doctype, limit=1)
 
 	def test_provisioning_a_key_registers_the_login_it_names(self):
-		result = api.provision_key("Probe Person", "probe-person@example.com", make_test_geography(), token_limit=99)
+		result = api.provision_key("Probe Person", "probe-person@example.com", make_test_geography())
 
 		self.assertTrue(result["api_key"].startswith(KEY_PREFIX))
 		self.assertEqual(frappe.db.get_value("User", "probe-person@example.com", "first_name"), "Probe Person")
-		grove_user = frappe.db.get_value("Grove User", {"user": "probe-person@example.com"}, "max_tokens")
-		self.assertEqual(grove_user, 99)
+		self.assertTrue(frappe.db.exists("Grove User", {"user": "probe-person@example.com"}))
+
+	def test_the_control_role_can_post_a_credit(self):
+		grove_user = api._set_policy("probe-credit@example.com", "Probe Credit", None)
+		frappe.get_doc({"doctype": "Grove Credit", "grove_user": grove_user, "amount": 5}).insert()
+		self.assertEqual(frappe.db.get_value("Grove User", grove_user, "balance"), 5)

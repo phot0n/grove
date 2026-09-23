@@ -16,7 +16,8 @@ import frappe
 import requests
 from frappe.utils import escape_html
 
-from grove import failure, pathway_sync
+from grove import failure
+from grove.pathway.run import Target
 from grove.cloud_provider.dns import Route53Client, Route53Error
 from grove.monitoring import run_exporters_play
 from grove.server import Server
@@ -224,10 +225,4 @@ class PathwayHost(FleetHost):
 
 	def get_in_flight(self):
 		"""The box's own answer: {"maintenance": bool, "in_flight": requests still running}."""
-		response = requests.get(
-			f"{(self.admin_url or '').rstrip('/')}/in-flight",
-			headers={"X-Grove-Admin-Token": self.get_password("admin_token")},
-			timeout=pathway_sync.TIMEOUT,
-		)
-		response.raise_for_status()
-		return response.json()
+		return Target.of(self).get("in-flight")
