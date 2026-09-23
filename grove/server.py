@@ -15,7 +15,10 @@ class Server(GeneratedName, AnsibleHost):
 		"""The Machine's name: the box was named once, when it was created."""
 		return self.machine
 
-	def before_insert(self):
+	def autoname(self):
+		"""Checked here, once the name exists: frappe runs before_insert with a generated name still
+		blank."""
+		super().autoname()
 		# Generated names are id-safe by construction, but a Region named with a dot would slug
 		# into one that is not.
 		validate_id_safe_name(self.doctype, self.short_name)

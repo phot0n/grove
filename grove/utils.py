@@ -68,14 +68,6 @@ def validate_id_safe_name(doctype, name):
 	)
 
 
-def is_dns_name(name):
-	"""True for a bare DNS name — dot-separated labels and nothing else. What can go in an
-	nginx server_name and a certificate subject, so a scheme, a port, a path or a trailing dot
-	all fail here rather than at `openresty -t` on a box that is already live."""
-	labels = (name or "").split(".")
-	return bool(name) and len(name) <= 253 and all(DNS_LABEL.fullmatch(label) for label in labels)
-
-
 def is_label_under(name, zone):
 	"""True when `name` is exactly one label below `zone`. A wildcard certificate matches one
 	label and no more: `*.grove.example.com` covers `api.grove.example.com`, but neither the

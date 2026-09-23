@@ -145,12 +145,18 @@ class TestWhoCarriesAGeography(unittest.TestCase):
 
 
 class TestAServerNamedWithItsDomain(unittest.TestCase):
-	def insert(self, name, zone=ZONE):
-		doc = SimpleNamespace(doctype="Gateway Server", name=name, geography="in")
-		doc.short_name = Server.short_name.fget(doc)
-		doc.fleet_zone = zone
-		with patch("frappe.throw", side_effect=frappe.ValidationError):
-			Server.before_insert(doc)
+	"""Gated in autoname, after the name exists: frappe runs before_insert with a generated one
+	still blank."""
+
+	def insert(self, name=None, machine=None, zone=ZONE):
+		doc = Server.__new__(type("Named", (Server,), {}))
+		doc.__dict__.update(doctype="Gateway Server", geography="in", machine=machine, _chosen_name=name)
+		with (
+			patch.object(frappe, "db", SimpleNamespace(get_value=lambda *key: zone)),
+			patch("frappe.throw", side_effect=frappe.ValidationError),
+		):
+			Server.autoname(doc)
+		return doc.name
 
 	def test_a_label_or_a_label_under_its_own_zone_is_accepted(self):
 		self.insert("gw2-ap-south-1")
@@ -160,7 +166,13 @@ class TestAServerNamedWithItsDomain(unittest.TestCase):
 		# hostname is built from the first label and the zone, so a name elsewhere would lie about it.
 		for name, zone in ((f"gw2.other.example.com", ZONE), (f"gw2.{ZONE}", ""), (f"gw_2.{ZONE}", ZONE)):
 			with self.subTest(name), self.assertRaises(frappe.ValidationError):
-				self.insert(name, zone)
+				self.insert(name, zone=zone)
+
+	def test_a_name_generated_off_the_machine_is_gated_once_it_exists(self):
+		# The store the rollout creates: no name given, the Machine's taken.
+		self.assertEqual(self.insert(machine=f"store1-ap-south-1.{ZONE}"), f"store1-ap-south-1.{ZONE}")
+		with self.assertRaises(frappe.ValidationError):
+			self.insert(machine="store1.other.example.com")
 
 
 if __name__ == "__main__":
