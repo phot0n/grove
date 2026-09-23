@@ -22,13 +22,13 @@ read back out of a box to decide what is true.
 | **Gateway Server** | groups, users, keys, the global route table | yes |
 | **Ingress Server** | one thing: the replica table for the boxes in its own Network | no |
 
-A gateway's Redis is its own on loopback, or its Network's **Gateway Store** once that store
-is Active and the gateway has been deployed onto it (`Gateway Server.gateway_store` records which).
+A gateway's Redis is its Network's **Gateway Store**: Setup puts a new gateway on the Network's
+Active store and every deploy keeps it there (`Gateway Server.gateway_store` records which).
 Gateways on one store share `inflight:<engine>`, so a standalone box they all dial directly is capped
 once across them rather than once per gateway. They share everything else too: a dead store fails
-its gateways closed. Gateways on different stores still count apart. A deploy never moves a live
-gateway between Redises: drain it first with **maintenance** (a
-`config.json` key: new requests 503, running ones finish, `GET /grove-admin/in-flight` counts them).
+its gateways closed. Gateways on different stores still count apart. **Maintenance** (a
+`config.json` key: new requests 503, running ones finish, `GET /grove-admin/in-flight` counts them)
+is how a gateway is drained before anything restarts it.
 
 The split is enforced by what each is *given*, not by a flag: an Ingress Server doctype has no
 tenant fields, and the agent in ingress mode mounts no endpoint to send them to. A box behind an
@@ -152,12 +152,12 @@ A quiet tick still leaves a trace on an Ingress Server: every in-sync check and 
 stamps its `last_synced_at`, and a stale stamp means the box is unreachable or rejecting pushes.
 Gateways carry no stamp — the Pathway Sync rows are their record.
 
-**A store is reached through its writers.** Each tick (and each usage pull) reaches a gateway on
-its own Redis directly, and a Gateway Store through the gateways marked **Gateway Store
+**A store is reached through its writers.** Each tick (and each usage pull) reaches a gateway not
+yet on a store directly, and a Gateway Store through the gateways marked **Gateway Store
 Writer**, tried in name order until one succeeds — every failed attempt still writes its row.
 Other gateways on the store are never pushed: they read what the writer wrote. A store with Active
 gateways but no Active writer writes a failed row naming the store; nothing is handed over
-automatically. The first gateway moved onto a store is marked for you.
+automatically. The first gateway set up on or moved onto a store is marked for you.
 
 ## Gotchas worth knowing before you touch something
 

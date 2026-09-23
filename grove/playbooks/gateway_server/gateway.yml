@@ -1,13 +1,12 @@
 ---
-# Provision a Grove Gateway Server: its Redis (loopback with zero-loss persistence, or the Network's
-# Gateway Store) + the pathway binary, which owns the whole data path — TLS, routing, auth,
-# metering. Idempotent.
+# Provision a Grove Gateway Server: the pathway binary, which owns the whole data path — TLS,
+# routing, auth, metering — on its Network's Gateway Store. Idempotent.
 #
 # There is no OpenResty here any more. The play stops and disables it rather than ignoring it, so a
 # box provisioned before the cutover frees :80 and :443 for the process that now wants them.
 #
 # extra-vars: admin_token, agent_version, gateway_id, gateway_region, gateway_geography, gateway_host, proxy_hostname,
-# redis_addr, redis_password, redis_shared, the fleet TLS pair, the scrape hash, and the tunables in
+# redis_addr, redis_password, the fleet TLS pair, the scrape hash, and the tunables in
 # config.json.j2.
 - hosts: all
   become: true
@@ -45,9 +44,6 @@
     - node_exporter
     - grove_https
     - fleet_tls
-    # On a shared store the Redis is the store's, installed by its own Setup.
-    - role: redis
-      when: not redis_shared
     - install_gateway_agent
 
   tasks:
@@ -149,9 +145,7 @@
           GROVE_GATEWAY_REGION={{ gateway_region | default('') }}
           GROVE_GATEWAY_GEOGRAPHY={{ gateway_geography | default('') }}
           GROVE_REDIS_ADDR={{ redis_addr }}
-          {% if redis_password %}
           GROVE_REDIS_PASSWORD={{ redis_password }}
-          {% endif %}
           GROVE_LISTEN_HTTP=:80
           GROVE_LISTEN_HTTPS=:443
           GROVE_PUBLIC_HOST={{ gateway_host | default('') }}
@@ -197,14 +191,13 @@
     - name: restart onto the new agent.env
       ansible.builtin.meta: flush_handlers
 
-    # AOF stays on disk, so a box moved back to loopback starts from what it last held.
-    - name: stop the loopback redis a shared store replaced
+    # A box from before stores ran its own Redis; its AOF stays on disk.
+    - name: stop the redis a gateway once ran itself
       ansible.builtin.systemd:
         name: redis-server
         state: stopped
         enabled: false
       failed_when: false
-      when: redis_shared
 
   handlers:
     - name: reload systemd

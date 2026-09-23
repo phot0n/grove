@@ -35,6 +35,8 @@ SETTINGS = SimpleNamespace(
 	gateway_variables={"synthetic_session_ttl": TTL},
 	scrape_auth_variables={"scrape_password_hash": "$2b$12$hash"},
 )
+# The Gateway Store a fake gateway runs on.
+STORE = SimpleNamespace(redis_variables={"redis_addr": "10.0.61.9:6379", "redis_password": "pw"})
 # What a box's Geography hands it.
 TLS = {
 	"fleet_zone": "grove.test",
@@ -67,6 +69,8 @@ def extravars_for(doctype_class, module, doc, **kwargs):
 		patch.object(
 			frappe, "db", SimpleNamespace(get_single_value=lambda *args: PINNED, get_value=geography_endpoint)
 		),
+		# A gateway's Redis is its store's, read off the Gateway Store doc.
+		patch.object(frappe, "get_doc", return_value=STORE),
 	):
 		doctype_class._deploy_agent(doc, **kwargs)
 	return sent
@@ -98,20 +102,16 @@ def fake_gateway(**fields):
 		geography="eu",
 		tls_variables=dict(TLS),
 		hostname="gw-1.grove.test",
-		gateway_store=None,
-		network_store=None,
+		gateway_store="store1",
+		network_store="store1",
 		is_in_maintenance=0,
 		get_password=lambda field, **kwargs: f"secret-{field}",
 	)
 	return FakeGateway(**{**defaults, **fields})
 
 
-def gateway_extravars(store=None, **fields):
-	return extravars_for(
-		GatewayServer,
-		"grove.grove.doctype.gateway_server.gateway_server",
-		fake_gateway(gateway_store=store, **fields),
-	)
+def gateway_extravars(**fields):
+	return extravars_for(GatewayServer, "grove.grove.doctype.gateway_server.gateway_server", fake_gateway(**fields))
 
 
 def ingress_extravars(**fields):
@@ -261,19 +261,23 @@ class TestDeployAgentShipsBothHalves(unittest.TestCase):
 
 
 class TestAGatewayIsToldWhichRedis(unittest.TestCase):
-	"""agent.env names the Redis whole, so a deploy that forgot the store would move a gateway back
-	onto an empty loopback Redis and 401 every caller until the next push."""
+	"""agent.env names the Redis whole, so a deploy that forgot the store would restart a gateway
+	onto nothing. It is refused instead."""
 
-	def test_a_gateway_with_no_store_keeps_its_own(self):
-		sent = gateway_extravars()
-		self.assertEqual("127.0.0.1:6379", sent["redis_addr"])
-		self.assertEqual("", sent["redis_password"])
-		self.assertFalse(sent["redis_shared"])
+	def test_a_deploy_onto_no_store_is_refused(self):
+		with patch.object(frappe, "throw", side_effect=frappe.ValidationError), self.assertRaises(frappe.ValidationError):
+			GatewayServer.get_agent_extravars(fake_gateway(gateway_store=None), store=None)
 
 	def test_a_deploy_never_moves_a_gateway_onto_its_networks_store(self):
 		# Moving a live gateway drains it first; a routine deploy must not do that by the way.
-		sent = gateway_extravars(store=None, network_store="store1-ap-south-1")
-		self.assertEqual("127.0.0.1:6379", sent["redis_addr"])
+		doc = fake_gateway(
+			gateway_store="s-current", network_store="s-network",
+			record_agent_version=lambda rc: None, record_store=lambda rc, store: None,
+			run_playbook=lambda play, extravars: ("play-1", 0),
+		)
+		doc.get_agent_extravars = Mock(return_value={})
+		GatewayServer._deploy_agent(doc)
+		self.assertEqual("s-current", doc.get_agent_extravars.call_args.args[0])
 
 	def provisioned_onto(self, agent_version):
 		"""The store provision hands get_agent_extravars, for a gateway on s-current in a Network
@@ -289,19 +293,14 @@ class TestAGatewayIsToldWhichRedis(unittest.TestCase):
 			GatewayServer.provision(doc)
 		return doc.get_agent_extravars.call_args.args[0]
 
-	def test_a_new_gateway_is_set_up_on_its_networks_store(self):
-		self.assertEqual("s-network", self.provisioned_onto(agent_version=None))
-
-	def test_setting_up_an_installed_gateway_again_keeps_its_redis(self):
-		self.assertEqual("s-current", self.provisioned_onto(agent_version="v1"))
+	def test_setup_puts_a_gateway_on_its_networks_store(self):
+		for agent_version in (None, "v1"):
+			with self.subTest(agent_version):
+				self.assertEqual("s-network", self.provisioned_onto(agent_version))
 
 	def test_a_gateway_on_a_store_is_given_the_stores(self):
-		store = SimpleNamespace(
-			redis_variables={"redis_addr": "10.0.61.9:6379", "redis_password": "pw", "redis_shared": True}
-		)
-		with patch.object(frappe, "get_doc", return_value=store):
-			sent = gateway_extravars(store="store1-ap-south-1")
-		self.assertEqual(store.redis_variables, {key: sent[key] for key in store.redis_variables})
+		sent = gateway_extravars()
+		self.assertEqual(STORE.redis_variables, {key: sent[key] for key in STORE.redis_variables})
 
 	def recorded(self, store, rc=0, before=(None, 0), writers=()):
 		"""What record_store writes, given the gateway's store and flag before the play and the
@@ -327,9 +326,6 @@ class TestAGatewayIsToldWhichRedis(unittest.TestCase):
 	def test_a_writer_redeployed_onto_its_store_stays_one(self):
 		recorded = self.recorded("s1", before=("s1", 1), writers=["gw-0", "gw-1"])
 		self.assertEqual(recorded["is_store_writer"], 1)
-
-	def test_a_gateway_back_on_its_own_redis_is_no_writer(self):
-		self.assertEqual(self.recorded(None, before=("s1", 1)), {"gateway_store": None, "is_store_writer": 0})
 
 	def test_only_a_gateway_on_a_store_can_be_its_writer(self):
 		doc = SimpleNamespace(name="gw-1", is_store_writer=1, gateway_store=None, set_admin_url=lambda: None, set_admin_token=lambda: None)

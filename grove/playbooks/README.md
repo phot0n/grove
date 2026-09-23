@@ -74,7 +74,7 @@ not what buttons call — it has no Frappe tracking.)
 - **Reconcile the *running* state, not just the file.** A `blockinfile` that already matches reports
   unchanged and never notifies its handler again, so a setting can sit correct in the config and inert
   in the process for the life of the box. See "enforce persistence on the running redis" in
-  `roles/redis`, which a gateway runs on its own Redis and a Gateway Store on the shared one.
+  `roles/redis`, which a Gateway Store runs.
 - **Non-fatal cleanup is guarded, not assumed.** Stopping OpenResty on a box that never had it uses
   `failed_when: false`.
 - **The binary is downloaded, never compiled.** The agent lives in its own repo; `install_gateway_agent`

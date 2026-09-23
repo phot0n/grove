@@ -8,8 +8,6 @@ from grove import failure
 from grove.server import Server
 
 REDIS_PORT = 6379
-# What a gateway with no store in its Network runs on: its own Redis.
-LOOPBACK_REDIS = {"redis_addr": f"127.0.0.1:{REDIS_PORT}", "redis_password": "", "redis_shared": False}
 
 
 class GatewayStore(Server, Document):
@@ -59,7 +57,6 @@ class GatewayStore(Server, Document):
 
 	@property
 	def archive_blockers(self):
-		"""A gateway on this store authenticates nothing without it."""
 		gateways = frappe.get_all(
 			"Gateway Server",
 			filters={"gateway_store": self.name, "status": ("!=", "Terminated")},
@@ -83,7 +80,6 @@ class GatewayStore(Server, Document):
 		return {
 			"redis_addr": f"{self.listen_ip}:{REDIS_PORT}",
 			"redis_password": self.get_password("redis_password"),
-			"redis_shared": True,
 		}
 
 	@frappe.whitelist()
@@ -125,10 +121,3 @@ def store_writers(store):
 		order_by="name asc",
 		pluck="name",
 	)
-
-
-def gateway_redis_variables(store):
-	"""A gateway's Redis: the store's when it has one, else its own on loopback."""
-	if not store:
-		return dict(LOOPBACK_REDIS)
-	return frappe.get_doc("Gateway Store", store).redis_variables

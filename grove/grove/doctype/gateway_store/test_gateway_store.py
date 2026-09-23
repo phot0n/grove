@@ -10,10 +10,7 @@ from unittest.mock import patch
 import frappe
 
 from grove.grove.doctype.gateway_server.gateway_server import GatewayServer
-from grove.grove.doctype.gateway_store.gateway_store import (
-	GatewayStore,
-	gateway_redis_variables,
-)
+from grove.grove.doctype.gateway_store.gateway_store import GatewayStore
 
 
 class Refused(Exception):
@@ -68,17 +65,11 @@ class TestOneStorePerNetwork(unittest.TestCase):
 
 
 class TestWhatAGatewayIsGiven(unittest.TestCase):
-	def test_no_store_is_its_own_loopback_redis(self):
-		self.assertEqual(
-			gateway_redis_variables(None),
-			{"redis_addr": "127.0.0.1:6379", "redis_password": "", "redis_shared": False},
-		)
-
 	def test_a_store_is_dialled_at_its_private_address_with_its_password(self):
 		store = SimpleNamespace(listen_ip="10.0.61.9", get_password=lambda field: "pw")
 		self.assertEqual(
 			GatewayStore.redis_variables.fget(store),
-			{"redis_addr": "10.0.61.9:6379", "redis_password": "pw", "redis_shared": True},
+			{"redis_addr": "10.0.61.9:6379", "redis_password": "pw"},
 		)
 
 	def test_the_address_is_the_machines_read_live(self):
@@ -98,18 +89,21 @@ class TestWhatAGatewayIsGiven(unittest.TestCase):
 		with (
 			patch.object(frappe, "db", stub_db({"gw1": {"network": network}})),
 			patch.object(frappe, "get_all", side_effect=stub_get_all(stores)),
+			patch.object(frappe, "throw", side_effect=Refused),
 		):
-			return GatewayServer.network_store.fget(SimpleNamespace(machine="gw1"))
+			return GatewayServer.network_store.fget(SimpleNamespace(name="gw1", machine="gw1"))
 
 	def test_a_gateway_takes_its_networks_active_store(self):
 		self.assertEqual(self.network_store({"Mumbai": [("store1", "Active")]}), "store1")
 
-	def test_a_store_not_yet_active_leaves_it_on_loopback(self):
-		# Setup has not finished: there is no Redis there to move onto.
-		self.assertIsNone(self.network_store({"Mumbai": [("store1", "Installing")]}))
+	def test_a_store_not_yet_active_refuses_the_gateway(self):
+		# Setup has not finished: there is no Redis there to run on.
+		with self.assertRaises(Refused):
+			self.network_store({"Mumbai": [("store1", "Installing")]})
 
-	def test_a_gateway_in_no_network_stays_on_loopback(self):
-		self.assertIsNone(self.network_store({"Mumbai": [("store1", "Active")]}, network=None))
+	def test_a_gateway_in_no_network_is_refused(self):
+		with self.assertRaises(Refused):
+			self.network_store({"Mumbai": [("store1", "Active")]}, network=None)
 
 
 if __name__ == "__main__":

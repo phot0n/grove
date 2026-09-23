@@ -12,11 +12,7 @@ from grove.fleet import (
 	gateway_agent_release,
 	gateway_agent_version,
 )
-from grove.grove.doctype.gateway_store.gateway_store import (
-	gateway_redis_variables,
-	store_writers,
-	stores_in,
-)
+from grove.grove.doctype.gateway_store.gateway_store import store_writers, stores_in
 from grove.grove.doctype.network.network import sync_fleet_ingress
 
 
@@ -55,7 +51,7 @@ class GatewayServer(PathwayHost, Document):
 		self.set_admin_url()
 		self.set_admin_token()
 		if self.is_store_writer and not self.gateway_store:
-			frappe.throw(f"{self.name} runs on its own Redis — only a gateway on a Gateway Store can be its writer.")
+			frappe.throw(f"{self.name} is not on a Gateway Store yet — only a gateway deployed onto one can be its writer.")
 
 	def set_admin_token(self):
 		"""The credential the control plane authenticates every push with. Generated rather than
@@ -103,21 +99,24 @@ class GatewayServer(PathwayHost, Document):
 
 	@property
 	def network_store(self):
-		"""The Active store of this box's Network, the Network read off the Machine live. None
-		means the box's own loopback Redis."""
+		"""The Active store of this box's Network, the Network read off the Machine live."""
 		network = frappe.db.get_value("Machine", self.machine, "network")
-		stores = stores_in(network, status="Active") if network else []
-		return stores[0] if stores else None
+		if not network:
+			frappe.throw(f"Machine {self.machine} is in no Network — a gateway runs on its Network's store.")
+		stores = stores_in(network, status="Active")
+		if not stores:
+			frappe.throw(f"Network {network} has no Active Gateway Store — set one up before {self.name}.")
+		return stores[0]
 
 	def record_store(self, rc, store):
-		"""Which Redis the agent now runs on, on the runs that wrote agent.env. A writer stays one
+		"""Which store the agent now runs on, on the runs that wrote agent.env. A writer stays one
 		while its store is unchanged, and a store with no Active writer takes this gateway. db.set_value,
 		like record_agent_version, so it fires no on_update."""
 		if rc != 0:
 			return
 		before = frappe.db.get_value(self.doctype, self.name, ["gateway_store", "is_store_writer"], as_dict=True)
 		stays_writer = before.gateway_store == store and before.is_store_writer
-		is_writer = bool(store) and bool(stays_writer or not store_writers(store))
+		is_writer = bool(stays_writer or not store_writers(store))
 		frappe.db.set_value(
 			self.doctype, self.name, {"gateway_store": store, "is_store_writer": int(is_writer)}
 		)
@@ -251,6 +250,8 @@ class GatewayServer(PathwayHost, Document):
 		"""Everything agent.env and config.json render, onto `store`'s Redis. Resolved inside the job,
 		so the secrets never sit in a job payload. The fleet key stays out: agent.env names only the
 		certificate's path, and deploy_tls owns writing the material."""
+		if not store:
+			frappe.throw(f"{self.name} is on no Gateway Store — Setup it first.")
 		settings = frappe.get_single("Grove Settings")
 		tls_variables = self.tls_variables
 		tls_variables.pop("fleet_tls_key", None)
@@ -266,7 +267,7 @@ class GatewayServer(PathwayHost, Document):
 			"gateway_geography": self.geography or "",
 			"gateway_host": frappe.db.get_value("Geography", self.geography, "endpoint") if self.geography else "",
 			"proxy_hostname": self.hostname,
-			**gateway_redis_variables(store),
+			**frappe.get_doc("Gateway Store", store).redis_variables,
 			**tls_variables,
 			**settings.scrape_auth_variables,
 			**self.config_variables,
@@ -292,8 +293,7 @@ class GatewayServer(PathwayHost, Document):
 		frappe.db.set_value("Gateway Server", self.name, "status", "Installing")
 		frappe.db.commit()
 
-		# A new box starts on its Network's store; one already installed stays where it is.
-		store = self.gateway_store if self.agent_version else self.network_store
+		store = self.network_store
 		play_name, rc = self.run_playbook(
 			"gateway.yml",
 			# The fleet key too: Setup is what writes the certificate. Blank zone renders a box that
