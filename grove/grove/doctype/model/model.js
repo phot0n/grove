@@ -10,6 +10,7 @@ frappe.ui.form.on('Model', {
 	},
 
 	refresh(frm) {
+		if (!frm.is_new()) frm.trigger('pricing_headline');
 		// A vendor serves this one: there is no repo to read and no box holding its weights.
 		if (frm.is_new() || !frm.doc.provider_is_self_hosted) return;
 
@@ -19,6 +20,18 @@ frappe.ui.form.on('Model', {
 
 		frm.add_custom_button(__('Mirror Weights To S3'), () => {
 			frm.call('mirror_weights');
+		});
+	},
+
+	pricing_headline(frm) {
+		// Unpriced usage bills 0 and is not logged: this banner is the signal.
+		frappe.db.get_value('Model Pricing', { model: frm.doc.name, status: 'Enabled' }, 'name').then((r) => {
+			if (r.message && r.message.name) return;
+			const href = `/app/model-pricing/new?model=${encodeURIComponent(frm.doc.name)}`;
+			frm.dashboard.set_headline(
+				__('No Model Pricing enabled — usage of this model bills 0. {0}', [`<a href="${href}">${__('Add one')}</a>`]),
+				'orange'
+			);
 		});
 	},
 });

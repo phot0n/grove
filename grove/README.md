@@ -150,7 +150,8 @@ copy. One rate table, joined at evaluation and never snapshotted onto usage:
 - **COST** — `Model Provider.rate_card` (`Model Price Row`): dated rows per vendor model id.
   Reference data only; nothing bills from it.
 
-A counter with no sell row bills 0, and nothing is logged. Every counter a model emits needs a row (vLLM emits `input_tokens`,
+A counter with no sell row bills 0, and nothing is logged: the Model form shows a banner while the
+model has no Enabled pricing. Every counter a model emits needs a row (vLLM emits `input_tokens`,
 `cached_tokens` with `--enable-prompt-tokens-details`, `completion_tokens`; ASR emits
 `audio_seconds`).
 
