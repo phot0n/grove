@@ -49,4 +49,5 @@ require_type_annotated_api_methods = True
 default_log_clearing_doctypes = {
 	"Pathway Sync": 60,
 	"Pod Activity": 90,
+	"Lost Usage": 90,
 }

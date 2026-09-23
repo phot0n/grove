@@ -178,7 +178,8 @@ cost card is not built.
 Usage Record, Lost Usage, Gateway Spend, Credit Discrepancy, Model Pricing, Model or Model Provider
 (`tests/test_delete_permissions.py` pins the list). A key is revoked, a pricing is superseded, a
 credit is corrected by another entry. DocPerm does not bind Administrator or `ignore_permissions`;
-Grove Credit's `on_trash` refuses those too.
+Grove Credit's `on_trash` refuses those too. Lost Usage is the one exception: a replayed row is
+history, and Log Settings clears it after 90 days.
 
 **The balance.** Every `Grove User` is prepaid unless marked **Free**. Top-ups are `Grove Credit`
 entries — an append-only ledger, one doc per top-up or negative correction (with a note), never
@@ -264,7 +265,8 @@ automatically. The first gateway set up on or moved onto a store is marked for y
   Grove-side failure keeps the payload as a **Lost Usage** row (one key, or a whole box) with the
   traceback. The hourly `lost_usage.replay_pending` lands every pending row on the day it was
   drained and marks it Replayed; a row that fails again keeps its attempt count and last error,
-  and the form has a Replay Now button. Nothing there is deleted. The one unrecoverable case is a
+  and the form has a Replay Now button. A pending row is never deleted; Log Settings clears
+  replayed ones after 90 days (`LostUsage.clear_old_logs`). The one unrecoverable case is a
   response lost in flight after the box's delete.
 - **A Single doctype never applies its JSON default** if it predates the field. Blank is a state a
   real site lands in, so a new setting either has a safe blank meaning or throws (see

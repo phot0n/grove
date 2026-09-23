@@ -1,10 +1,15 @@
 import frappe
 from frappe.model.document import Document
+from frappe.utils import add_days, cint, now_datetime
+
+# Log Settings owns the number once an operator edits it there; this seeds it.
+RETENTION_DAYS = 90
 
 
 class LostUsage(Document):
 	"""Usage a gateway already deleted that Grove could not record: one payload per row, kept
-	until the hourly replay lands it through the normal pull path. Never deleted."""
+	until the hourly replay lands it through the normal pull path. A pending row is never deleted;
+	a replayed one is history Log Settings clears after `RETENTION_DAYS`."""
 
 	# begin: auto-generated types
 	# This code is auto-generated. Do not modify anything in this block.
@@ -45,6 +50,13 @@ class LostUsage(Document):
 		self.db_set({"replayed": 1, "replayed_on": frappe.utils.now(), "attempts": attempts}, update_modified=False)
 		frappe.db.commit()
 		return True
+
+	@staticmethod
+	def clear_old_logs(days=RETENTION_DAYS):
+		"""Log Settings: replayed rows landed more than `days` ago. Pending rows hold usage not yet
+		recorded and stay whatever their age."""
+		cutoff = add_days(now_datetime(), -cint(days))
+		frappe.db.delete("Lost Usage", {"replayed": 1, "replayed_on": ("<", cutoff)})
 
 
 def record_lost(gateway_server, redis, day, usages, api_key=None, grove_user=None):

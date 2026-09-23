@@ -10,6 +10,7 @@ import unittest.mock
 from datetime import timedelta
 
 import frappe
+from frappe.core.doctype.log_settings.log_settings import _supports_log_clearing
 from frappe.tests import IntegrationTestCase
 
 from grove.grove.doctype.lost_usage import lost_usage
@@ -319,6 +320,24 @@ class TestALostDrainIsReplayedOnce(IntegrationTestCase):
 		lost.reload()
 		self.assertEqual((lost.replayed, lost.attempts), (0, 1))
 		self.assertIn("still down", lost.last_error)
+
+	def test_log_settings_clears_old_replayed_rows_and_keeps_pending_ones(self):
+		landed, pending = self.key(), self.key()
+		long_ago = frappe.utils.add_days(frappe.utils.now_datetime(), -100)
+		with (
+			unittest.mock.patch("grove.pathway.usage.ensure_rows", side_effect=RuntimeError("down")),
+			unittest.mock.patch.object(frappe.db, "commit"),
+		):
+			for key in (landed, pending):
+				usage.record_usages(self.gateway, {key: {"request_count": 1}})
+		landed_row, pending_row = self.lost_for(landed), self.lost_for(pending)
+		landed_row.db_set({"replayed": 1, "replayed_on": long_ago})
+		pending_row.db_set({"creation": long_ago})
+
+		self.assertTrue(_supports_log_clearing("Lost Usage"))
+		lost_usage.LostUsage.clear_old_logs(days=90)
+		self.assertFalse(frappe.db.exists("Lost Usage", landed_row.name))
+		self.assertTrue(frappe.db.exists("Lost Usage", pending_row.name))
 
 
 class TestAStoreIsPulledThroughOneWriter(unittest.TestCase):
