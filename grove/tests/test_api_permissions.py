@@ -67,3 +67,20 @@ class TestTheControlRoleReachesOnlyWhatItServes(IntegrationTestCase):
 		grove_user = api._set_policy("probe-credit@example.com", "Probe Credit", None)
 		frappe.get_doc({"doctype": "Grove Credit", "grove_user": grove_user, "amount": 5}).insert()
 		self.assertEqual(frappe.db.get_value("Grove User", grove_user, "balance"), 5)
+
+	def test_add_credit_posts_to_the_ledger_and_returns_the_balance(self):
+		email = "probe-topup@example.com"
+		grove_user = api._set_policy(email, "Probe Topup", None)
+		self.assertTrue(frappe.db.get_value("Grove User", grove_user, "rate_limited"))
+		self.assertEqual(api.add_credit(email, 7)["balance"], 7)
+		self.assertFalse(frappe.db.get_value("Grove User", grove_user, "rate_limited"))
+		self.assertEqual(
+			api.balance(email), {"balance": 7.0, "allocated": 7.0, "spent": 0.0, "free": False, "rate_limited": False}
+		)
+		with self.assertRaises(frappe.ValidationError):
+			api.add_credit(email, 0)
+		with self.assertRaises(frappe.ValidationError):
+			api.add_credit("nobody-topup@example.com", 1)
+		with self.assertRaises(frappe.ValidationError):
+			api.balance("nobody-topup@example.com")
+

@@ -176,7 +176,9 @@ cost card is not built.
 
 **The balance.** Every `Grove User` is prepaid unless marked **Free**. Top-ups are `Grove Credit`
 entries — an append-only ledger, one doc per top-up or negative correction (with a note), never
-edited or deleted; a control client posts one through `/api/resource/Grove Credit`. On the user,
+edited or deleted; a control client calls `api.add_credit(email, amount, note)` or posts one
+through `/api/resource/Grove Credit`, and reads `api.balance(email)` — balance, allocated, spent,
+free, rate_limited — to show the person what they have left. On the user,
 `spent` is the USD of usage priced so far and `balance` = Σ ledger − `spent`; both are read-only
 and both are written by `pricing.settle`, the one writer, which also decides
 `rate_limited = not free and balance <= 0` in both directions. It runs after every pull, every

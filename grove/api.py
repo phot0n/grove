@@ -45,6 +45,39 @@ def provision_key(name: str, email: str, geography: str, allowed_models: list[st
 
 
 @frappe.whitelist()
+def add_credit(email: str, amount: float, note: str = None):
+	"""Append one ledger entry for the user behind `email` and settle them. 0 and an unexplained
+	negative are refused by the ledger itself. → their balance after the entry."""
+	frappe.only_for(ALLOWED_ROLES)
+	grove_user = for_email(email)
+	if not grove_user:
+		frappe.throw(f"No Grove User for {email!r}.")
+	frappe.get_doc({"doctype": "Grove Credit", "grove_user": grove_user, "amount": amount, "note": note}).insert()
+	return {"balance": frappe.db.get_value("Grove User", grove_user, "balance")}
+
+
+@frappe.whitelist()
+def balance(email: str):
+	"""What the user behind `email` has left: Σ ledger − usage priced so far, as of the last pull
+	(at most a minute of undrained usage behind the gateways). A free user is priced, never gated."""
+	frappe.only_for(ALLOWED_ROLES)
+	from grove.pricing import credit_summary
+
+	grove_user = for_email(email)
+	if not grove_user:
+		frappe.throw(f"No Grove User for {email!r}.")
+	flags = frappe.db.get_value("Grove User", grove_user, ["free", "rate_limited"], as_dict=True)
+	summary = credit_summary(grove_user)
+	return {
+		"balance": float(summary["remaining"]),
+		"allocated": float(summary["allocated"]),
+		"spent": float(summary["spent"]),
+		"free": bool(flags.free),
+		"rate_limited": bool(flags.rate_limited),
+	}
+
+
+@frappe.whitelist()
 def revoke_key(api_key: str):
 	"""Revoke by the full key, not the doc name. The row stays as the record it existed; a revoked
 	key is no longer projected, so the next sync prunes it from every proxy."""
