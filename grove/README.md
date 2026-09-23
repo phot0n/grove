@@ -43,6 +43,7 @@ topology stays inside its VPC and several deployments behind one ingress fold in
 | `pathway/projection.py` | `Projection`: every push to every box. A push that left no Pathway Sync row did not happen. |
 | `pathway/usage.py` | `Usage`: draining `usage:<prefix>` into UTC-day Usage Records, then `reconcile.py` — each touched user priced, `spent` moved, the box's money figures audited, the verdict settled. |
 | `pricing.py` | Prices per counter (`PriceBook`: the model's sell rate, else 0), the prepaid balance, `settle` (the one writer of `rate_limited`), the nightly rebuild. |
+| `grove/report/revenue/` | Revenue report: the day rows priced at today's tables, cut by model, API key, user or day. |
 | `pathway/snapshot.py` | The desired state a box is pushed, and the hash gate that decides which sections travel. |
 | `pathway/routes.py` | `deploy:<model>` tables — a gateway's for its Geography, an ingress's for the boxes it owns. |
 | `access.py` | Which models a user may call, as the CSV each grant record carries. |
@@ -167,6 +168,11 @@ model has no Enabled pricing. Every counter a model emits needs a row (vLLM emit
 
 The divisors live in `pricing.COUNTERS` and pathway's `internal/domain/price.go`; the two tables
 must agree. Adding a quantity is one parser on the gateway plus one line in each.
+
+**Revenue.** The `Revenue` report (Desk) prices the day rows at today's tables — so a reprice
+changes history there exactly as it does in `spent` — grouped by model, API key, user or day over
+a date range, with a total row; export from the report toolbar. Revenue only: margin against the
+cost card is not built.
 
 **The balance.** Every `Grove User` is prepaid unless marked **Free**. Top-ups are `Grove Credit`
 entries — an append-only ledger, one doc per top-up or negative correction (with a note), never
