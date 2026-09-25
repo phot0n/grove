@@ -36,6 +36,8 @@ scheduler_events = {
 		"grove.cloud_provider.schedule.run_due_pods",
 		# Usage a gateway deleted that a pull could not record, landed on the day it was drained.
 		"grove.grove.doctype.lost_usage.lost_usage.replay_pending",
+		# One RDB per Active store into the weights bucket; off until the Mirror keys are set.
+		"grove.grove.doctype.gateway_store.gateway_store.backup_all",
 	],
 	"daily_long": [
 		# Every prepaid balance re-priced from the day rows; drift is logged, the join wins.

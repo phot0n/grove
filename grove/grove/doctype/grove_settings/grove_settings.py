@@ -153,7 +153,8 @@ class GroveSettings(Document):
 
 	@property
 	def weights_s3_write_environment(self):
-		"""Env for the mirror job only — the pair that may write under models/*."""
+		"""Env for the mirror job and the store backup — the pair that may write under models/* and
+		gateway-store/*."""
 		if not (self.weights_bucket and self.weights_s3_write_access_key_id):
 			return {}
 		return {

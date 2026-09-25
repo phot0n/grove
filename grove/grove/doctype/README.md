@@ -13,7 +13,7 @@ one own**, because Grove's rule is that state has exactly one owner and everythi
 | `Machine GPU` | The Machine form's grid of its cards (child) — a read-only mirror of `GPU`, rewritten by the same scan that reconciles them, so the two cannot disagree. |
 | `Inference Server` | A Machine that serves engines. |
 | `Gateway Server` | A Machine that serves customer traffic. Its name is `GROVE_GATEWAY_ID`, its DNS label, and the first part of every request id it stamps. `gateway_store` is the store Setup put its agent on and every deploy keeps — blank only until its first Setup. `is_store_writer` marks the gateways a store is pushed and drained through, tried in name order; the rest only read it. `is_in_maintenance` is the one owner of maintenance: Start/End Maintenance writes it to `config.json` (`config.yml`, SIGUSR1) and reads the box back, and every play that writes that file carries it, so a deploy never flips it. A deploy keeps the gateway on the store it is on. |
-| `Gateway Store` | The one Redis a Network's gateways share (one per Network, 6379 open only to those gateways' private IPs, behind a minted password). One in-flight counter per replica is what caps a standalone box across gateways; the store holds their keys too, so a dead one takes them down. |
+| `Gateway Store` | The one Redis a Network's gateways share (one per Network, 6379 open only to those gateways' private IPs, behind a minted password). One in-flight counter per replica is what caps a standalone box across gateways; the store holds their keys too, so a dead one takes them down. Backed up hourly (`backup.yml`) into the weights bucket under `gateway-store/<store>/`. |
 | `Ingress Server` | One VPC's front door: gateways dial it by name over a verified certificate; it dials replicas privately. Holds no tenant state. `is_in_maintenance` works as on a Gateway Server (both are `fleet.PathwayHost`): its `config.yml` writes the key, and the gateways' requests through it get 503. |
 | `Network` | A VPC, subnet, IGW, route table and the two security groups — creates them, not just references. |
 | `Region` | A provider's region code and its label, and which gateways are in it. Belongs to one `Geography`, fixed once a Network or Machine names it. |
@@ -54,7 +54,7 @@ one own**, because Grove's rule is that state has exactly one owner and everythi
 | `Model Pricing` | A model's SELL price: one Enabled doc per model, one rate per counter, effective from the UTC day it was enabled. Enabling a new one disables the last; never edited, disabled by hand or re-enabled. A Scheduled one (one per model, typed future date, editable until then) is fired by `enable_due` every minute. A counter with no row bills 0; the Model form shows a banner while no pricing is enabled. |
 | `Model Pricing Rate` | One counter's sell rate (child). |
 | `Gateway Spend` | What one Redis last reported about one user: the highest lifetime counter and the balance it believed in. Folded into that Redis's pushed ceiling; never billed from. |
-| `Grove Settings` | Single. The fleet-wide knobs: Pod Geography (where every pod serves), DNS provider (owns every geography's zone), ACME email, pathway release and repo, monitoring. |
+| `Grove Settings` | Single. The fleet-wide knobs: Pod Geography (where every pod serves), DNS provider (owns every geography's zone), ACME email, pathway release and repo, monitoring, the weights bucket and its two key pairs (engine read; Mirror write, which the store backup also uses). |
 
 ## Logs — what happened, and to which box
 

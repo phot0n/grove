@@ -139,7 +139,7 @@
    "label": "Weights Bucket"
   },
   {
-   "description": "s3://bucket, no trailing slash. Mirrored weights live under models/, the compile-cache pre-warm under compile-cache/. Blank turns both off.",
+   "description": "s3://bucket, no trailing slash. Mirrored weights live under models/, the compile-cache pre-warm under compile-cache/, hourly Gateway Store RDB backups under gateway-store/. Blank turns all three off.",
    "fieldname": "weights_bucket",
    "fieldtype": "Data",
    "label": "Weights Bucket"
@@ -165,7 +165,7 @@
    "label": "Engine Secret Access Key"
   },
   {
-   "description": "Control-plane-only credentials: PutObject on models/* (Mirror Weights To S3) + List/Get/DeleteObject on compile-cache/* (the Compile Cache registry's sync and delete). Never handed to a box.",
+   "description": "Control-plane credentials: PutObject on models/* (Mirror Weights To S3) and gateway-store/* (the hourly store backup) + List/Get/DeleteObject on compile-cache/* (the Compile Cache registry's sync and delete). Reach a box only as a play's environment, never its disk.",
    "fieldname": "weights_s3_write_access_key_id",
    "fieldtype": "Data",
    "label": "Mirror Access Key ID"

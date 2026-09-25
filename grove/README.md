@@ -230,6 +230,7 @@ only.
 | `*/2` | `cloud_provider.reconcile.sync_all` | the provider owns whether a pod is up; this closes the drift |
 | hourly | `tls.renew_fleet_certificate`, `cloud_provider.schedule.run_due_pods` | |
 | hourly | `lost_usage.replay_pending` | every pending Lost Usage row landed through the normal pull path on the day it was drained; one that fails again stays pending with its error |
+| hourly | `gateway_store.backup_all` | one `redis-cli --rdb` snapshot per Active store into the weights bucket under `gateway-store/<store>/<utc stamp>.rdb`; off until the bucket and Mirror keys are set; prune with a bucket lifecycle rule |
 | daily | `pricing.verify_balances` | every prepaid `spent` rebuilt from the day rows; drift beyond 1 µUSD a request is a Ledger Drift row, the join wins either way |
 
 Nothing else pushes. A doctype hook, a provision and a pod lifecycle all just write state; the

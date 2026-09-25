@@ -1,6 +1,8 @@
 # Copyright (c) 2026, Frappe and contributors
 # For license information, please see license.txt
 
+from datetime import datetime, timezone
+
 import frappe
 from frappe.model.document import Document
 
@@ -102,6 +104,23 @@ class GatewayStore(Server, Document):
 		frappe.db.set_value(self.doctype, self.name, "status", "Active" if rc == 0 else "Broken")
 		return play_name, rc
 
+	@failure.reports_failure()
+	def backup(self):
+		"""Worker: a point-in-time RDB off the live Redis, under gateway-store/<name>/ in the weights
+		bucket. Raises on a failed play so the hour's miss fails the job, not just the Play."""
+		settings = frappe.get_single("Grove Settings")
+		play_name, rc = self.run_playbook(
+			"backup.yml",
+			extravars={
+				"redis_password": self.get_password("redis_password"),
+				"backup_uri": backup_uri(settings.weights_bucket, self.name),
+				"backup_env": settings.weights_s3_write_environment,
+			},
+		)
+		if rc != 0:
+			frappe.throw(f"Backup play {play_name} exited {rc}.")
+		return play_name, rc
+
 
 def stores_in(network, **filters):
 	"""The stores whose Machine is in `network`, membership read off the Machine live."""
@@ -121,3 +140,17 @@ def store_writers(store):
 		order_by="name asc",
 		pluck="name",
 	)
+
+
+def backup_uri(bucket, store, at=None):
+	"""Per store, UTC-stamped, so a listing sorts by time."""
+	stamp = (at or datetime.now(timezone.utc)).strftime("%Y%m%dT%H%M%SZ")
+	return f"{bucket}/gateway-store/{store}/{stamp}.rdb"
+
+
+def backup_all():
+	"""Hourly: every Active store, one job each. Off until the bucket and Mirror keys are set."""
+	if not frappe.get_single("Grove Settings").weights_s3_write_environment:
+		return
+	for name in frappe.get_all("Gateway Store", filters={"status": "Active"}, pluck="name"):
+		frappe.enqueue_doc("Gateway Store", name, "backup", queue="long", timeout=600)

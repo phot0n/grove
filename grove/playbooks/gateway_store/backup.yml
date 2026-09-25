@@ -1,0 +1,49 @@
+---
+# One point-in-time RDB off the live store, into the weights bucket. `redis-cli --rdb` asks the
+# server for a full sync as a replica would, so it is a snapshot of now whatever `save` is set to.
+# Hourly from backup_all; keep or prune with a lifecycle rule on the bucket.
+#
+# extra-vars: redis_password, backup_uri (s3://.../<stamp>.rdb), backup_env (AWS_* for the upload).
+# Both secrets ride as `environment`, which is not a module arg, so neither lands in the Ansible
+# Task records.
+- hosts: all
+  become: true
+  gather_facts: false
+
+  pre_tasks:
+    - name: refuse to run without a target and credentials
+      ansible.builtin.assert:
+        that:
+          - redis_password | default('') | trim | length > 0
+          - backup_uri | default('') | trim | length > 0
+          - backup_env.AWS_ACCESS_KEY_ID | default('') | length > 0
+        fail_msg: >-
+          redis_password, backup_uri and backup_env are required — run from Gateway Store's
+          backup_all, or pass the same extra-vars it does.
+
+  tasks:
+    - name: install awscli
+      ansible.builtin.apt:
+        name: awscli
+        state: present
+        update_cache: true
+        cache_valid_time: 3600
+
+    - name: a private file for the dump
+      ansible.builtin.tempfile:
+        suffix: .rdb
+      register: backup_file
+
+    - name: dump the live dataset
+      ansible.builtin.command: redis-cli --rdb {{ backup_file.path }}
+      environment:
+        REDISCLI_AUTH: "{{ redis_password }}"
+
+    - name: upload the dump
+      ansible.builtin.command: aws s3 cp {{ backup_file.path }} {{ backup_uri }} --no-progress
+      environment: "{{ backup_env }}"
+
+    - name: remove the local copy
+      ansible.builtin.file:
+        path: "{{ backup_file.path }}"
+        state: absent
