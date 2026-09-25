@@ -1,4 +1,4 @@
-# Copyright (c) 2026, Grove and contributors
+# Copyright (c) 2026, Frappe and contributors
 # For license information, please see license.txt
 
 import hashlib
@@ -74,7 +74,7 @@ class ModelReplica(Document):
 	# end: auto-generated types
 
 	# No on_update sync hook: any change here moves the routes snapshot hash and
-	# grove.pathway_sync.sync_projection pushes it on the next tick.
+	# grove.pathway.projection.sync_projection pushes it on the next tick.
 
 	@property
 	def deployment(self):

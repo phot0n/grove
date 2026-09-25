@@ -6,9 +6,9 @@
  "engine": "InnoDB",
  "field_order": [
   "machine_type",
+  "network",
   "region",
   "geography",
-  "network",
   "status",
   "column_break_cloud",
   "cloud_provider",
@@ -26,7 +26,6 @@
   "static_ip_allocation_id",
   "column_break_aws_spec",
   "machine_image",
-  "column_break_aws_store",
   "cpu_architecture",
   "is_bare_metal",
   "instance_store_disks",
@@ -37,7 +36,7 @@
  ],
  "fields": [
   {
-   "description": "What this box backs — the doctype of the same name, plus the word Server where it has one. Drives its Network security-group list on AWS; informational on bare-metal.",
+   "description": "What this box backs \u2014 the doctype of the same name, plus the word Server where it has one. Drives its Network security-group list on AWS; informational on bare-metal.",
    "fieldname": "machine_type",
    "fieldtype": "Select",
    "in_list_view": 1,
@@ -47,7 +46,7 @@
    "set_only_once": 1
   },
   {
-   "description": "Source of truth; Proxy/Inference Servers on this machine inherit it. Derived from Network when one is linked and has a Region set.",
+   "description": "Derived from Network",
    "fieldname": "region",
    "fieldtype": "Link",
    "in_list_view": 1,
@@ -56,7 +55,7 @@
    "read_only_depends_on": "eval:doc.network"
   },
   {
-   "description": "From the Region, set on save: a Machine derives its region from its Network during validate, after link fetching has run.",
+   "description": "Derived from Region",
    "fieldname": "geography",
    "fieldtype": "Link",
    "label": "Geography",
@@ -64,7 +63,6 @@
    "read_only": 1
   },
   {
-   "description": "AWS: drives this box's subnet, security groups and region. Bare-metal: optional — a bare-metal box's ports are open by default, so this can point at a placeholder Network with everything left blank, or stay unset.",
    "fieldname": "network",
    "fieldtype": "Link",
    "label": "Network",
@@ -99,7 +97,7 @@
    "fieldtype": "Column Break"
   },
   {
-   "description": "Bare-metal: type the box's address here. Cloud: read-only — the provider hands it out, and Provision/Sync/Start write it.",
+   "description": "Bare-metal: type the box's address here. Cloud: read-only \u2014 the provider hands it out, and Provision/Sync/Start write it.",
    "fieldname": "public_ip",
    "fieldtype": "Data",
    "in_list_view": 1,
@@ -127,7 +125,6 @@
    "set_only_once": 1
   },
   {
-   "description": "Key authorised on this box. Blank = the control plane's own local key (what Ansible connects with by default). Frozen once the box is launched — the keys go in at launch, so a later change here would only make this doc disagree with the box.",
    "fieldname": "ssh_key",
    "fieldtype": "Link",
    "label": "SSH Key",
@@ -154,14 +151,13 @@
    "label": "Instance Type"
   },
   {
-   "description": "The only disk attached. Holds the OS, the engine images AND the model weights, so size it for every model this box will serve — weights are hundreds of GB and the local NVMe is not used for them.",
+   "description": "The only disk attached. Holds the OS, the engine images AND the model weights, so size it for every model this box will serve \u2014 weights are hundreds of GB and the local NVMe is not used for them.",
    "fieldname": "root_volume_gb",
    "fieldtype": "Int",
    "label": "Root Volume (GB)"
   },
   {
    "default": "0",
-   "description": "Give this box an Elastic IP, so its address survives a Stop — AWS re-issues a different one on every Start otherwise, stranding every route and SSH config pointing at the old address. Billed while held; handed back on Terminate. Tick before Provision to launch with one; on a running box use the Attach/Release Static IP buttons, which own this box then.",
    "fieldname": "is_static_ip",
    "fieldtype": "Check",
    "label": "Static IP",
@@ -169,7 +165,7 @@
   },
   {
    "depends_on": "eval:doc.is_static_ip",
-   "description": "The Elastic IP this box holds. Released by the Release Static IP button, or by Terminate.",
+   "description": "The Static IP this box holds. Released by the Release Static IP button, or by Terminate.",
    "fieldname": "static_ip_allocation_id",
    "fieldtype": "Data",
    "label": "Static IP Allocation ID",
@@ -180,18 +176,14 @@
    "fieldtype": "Column Break"
   },
   {
-   "description": "AMI to launch from. Editable while this box is Pending — after that it is what the box was launched with, and Sync keeps it in step with the instance.",
+   "description": "AMI to launch from. Editable while this box is Pending \u2014 after that it is what the box was launched with, and Sync keeps it in step with the instance.",
    "fieldname": "machine_image",
    "fieldtype": "Data",
    "label": "Machine Image",
    "read_only_depends_on": "eval:doc.status != 'Pending'"
   },
   {
-   "fieldname": "column_break_aws_store",
-   "fieldtype": "Column Break"
-  },
-  {
-   "description": "What this box runs, read off its instance type. An Engine Image is matched against it — an arm64 box needs an arm64 image and an arm64 AMI. Blank on-prem.",
+   "description": "What this box runs, read off its instance type. An Engine Image is matched against it \u2014 an arm64 box needs an arm64 image and an arm64 AMI. Blank on-prem.",
    "fieldname": "cpu_architecture",
    "fieldtype": "Select",
    "label": "CPU Architecture",
@@ -200,14 +192,14 @@
   },
   {
    "default": "0",
-   "description": "Whether this instance type is a .metal SKU. Bare metal spends ten to twenty minutes in firmware POST on every boot and every reboot, so Grove waits longer for it — at launch, at start, and at the driver reboot during Setup.",
+   "description": "Whether this instance type is a .metal SKU. Bare metal spends ten to twenty minutes in firmware POST on every boot and every reboot, so Grove waits longer for it \u2014 at launch, at start, and at the driver reboot during Setup.",
    "fieldname": "is_bare_metal",
    "fieldtype": "Check",
    "label": "Bare Metal",
    "read_only": 1
   },
   {
-   "description": "Ephemeral local NVMe this instance type ships. Wiped on stop and terminate — survives a reboot only. Unmounted unless the Inference Server opts its HF cache onto it (Use Instance Store For HF Cache).",
+   "description": "Ephemeral local NVMe this instance type ships. Wiped on stop and terminate \u2014 survives a reboot only. Unmounted unless the Inference Server opts its HF cache onto it (Use Instance Store For HF Cache).",
    "fieldname": "instance_store_disks",
    "fieldtype": "Int",
    "label": "Instance Store Disks",
@@ -220,7 +212,7 @@
    "read_only": 1
   },
   {
-   "description": "The cards in this box. Read-only, and rewritten by Scan GPUs alongside the GPU records themselves — one writer, so this grid cannot drift from them. Open a row's GPU to see its history and what holds it.",
+   "description": "The cards in this box. Read-only, and rewritten by Scan GPUs alongside the GPU records themselves \u2014 one writer, so this grid cannot drift from them. Open a row's GPU to see its history and what holds it.",
    "fieldname": "section_gpus",
    "fieldtype": "Section Break",
    "label": "GPUs"
@@ -242,7 +234,7 @@
   }
  ],
  "links": [],
- "modified": "2026-09-17 16:41:00.000000",
+ "modified": "2026-09-22 15:19:34.273294",
  "modified_by": "Administrator",
  "module": "Grove",
  "name": "Machine",

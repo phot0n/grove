@@ -1,4 +1,4 @@
-# Copyright (c) 2026, Grove and contributors
+# Copyright (c) 2026, Frappe and contributors
 # See license.txt
 """Where an agent pushes. Its Region's own endpoint when that Region has one — sending a
 region's samples across the world to a single ingestion URL is what regional endpoints exist

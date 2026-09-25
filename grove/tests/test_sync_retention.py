@@ -1,4 +1,4 @@
-# Copyright (c) 2026, Grove and contributors
+# Copyright (c) 2026, Frappe and contributors
 # See license.txt
 """Clearing old sync runs. Hits the DB — the whole point is that the child rows go too.
 

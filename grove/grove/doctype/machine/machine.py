@@ -49,7 +49,7 @@ class Machine(GeneratedName, AnsibleHost, Document):
 		is_bare_metal: DF.Check
 		is_static_ip: DF.Check
 		machine_image: DF.Data | None
-		machine_type: DF.Literal["", "Gateway", "Ingress", "Inference", "Monitoring Agent", "Gateway Store"]
+		machine_type: DF.Literal["Gateway", "Ingress", "Inference", "Monitoring Agent", "Gateway Store"]
 		network: DF.Link | None
 		private_ip: DF.Data | None
 		public_ip: DF.Data | None

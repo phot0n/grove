@@ -11,7 +11,9 @@
   "api_version",
   "column_break_cred",
   "anthropic_base_url",
-  "api_key"
+  "api_key",
+  "section_rate_card",
+  "rate_card"
  ],
  "fields": [
   {
@@ -65,10 +67,23 @@
    "fieldname": "api_key",
    "fieldtype": "Password",
    "label": "API Key"
+  },
+  {
+   "depends_on": "eval:!doc.is_self_hosted",
+   "fieldname": "section_rate_card",
+   "fieldtype": "Section Break",
+   "label": "Cost Rate Card"
+  },
+  {
+   "description": "What this vendor charges us, per model id and counter, from a date. A Model with no sell price for a counter sells it at this rate; blank here bills 0 and logs it.",
+   "fieldname": "rate_card",
+   "fieldtype": "Table",
+   "label": "Rate Card",
+   "options": "Model Price Row"
   }
  ],
  "links": [],
- "modified": "2026-09-17 12:00:00.000000",
+ "modified": "2026-09-23 17:00:00.000000",
  "modified_by": "Administrator",
  "module": "Grove",
  "name": "Model Provider",
@@ -76,7 +91,6 @@
  "permissions": [
   {
    "create": 1,
-   "delete": 1,
    "email": 1,
    "print": 1,
    "read": 1,
@@ -89,5 +103,6 @@
  "row_format": "Dynamic",
  "sort_field": "modified",
  "sort_order": "DESC",
- "states": []
+ "states": [],
+ "track_changes": 1
 }

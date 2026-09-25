@@ -1,9 +1,10 @@
-# Copyright (c) 2026, Grove and contributors
+# Copyright (c) 2026, Frappe and contributors
 # For license information, please see license.txt
 """Small helpers shared across the app. Nothing here reaches into a doctype; keep it that way."""
 
 import os
 import re
+from datetime import datetime, timezone
 
 import frappe
 
@@ -68,20 +69,17 @@ def validate_id_safe_name(doctype, name):
 	)
 
 
-def is_dns_name(name):
-	"""True for a bare DNS name — dot-separated labels and nothing else. What can go in an
-	nginx server_name and a certificate subject, so a scheme, a port, a path or a trailing dot
-	all fail here rather than at `openresty -t` on a box that is already live."""
-	labels = (name or "").split(".")
-	return bool(name) and len(name) <= 253 and all(DNS_LABEL.fullmatch(label) for label in labels)
-
-
 def is_label_under(name, zone):
 	"""True when `name` is exactly one label below `zone`. A wildcard certificate matches one
 	label and no more: `*.grove.example.com` covers `api.grove.example.com`, but neither the
 	apex nor `api.eu.grove.example.com`."""
 	suffix = f".{zone}"
 	return name.endswith(suffix) and "." not in name[: -len(suffix)]
+
+
+def utc_today():
+	"""The billing day off OUR clock: usage days, price windows and top-ups all read it."""
+	return datetime.now(timezone.utc).date()
 
 
 def slugify(text):

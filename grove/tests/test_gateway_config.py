@@ -408,19 +408,19 @@ class TestTheProcessIsNotRoot(unittest.TestCase):
 				self.assertIn("unit_cutover.rc == 0", guard["ansible.builtin.assert"]["that"])
 
 
-class TestAGatewayOnAStoreRunsNoRedisOfItsOwn(unittest.TestCase):
-	"""A gateway on its Network's Gateway Store keeps everything there; a loopback Redis still
-	running beside it would hold stale keys nothing reads."""
+class TestAGatewayRunsNoRedisOfItsOwn(unittest.TestCase):
+	"""A gateway keeps everything on its Network's Gateway Store; a Redis still running beside it
+	would hold stale keys nothing reads."""
 
-	def test_the_redis_role_is_skipped_on_a_shared_store(self):
-		[role] = [r for r in play("gateway_server/gateway.yml")["roles"] if isinstance(r, dict) and r.get("role") == "redis"]
-		self.assertEqual("not redis_shared", role["when"])
+	def test_the_gateway_play_installs_no_redis(self):
+		roles = [r.get("role") if isinstance(r, dict) else r for r in play("gateway_server/gateway.yml")["roles"]]
+		self.assertNotIn("redis", roles)
 
-	def test_the_loopback_redis_stops_only_after_the_gateway_restarted_off_it(self):
+	def test_the_old_redis_stops_only_after_the_gateway_restarted_off_it(self):
 		names = [task.get("name") for task in tasks("gateway_server/gateway.yml")]
 		self.assertLess(
 			names.index("restart onto the new agent.env"),
-			names.index("stop the loopback redis a shared store replaced"),
+			names.index("stop the redis a gateway once ran itself"),
 		)
 
 
@@ -460,12 +460,3 @@ class TestMaintenanceIsATunable(unittest.TestCase):
 				self.assertIn("SIGUSR1", handler["ansible.builtin.command"])
 
 
-class TestALoopbackGatewaysEnvFileIsUnchanged(unittest.TestCase):
-	"""A changed agent.env restarts the gateway, so the store's password is written only for a store:
-	deploying the release to a loopback gateway stays a SIGHUP handover."""
-
-	def test_the_password_line_is_written_only_when_there_is_one(self):
-		for name in ("gateway_server/gateway.yml", "gateway_server/deploy_agent.yml"):
-			with self.subTest(name):
-				content = next(t for t in tasks(name) if t.get("name") == "agent.env")["ansible.builtin.copy"]["content"]
-				self.assertIn("{% if redis_password %}\nGROVE_REDIS_PASSWORD={{ redis_password }}\n{% endif %}", content)

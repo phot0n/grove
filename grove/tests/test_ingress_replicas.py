@@ -1,4 +1,4 @@
-# Copyright (c) 2026, Grove and contributors
+# Copyright (c) 2026, Frappe and contributors
 # See license.txt
 """The table one ingress is given: every Active replica it OWNS, dialled privately.
 
@@ -111,7 +111,7 @@ REPLICAS = [
 
 class TestReplicasForIngress(unittest.TestCase):
 	def routes(self, ingress="ING-1", replicas=REPLICAS, deployments=()):
-		from grove import pathway_sync
+		from grove.pathway import routes
 
 		query = FakeQuery(SERVERS, MACHINES, replicas, MODELS, deployments)
 		with (
@@ -121,7 +121,7 @@ class TestReplicasForIngress(unittest.TestCase):
 				side_effect=lambda *a, **k: frappe._dict(get_password=lambda *a, **k: "internal"),
 			),
 		):
-			return pathway_sync._replicas_for_ingress(ingress)
+			return routes.replicas_for_ingress(ingress)
 
 	def test_a_local_replica_is_dialled_privately(self):
 		[route] = self.routes()["qwen3-35b"]
@@ -190,10 +190,10 @@ class TestIngressSnapshot(unittest.TestCase):
 	groups section on that plane, so the control plane can never leak tenant state to it."""
 
 	def snapshot(self, table):
-		from grove import pathway_sync
+		from grove.pathway import routes, snapshot
 
-		with patch.object(pathway_sync, "_replicas_for_ingress", return_value=table):
-			return pathway_sync.ingress_snapshot("ING-1")
+		with patch.object(routes, "replicas_for_ingress", return_value=table):
+			return snapshot.ingress_snapshot("ING-1")
 
 	def test_it_is_the_routes_section_and_nothing_else(self):
 		self.assertEqual(list(self.snapshot({"m": []})), ["routes"])
@@ -235,11 +235,11 @@ class TestTheIngressGateResolvesThroughTheDeployment(unittest.TestCase):
 
 	def test_the_two_planes_agree_on_the_same_replica(self):
 		# The property that matters: whatever number the gateway advertises for a replica is the
-		# number the ingress will hold it to. Both read _capacity off a deployment-resolved row, so
+		# number the ingress will hold it to. Both read capacity off a deployment-resolved row, so
 		# this asserts they cannot drift apart.
-		from grove import pathway_sync
+		from grove.pathway import routes
 
 		row = {"model_deployment": "T1", "max_num_seqs": 0}
 		deployments = {"T1": {"engine_image": None, "max_num_seqs": 256}}
-		resolved = pathway_sync._resolve_deployment(dict(row), deployments)
-		self.assertEqual(pathway_sync._capacity(resolved, {}), self.capacity(0, 256))
+		resolved = routes.resolve_deployment(dict(row), deployments)
+		self.assertEqual(routes.capacity(resolved, {}), self.capacity(0, 256))

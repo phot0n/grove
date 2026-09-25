@@ -1,4 +1,4 @@
-# Copyright (c) 2026, Grove and contributors
+# Copyright (c) 2026, Frappe and contributors
 # For license information, please see license.txt
 """VllmEngine argument assembly. Pure — the Model row is passed in, so no site needed."""
 
@@ -378,7 +378,7 @@ class TestWarmupRequest(unittest.TestCase):
 		self.assertNotIn("max_tokens", request["body"])
 
 	def test_the_model_asked_for_is_the_one_the_gateway_routes_on(self):
-		# pathway_sync publishes `deploy:<Model docname>`, which is the --served-model-name. The
+		# the projection publishes `deploy:<Model docname>`, which is the --served-model-name. The
 		# hf_repo here would prove an engine serves under a name nothing routes to.
 		request = serve().warmup_request
 		self.assertEqual(request["body"]["model"], "qwen3-35b")

@@ -1,4 +1,4 @@
-# Copyright (c) 2026, Grove and contributors
+# Copyright (c) 2026, Frappe and contributors
 # See license.txt
 """How a doc reaches its playbooks. Pure — the runner is stubbed, so nothing is queued and no
 box is touched; what is asserted is the project folder, the Machine and the play's owner."""

@@ -1,4 +1,4 @@
-# Copyright (c) 2026, Grove and contributors
+# Copyright (c) 2026, Frappe and contributors
 # See license.txt
 """The one rule for which address reaches a box. Two callers depend on it agreeing with itself:
 the metrics agent scrapes an address, and the security group opens a hole for the address it

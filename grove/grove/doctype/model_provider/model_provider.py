@@ -1,10 +1,13 @@
-# Copyright (c) 2026, Grove and contributors
+# Copyright (c) 2026, Frappe and contributors
 # For license information, please see license.txt
 
 import re
 
 import frappe
 from frappe.model.document import Document
+
+from grove.pricing import validate_price_rows
+from grove.utils import utc_today
 
 # Prefixes every model id this provider serves, so it has to survive being typed into a JSON body
 # by a customer.
@@ -31,6 +34,7 @@ class ModelProvider(Document):
 
 	if TYPE_CHECKING:
 		from frappe.types import DF
+		from grove.grove.doctype.model_price_row.model_price_row import ModelPriceRow
 
 		anthropic_base_url: DF.Data | None
 		api_key: DF.Password | None
@@ -38,6 +42,7 @@ class ModelProvider(Document):
 		base_url: DF.Data | None
 		geography: DF.Link | None
 		is_self_hosted: DF.Check
+		rate_card: DF.Table[ModelPriceRow]
 	# end: auto-generated types
 
 	def validate(self):
@@ -54,6 +59,10 @@ class ModelProvider(Document):
 		if self.is_self_hosted:
 			self.validate_self_hosted()
 		# self.validate_endpoint()
+		# A blank date is today in UTC, not the site's "Today": the day rows are UTC.
+		for row in self.rate_card:
+			row.effective_from = row.effective_from or utc_today()
+		validate_price_rows(self.rate_card, key=lambda row: (row.provider_model_id, row.counter, row.effective_from))
 
 	def validate_self_hosted(self):
 		"""One provider is ours, and it dials nothing — a URL is what makes a vendor."""

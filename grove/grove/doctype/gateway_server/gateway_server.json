@@ -5,6 +5,7 @@
  "doctype": "DocType",
  "engine": "InnoDB",
  "field_order": [
+  "status",
   "machine",
   "region",
   "geography",
@@ -13,7 +14,6 @@
   "private_ip",
   "network",
   "is_static_ip",
-  "status",
   "column_break_admin",
   "monitoring_agent",
   "admin_url",
@@ -28,7 +28,6 @@
   {
    "fieldname": "machine",
    "fieldtype": "Link",
-   "in_list_view": 1,
    "label": "Machine",
    "options": "Machine",
    "reqd": 1,
@@ -125,7 +124,8 @@
    "description": "The pathway release this box last installed successfully. Written by the deploy, not typed \u2014 it is what makes a fleet running mixed versions visible.",
    "fieldname": "agent_version",
    "fieldtype": "Data",
-   "label": "Agent Version",
+   "in_list_view": 1,
+   "label": "Pathway Version",
    "read_only": 1
   },
   {
@@ -133,11 +133,12 @@
    "description": "New requests get 503 with Retry-After while running ones finish. Written to config.json and applied with SIGUSR1, so it survives a restart. Start/End Maintenance under Gateway.",
    "fieldname": "is_in_maintenance",
    "fieldtype": "Check",
+   "in_standard_filter": 1,
    "label": "Maintenance",
    "read_only": 1
   },
   {
-   "description": "The Redis this box's agent was last deployed onto: its Network's Gateway Store when that was Active. Blank = its own loopback Redis. Written by the deploy, not typed.",
+   "description": "The Gateway Store this box's agent runs on: written by Setup, kept by every deploy. Blank only until its first Setup.",
    "fieldname": "gateway_store",
    "fieldtype": "Link",
    "label": "Gateway Store",
@@ -166,7 +167,7 @@
   }
  ],
  "links": [],
- "modified": "2026-09-17 16:41:00.000000",
+ "modified": "2026-09-22 16:05:00.000000",
  "modified_by": "Administrator",
  "module": "Grove",
  "name": "Gateway Server",

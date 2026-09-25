@@ -1,19 +1,17 @@
-# Copyright (c) 2026, Grove and contributors
+# Copyright (c) 2026, Frappe and contributors
 # See license.txt
 """One store per Network, and what a gateway is told about it. Pure: frappe's data calls are
 stubbed, so no site."""
 
 import unittest
+from datetime import datetime, timezone
 from types import SimpleNamespace
 from unittest.mock import patch
 
 import frappe
 
 from grove.grove.doctype.gateway_server.gateway_server import GatewayServer
-from grove.grove.doctype.gateway_store.gateway_store import (
-	GatewayStore,
-	gateway_redis_variables,
-)
+from grove.grove.doctype.gateway_store.gateway_store import GatewayStore, backup_all, backup_uri
 
 
 class Refused(Exception):
@@ -68,17 +66,11 @@ class TestOneStorePerNetwork(unittest.TestCase):
 
 
 class TestWhatAGatewayIsGiven(unittest.TestCase):
-	def test_no_store_is_its_own_loopback_redis(self):
-		self.assertEqual(
-			gateway_redis_variables(None),
-			{"redis_addr": "127.0.0.1:6379", "redis_password": "", "redis_shared": False},
-		)
-
 	def test_a_store_is_dialled_at_its_private_address_with_its_password(self):
 		store = SimpleNamespace(listen_ip="10.0.61.9", get_password=lambda field: "pw")
 		self.assertEqual(
 			GatewayStore.redis_variables.fget(store),
-			{"redis_addr": "10.0.61.9:6379", "redis_password": "pw", "redis_shared": True},
+			{"redis_addr": "10.0.61.9:6379", "redis_password": "pw"},
 		)
 
 	def test_the_address_is_the_machines_read_live(self):
@@ -98,18 +90,74 @@ class TestWhatAGatewayIsGiven(unittest.TestCase):
 		with (
 			patch.object(frappe, "db", stub_db({"gw1": {"network": network}})),
 			patch.object(frappe, "get_all", side_effect=stub_get_all(stores)),
+			patch.object(frappe, "throw", side_effect=Refused),
 		):
-			return GatewayServer.network_store.fget(SimpleNamespace(machine="gw1"))
+			return GatewayServer.network_store.fget(SimpleNamespace(name="gw1", machine="gw1"))
 
 	def test_a_gateway_takes_its_networks_active_store(self):
 		self.assertEqual(self.network_store({"Mumbai": [("store1", "Active")]}), "store1")
 
-	def test_a_store_not_yet_active_leaves_it_on_loopback(self):
-		# Setup has not finished: there is no Redis there to move onto.
-		self.assertIsNone(self.network_store({"Mumbai": [("store1", "Installing")]}))
+	def test_a_store_not_yet_active_refuses_the_gateway(self):
+		# Setup has not finished: there is no Redis there to run on.
+		with self.assertRaises(Refused):
+			self.network_store({"Mumbai": [("store1", "Installing")]})
 
-	def test_a_gateway_in_no_network_stays_on_loopback(self):
-		self.assertIsNone(self.network_store({"Mumbai": [("store1", "Active")]}, network=None))
+	def test_a_gateway_in_no_network_is_refused(self):
+		with self.assertRaises(Refused):
+			self.network_store({"Mumbai": [("store1", "Active")]}, network=None)
+
+
+class TestBackup(unittest.TestCase):
+	"""One RDB per store per hour into the weights bucket, and nothing until the bucket exists."""
+
+	def test_a_backup_lands_per_store_stamped_in_utc(self):
+		at = datetime(2026, 9, 25, 3, 0, tzinfo=timezone.utc)
+		self.assertEqual(
+			backup_uri("s3://b", "store1", at), "s3://b/gateway-store/store1/20260925T030000Z.rdb"
+		)
+
+	def backup_all(self, env, stores):
+		enqueued = []
+		with (
+			patch.object(frappe, "get_single", return_value=SimpleNamespace(weights_s3_write_environment=env)),
+			patch.object(frappe, "get_all", return_value=stores),
+			patch.object(frappe, "enqueue_doc", side_effect=lambda *a, **k: enqueued.append(a)),
+		):
+			backup_all()
+		return enqueued
+
+	def test_backup_all_is_off_until_the_bucket_is_configured(self):
+		self.assertEqual(self.backup_all({}, ["store1"]), [])
+
+	def test_backup_all_enqueues_one_job_per_active_store(self):
+		self.assertEqual(
+			self.backup_all({"AWS_ACCESS_KEY_ID": "k"}, ["store1", "store2"]),
+			[("Gateway Store", "store1", "backup"), ("Gateway Store", "store2", "backup")],
+		)
+
+	def test_a_failed_play_fails_the_job(self):
+		# The Play doc already reported; the job must still fail, or an hour's miss is only a row.
+		plays = []
+		store = SimpleNamespace(
+			name="store1",
+			doctype="Gateway Store",
+			get_password=lambda field: "pw",
+			run_playbook=lambda playbook, **kwargs: plays.append((playbook, kwargs)) or ("play-1", 2),
+		)
+		settings = SimpleNamespace(weights_bucket="s3://b", weights_s3_write_environment={"AWS_ACCESS_KEY_ID": "k"})
+		with (
+			patch.object(frappe, "get_single", return_value=settings),
+			patch.object(frappe, "local", SimpleNamespace(grove_failure_reported=True)),
+			patch.object(frappe, "throw", side_effect=Refused),
+			self.assertRaises(Refused),
+		):
+			GatewayStore.backup(store)
+		playbook, kwargs = plays[0]
+		self.assertEqual(playbook, "backup.yml")
+		extravars = kwargs["extravars"]
+		self.assertEqual(extravars["redis_password"], "pw")
+		self.assertTrue(extravars["backup_uri"].startswith("s3://b/gateway-store/store1/"))
+		self.assertEqual(extravars["backup_env"], {"AWS_ACCESS_KEY_ID": "k"})
 
 
 if __name__ == "__main__":

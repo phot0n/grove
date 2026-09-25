@@ -9,7 +9,7 @@ import frappe
 from frappe.tests import IntegrationTestCase
 
 from grove.grove.doctype.grove_user.grove_user import GROVE_USER_ROLE, register_user
-from grove.pathway_sync import _effective_users
+from grove.pathway.snapshot import effective_users
 
 
 class IntegrationTestGroveUser(IntegrationTestCase):
@@ -52,5 +52,5 @@ class IntegrationTestGroveUser(IntegrationTestCase):
 				],
 			}
 		).insert()
-		[record] = [u for u in _effective_users() if u["name"] == grove_user.name]
+		[record] = [u for u in effective_users() if u["name"] == grove_user.name]
 		self.assertEqual(record["group"], "grove-probe-acme,grove-probe-zeta")

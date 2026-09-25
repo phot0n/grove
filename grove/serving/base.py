@@ -1,4 +1,4 @@
-# Copyright (c) 2026, Grove and contributors
+# Copyright (c) 2026, Frappe and contributors
 # For license information, please see license.txt
 """The engine-agnostic contract Pod and Model Replica call through. Neither doctype names a
 concrete class or branches on engine_kind — engine_class is the one place that dispatch happens.
@@ -53,7 +53,7 @@ class Engine(ABC):
 	A Pod and a Model Replica carry the same knobs, so the constructor takes them all and an engine
 	ignores the ones it has no use for."""
 
-	# A class attribute, not a property: pathway_sync reads it off the CLASS for route rows it
+	# A class attribute, not a property: the projection reads it off the CLASS for route rows it
 	# never builds an engine for.
 	default_concurrency: int
 
@@ -189,7 +189,7 @@ class Engine(ABC):
 
 
 def engine_class(engine_kind):
-	"""Add an engine by adding one entry here — Pod, Model Replica and pathway_sync never change."""
+	"""Add an engine by adding one entry here — Pod, Model Replica and the projection never change."""
 	from grove.serving.custom import CustomEngine
 	from grove.serving.vllm import VllmEngine
 

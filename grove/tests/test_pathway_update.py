@@ -1,4 +1,4 @@
-# Copyright (c) 2026, Grove and contributors
+# Copyright (c) 2026, Frappe and contributors
 # See license.txt
 """Pathway Update: its rows, Start / Continue / Stop, the deploy step and what a failure leaves
 behind. Pure: frappe is patched and servers and rows are fakes, so no site and no box."""

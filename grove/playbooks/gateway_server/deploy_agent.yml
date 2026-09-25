@@ -1,7 +1,7 @@
 ---
 # Ship a new binary and the tunables to an ALREADY-provisioned Gateway Server. Does not touch Redis
-# or the systemd unit — use gateway.yml for a full provision. agent.env still names which Redis, so a
-# drained gateway moves onto its store with this play (loopback Redis is left running). The password line is written only for a store, so a loopback box's file is unchanged.
+# or the systemd unit — use gateway.yml for a full provision. agent.env still names which Redis: the
+# store the gateway is on, never another.
 #
 # The binary RELOADS rather than restarts: SIGHUP forks a child that inherits the listening sockets
 # and starts serving immediately while the old process drains behind it, so a deploy is not a
@@ -78,9 +78,7 @@
           GROVE_GATEWAY_REGION={{ gateway_region | default('') }}
           GROVE_GATEWAY_GEOGRAPHY={{ gateway_geography | default('') }}
           GROVE_REDIS_ADDR={{ redis_addr }}
-          {% if redis_password %}
           GROVE_REDIS_PASSWORD={{ redis_password }}
-          {% endif %}
           GROVE_LISTEN_HTTP=:80
           GROVE_LISTEN_HTTPS=:443
           GROVE_PUBLIC_HOST={{ gateway_host | default('') }}

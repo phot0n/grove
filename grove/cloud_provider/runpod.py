@@ -1,4 +1,4 @@
-# Copyright (c) 2026, Grove and contributors
+# Copyright (c) 2026, Frappe and contributors
 # For license information, please see license.txt
 """RunPod GPU cloud provider API client (REST v2). Spawns Secure-Cloud pods with a pool of ports,
 injects SSH keys, and reads the public IP and external port mapping back — RunPod random-maps each

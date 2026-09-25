@@ -1,4 +1,4 @@
-# Copyright (c) 2026, Grove and contributors
+# Copyright (c) 2026, Frappe and contributors
 # See license.txt
 """One provider is ours — the one flagged Self Hosted — and every other one is a vendor.
 

@@ -1,4 +1,4 @@
-# Copyright (c) 2026, Grove and contributors
+# Copyright (c) 2026, Frappe and contributors
 # See license.txt
 """Machine Type reads as a role — `Inference`, not `Inference Server` — and the Machine form builds
 a Create/Open button out of the doctype it maps to. Nothing checks that mapping at runtime: a value

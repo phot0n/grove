@@ -1,4 +1,4 @@
-# Copyright (c) 2026, Grove and contributors
+# Copyright (c) 2026, Frappe and contributors
 # See license.txt
 """What a replica of a deployment actually runs. Pure — the deployment and the replica are passed in
 as plain mappings and the two site reads (the image's kind, the Model's launch config) are stubbed,

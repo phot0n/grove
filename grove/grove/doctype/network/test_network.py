@@ -1,4 +1,4 @@
-# Copyright (c) 2026, Grove and contributors
+# Copyright (c) 2026, Frappe and contributors
 # See license.txt
 """Ingress rules and security_group_ids parsing (pure), cidr_block auto-assignment (hits the DB)."""
 

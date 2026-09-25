@@ -1,0 +1,49 @@
+{
+ "actions": [],
+ "creation": "2026-09-22 00:00:00",
+ "doctype": "DocType",
+ "editable_grid": 1,
+ "engine": "InnoDB",
+ "field_order": [
+  "model",
+  "counter",
+  "amount"
+ ],
+ "fields": [
+  {
+   "columns": 4,
+   "fieldname": "model",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "Model",
+   "options": "Model"
+  },
+  {
+   "columns": 3,
+   "fieldname": "counter",
+   "fieldtype": "Select",
+   "in_list_view": 1,
+   "label": "Counter",
+   "options": "input_tokens\ncached_tokens\ncache_write_tokens\ncache_write_1h_tokens\ncompletion_tokens\naudio_seconds\nrequest_count"
+  },
+  {
+   "columns": 3,
+   "fieldname": "amount",
+   "fieldtype": "Int",
+   "in_list_view": 1,
+   "label": "Amount"
+  }
+ ],
+ "istable": 1,
+ "links": [],
+ "modified": "2026-09-22 00:00:00",
+ "modified_by": "Administrator",
+ "module": "Grove",
+ "name": "Usage Counter Row",
+ "owner": "Administrator",
+ "permissions": [],
+ "row_format": "Dynamic",
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": []
+}

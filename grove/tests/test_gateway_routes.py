@@ -1,4 +1,4 @@
-# Copyright (c) 2026, Grove and contributors
+# Copyright (c) 2026, Frappe and contributors
 # See license.txt
 """The table a GATEWAY is given: one row per model, naming ingresses and direct engines.
 
@@ -71,7 +71,7 @@ class FakeQuery:
 
 
 def routes(zone=ZONE):
-	from grove import pathway_sync
+	from grove.pathway import routes
 
 	with (
 		patch.object(frappe, "get_all", side_effect=FakeQuery(zone)),
@@ -81,7 +81,7 @@ def routes(zone=ZONE):
 			side_effect=lambda *a, **k: frappe._dict(get_password=lambda *a, **k: "secret"),
 		),
 	):
-		return pathway_sync._gateway_routes("in")
+		return routes.gateway_routes("in")
 
 
 def rows_for(model, zone=ZONE):

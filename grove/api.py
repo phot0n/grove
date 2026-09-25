@@ -8,24 +8,29 @@ import hmac
 import frappe
 
 from grove.grove.doctype.grove_user.grove_user import for_email, register_user
+from grove.utils import utc_today
 
 CONTROL_ROLE = "Grove Control"
 ALLOWED_ROLES = [CONTROL_ROLE]
+USAGE_FIELDS = ("prompt_tokens", "completion_tokens", "cached_tokens")
+# What a caller sees as prompt tokens: every prompt-side counter, cached or written or plain.
+PROMPT_COUNTERS = ("input_tokens", "cached_tokens", "cache_write_tokens", "cache_write_1h_tokens")
 
 
 @frappe.whitelist()
-def provision_key(name: str, email: str, geography: str, token_limit: int=None, allowed_models: list[str]=None, pin: bool=False):
-	"""Register the user and mint a key for `geography`'s endpoint. `pin` also refuses the user everywhere else."""
+def provision_key(name: str, email: str, geography: str, allowed_models: list[str]=None, pin: bool=False, free: bool=False):
+	"""Register the user and mint a key for `geography`'s endpoint. `pin` also refuses the user
+	everywhere else; `free` ignores pricing for them — otherwise they are prepaid and blocked until
+	credited."""
 	frappe.only_for(ALLOWED_ROLES)
 	# Blank would read as no filter and hand out whichever endpoint comes first.
 	host = frappe.db.get_value("Geography", geography, "endpoint") if geography else None
 	if not host:
 		frappe.throw(f"No Geography named {geography!r}.")
 
-	# Access and budget are per-user, so both land on the Grove User rather than the key. The
-	# budget is SHARED by every key they hold. Written unconditionally: a blank one is the
-	# correct fail-closed default.
-	grove_user = _set_policy(email, name, allowed_models, token_limit, geography if pin else None)
+	# Access is per-user, so it lands on the Grove User rather than the key. Written
+	# unconditionally: a blank one is the correct fail-closed default.
+	grove_user = _set_policy(email, name, allowed_models, geography if pin else None, free)
 
 	# The controller generates the secret and hash, and pushes to the gateways.
 	key = frappe.new_doc("Grove API Key")
@@ -36,6 +41,39 @@ def provision_key(name: str, email: str, geography: str, token_limit: int=None, 
 	return {
 		"gateway_url": f"https://{host}",
 		"api_key": key.get_password("api_secret"),
+	}
+
+
+@frappe.whitelist()
+def add_credit(email: str, amount: float, note: str = None):
+	"""Append one ledger entry for the user behind `email` and settle them. 0 and an unexplained
+	negative are refused by the ledger itself. → their balance after the entry."""
+	frappe.only_for(ALLOWED_ROLES)
+	grove_user = for_email(email)
+	if not grove_user:
+		frappe.throw(f"No Grove User for {email!r}.")
+	frappe.get_doc({"doctype": "Grove Credit", "grove_user": grove_user, "amount": amount, "note": note}).insert()
+	return {"balance": frappe.db.get_value("Grove User", grove_user, "balance")}
+
+
+@frappe.whitelist()
+def balance(email: str):
+	"""What the user behind `email` has left: Σ ledger − usage priced so far, as of the last pull
+	(at most a minute of undrained usage behind the gateways). A free user is priced, never gated."""
+	frappe.only_for(ALLOWED_ROLES)
+	from grove.pricing import credit_summary
+
+	grove_user = for_email(email)
+	if not grove_user:
+		frappe.throw(f"No Grove User for {email!r}.")
+	flags = frappe.db.get_value("Grove User", grove_user, ["free", "rate_limited"], as_dict=True)
+	summary = credit_summary(grove_user)
+	return {
+		"balance": float(summary["remaining"]),
+		"allocated": float(summary["allocated"]),
+		"spent": float(summary["spent"]),
+		"free": bool(flags.free),
+		"rate_limited": bool(flags.rate_limited),
 	}
 
 
@@ -88,43 +126,33 @@ def create_control_client_key():
 
 @frappe.whitelist()
 def usage(users: list[str] | str, month: str = None):
+	"""Tokens per user and per model for `month` (YYYY-MM, UTC), summed over its day records."""
 	frappe.only_for(ALLOWED_ROLES)
-	from frappe.utils import now_datetime
+	from frappe.utils import get_first_day, get_last_day
 
-	if not month:
-		month = now_datetime().strftime("%Y-%m")
-
+	month = month or utc_today().strftime("%Y-%m")
+	first = get_first_day(f"{month}-01")
 	if isinstance(users, str):
 		users = [users]
 
-	_fields = ("prompt_tokens", "completion_tokens", "cached_tokens")
 	# In and out by email; the records themselves are keyed by Grove User.
 	emails = dict(
 		frappe.get_list("Grove User", {"user": ("in", users)}, ["name", "user"], as_list=True)
 	)
 	records = frappe.get_list(
 		"Usage Record",
-		filters={"user": ["in", list(emails)], "month": month},
-		fields=["name", "user", *_fields],
+		filters={"user": ["in", list(emails)], "day": ["between", [first, get_last_day(first)]]},
+		fields=["name", "user"],
 	)
-
-	usage = {}
-	for r in records:
-		# A user holds several keys and so several records a month — accumulate, don't
-		# overwrite.
-		totals = usage.setdefault(emails[r.user], dict.fromkeys(_fields, 0))
-		for f in _fields:
-			totals[f] += r.get(f) or 0
-
-	# model wise usage summary
-	names = [r.name for r in records]
-	model_rows = frappe.get_list(
-		"Usage Model Row",
-		filters={"parenttype": "Usage Record", "parent": ("in", names)},
-		fields=["model", *_fields],
+	counter_rows = frappe.get_list(
+		"Usage Counter Row",
+		filters={"parenttype": "Usage Record", "parent": ("in", [r.name for r in records])},
+		fields=["parent", "model", "counter", "amount"],
 		parent_doctype="Usage Record",
-	) if names else []
-	model_summary = _totals_by_model(model_rows, _fields)
+	) if records else []
+	email_of = {r.name: emails[r.user] for r in records}
+	usage = _totals_by_user(counter_rows, email_of)
+	model_summary = _totals_by_model(_token_rows(counter_rows), USAGE_FIELDS)
 	return {"users": users, "month": month, "model_summary": model_summary, **usage}
 
 
@@ -155,11 +183,11 @@ def _create_control_user(email):
 	return doc
 
 
-def _set_policy(email, full_name, models, token_limit, geography=None):
+def _set_policy(email, full_name, models, geography=None, free=False):
 	"""Write the user's Grove User policy and return its name — the id every key, usage
-	record and access lookup carries. `models` is exactly what they may call; `token_limit`
-	is their shared monthly budget; `geography`, when given, pins them. `full_name` names the login
-	when this is the insert that creates it."""
+	record and access lookup carries. `models` is exactly what they may call; `geography`, when
+	given, pins them; `free`, when given, waives pricing. `full_name` names the login when this is
+	the insert that creates it."""
 	name = for_email(email)
 	doc = frappe.get_doc("Grove User", name) if name else frappe.new_doc("Grove User")
 	doc.user = register_user(email, full_name)
@@ -167,18 +195,46 @@ def _set_policy(email, full_name, models, token_limit, geography=None):
 		doc.allow = []
 		for model in models:
 			doc.append("allow", {"model": model})
-	if token_limit:
-		doc.max_tokens = token_limit
 	if geography:
 		doc.geography = geography
+	if free:
+		doc.free = 1
 	doc.save()
 	return doc.name
 
 
+def _token_rows(counter_rows):
+	"""Counter rows re-shaped as the token columns the report has always returned, one row per
+	model: prompt is every prompt-side counter, cached and completion their own."""
+	rows = {}
+	for row in counter_rows:
+		totals = rows.setdefault(row["model"], {"model": row["model"], **dict.fromkeys(USAGE_FIELDS, 0)})
+		amount = row.get("amount") or 0
+		if row["counter"] in PROMPT_COUNTERS:
+			totals["prompt_tokens"] += amount
+		if row["counter"] in ("cached_tokens", "completion_tokens"):
+			totals[row["counter"]] += amount
+	return list(rows.values())
+
+
+def _totals_by_user(counter_rows, email_of):
+	"""{email: token totals} — every user with a record that month, zeros if their rows are empty.
+	A user holds several keys and a record a day, so rows accumulate rather than overwrite."""
+	by_user = {}
+	for row in counter_rows:
+		by_user.setdefault(email_of[row["parent"]], []).append(row)
+	usage = {email: dict.fromkeys(USAGE_FIELDS, 0) for email in email_of.values()}
+	for email, rows in by_user.items():
+		for model_row in _token_rows(rows):
+			for f in USAGE_FIELDS:
+				usage[email][f] += model_row[f]
+	return usage
+
+
 def _totals_by_model(rows, fields):
-	"""Usage Model Rows folded into one entry per model, biggest consumer first. Rows arrive
-	one per (record, model) — a user holds several keys, each with its own monthly record — so
-	a model is summed across all of them rather than overwritten."""
+	"""Token rows folded into one entry per model, biggest consumer first. Rows arrive one per
+	(record, model) — a user holds several keys, each with its own day records — so a model is
+	summed across all of them rather than overwritten."""
 	per_model = {}
 	for row in rows:
 		totals = per_model.setdefault(
@@ -187,4 +243,4 @@ def _totals_by_model(rows, fields):
 		for f in fields:
 			totals[f] += row.get(f) or 0
 
-	return per_model.values() if per_model else []
+	return sorted(per_model.values(), key=lambda totals: -totals["prompt_tokens"])

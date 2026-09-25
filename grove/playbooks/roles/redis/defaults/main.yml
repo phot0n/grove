@@ -1,5 +1,5 @@
 ---
-# A gateway's own Redis: loopback, no password.
-# Only read with a password set: a store listens beyond loopback, and never without one.
+# A Gateway Store passes both. The listen block is only written with a password set: never
+# beyond loopback without one.
 redis_bind: "127.0.0.1"
 redis_password: ""

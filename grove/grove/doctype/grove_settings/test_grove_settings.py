@@ -1,4 +1,4 @@
-# Copyright (c) 2026, Grove and contributors
+# Copyright (c) 2026, Frappe and contributors
 # See license.txt
 """Fleet certificates: a staging lineage is replaced, and renewal runs per Geography. Pure — no site."""
 

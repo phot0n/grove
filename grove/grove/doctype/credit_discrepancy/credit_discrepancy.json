@@ -1,0 +1,133 @@
+{
+ "actions": [],
+ "autoname": "hash",
+ "creation": "2026-09-22 00:00:00",
+ "doctype": "DocType",
+ "engine": "InnoDB",
+ "field_order": [
+  "kind",
+  "grove_user",
+  "api_key",
+  "model",
+  "counter",
+  "column_break_where",
+  "gateway",
+  "redis",
+  "resolved",
+  "section_values",
+  "gateway_value",
+  "expected_value",
+  "delta",
+  "note"
+ ],
+ "fields": [
+  {
+   "fieldname": "kind",
+   "fieldtype": "Select",
+   "in_list_view": 1,
+   "label": "Kind",
+   "options": "Price Drift\nBalance Mismatch\nCounter Reset\nOverspend\nLedger Drift",
+   "reqd": 1
+  },
+  {
+   "fieldname": "grove_user",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "Grove User",
+   "options": "Grove User"
+  },
+  {
+   "fieldname": "api_key",
+   "fieldtype": "Link",
+   "label": "API Key",
+   "options": "Grove API Key"
+  },
+  {
+   "fieldname": "model",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "Model",
+   "options": "Model"
+  },
+  {
+   "fieldname": "counter",
+   "fieldtype": "Select",
+   "label": "Counter",
+   "options": "\ninput_tokens\ncached_tokens\ncache_write_tokens\ncache_write_1h_tokens\ncompletion_tokens\naudio_seconds\nrequest_count"
+  },
+  {
+   "fieldname": "column_break_where",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "gateway",
+   "fieldtype": "Link",
+   "label": "Gateway",
+   "options": "Gateway Server"
+  },
+  {
+   "fieldname": "redis",
+   "fieldtype": "Data",
+   "label": "Redis"
+  },
+  {
+   "default": "0",
+   "fieldname": "resolved",
+   "fieldtype": "Check",
+   "in_list_view": 1,
+   "label": "Resolved"
+  },
+  {
+   "fieldname": "section_values",
+   "fieldtype": "Section Break",
+   "label": "Values"
+  },
+  {
+   "fieldname": "gateway_value",
+   "fieldtype": "Currency",
+   "label": "Gateway Value (USD)",
+   "precision": "9"
+  },
+  {
+   "fieldname": "expected_value",
+   "fieldtype": "Currency",
+   "label": "Expected Value (USD)",
+   "precision": "9"
+  },
+  {
+   "fieldname": "delta",
+   "fieldtype": "Currency",
+   "in_list_view": 1,
+   "label": "Delta (USD)",
+   "precision": "6"
+  },
+  {
+   "fieldname": "note",
+   "fieldtype": "Small Text",
+   "label": "Note"
+  }
+ ],
+ "links": [],
+ "modified": "2026-09-23 17:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "Grove",
+ "name": "Credit Discrepancy",
+ "naming_rule": "Random",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "email": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "System Manager",
+   "share": 1,
+   "write": 1
+  }
+ ],
+ "row_format": "Dynamic",
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": []
+}

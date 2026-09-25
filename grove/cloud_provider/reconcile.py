@@ -1,4 +1,4 @@
-# Copyright (c) 2026, Grove and contributors
+# Copyright (c) 2026, Frappe and contributors
 # For license information, please see license.txt
 """Scheduled reconcile of the cloud fleet. The PROVIDER owns whether a pod or instance is up, but
 the only things that read it back are lifecycle jobs, and those end — a bring-up that outran its

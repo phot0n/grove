@@ -1,4 +1,4 @@
-# Copyright (c) 2026, Grove and contributors
+# Copyright (c) 2026, Frappe and contributors
 # For license information, please see license.txt
 """How a Model sizes its weights. Pure — the Hugging Face reads are stubbed with real payloads
 captured from the repos below, so no site or network."""

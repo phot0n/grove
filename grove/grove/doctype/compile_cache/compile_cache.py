@@ -1,4 +1,4 @@
-# Copyright (c) 2026, Grove and contributors
+# Copyright (c) 2026, Frappe and contributors
 # For license information, please see license.txt
 """Registry of the torch.compile caches in the weights bucket — one row per (image digest, GPU, TP,
 model), the cache key's invalidation axes.

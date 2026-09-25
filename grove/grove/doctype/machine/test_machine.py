@@ -1,4 +1,4 @@
-# Copyright (c) 2026, Grove and contributors
+# Copyright (c) 2026, Frappe and contributors
 # See license.txt
 """nvidia-smi parsing and the EC2 instance-type parsers. Pure — no site, box or AWS call."""
 

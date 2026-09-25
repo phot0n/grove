@@ -1,0 +1,88 @@
+{
+ "actions": [],
+ "autoname": "hash",
+ "creation": "2026-09-22 00:00:00",
+ "doctype": "DocType",
+ "engine": "InnoDB",
+ "field_order": [
+  "model",
+  "status",
+  "enabled_on",
+  "section_rates",
+  "rates"
+ ],
+ "fields": [
+  {
+   "description": "The Grove model these sell prices apply to. One Enabled pricing per model; enabling a new one disables it.",
+   "fieldname": "model",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "Model",
+   "options": "Model",
+   "reqd": 1
+  },
+  {
+   "default": "Disabled",
+   "description": "Enable to price from 00:00 UTC today; Scheduled to take over on a later day. Never disabled by hand and never re-enabled: a wrong price is a new pricing plus a credit row for the days before.",
+   "fieldname": "status",
+   "fieldtype": "Select",
+   "in_list_view": 1,
+   "label": "Status",
+   "options": "Disabled\nScheduled\nEnabled"
+  },
+  {
+   "description": "Scheduled: the UTC day it takes over, ahead of today. Otherwise stamped on enable; history prices by it and the predecessor prices the days before.",
+   "fieldname": "enabled_on",
+   "fieldtype": "Date",
+   "in_list_view": 1,
+   "label": "Enabled On",
+   "mandatory_depends_on": "eval:doc.status==\"Scheduled\"",
+   "read_only_depends_on": "eval:doc.status!=\"Scheduled\""
+  },
+  {
+   "fieldname": "section_rates",
+   "fieldtype": "Section Break",
+   "label": "Rates"
+  },
+  {
+   "description": "One row per priced counter. A counter with no row here bills 0 \u2014 sell rates come from here alone.",
+   "fieldname": "rates",
+   "fieldtype": "Table",
+   "label": "Rates",
+   "options": "Model Pricing Rate",
+   "reqd": 1
+  }
+ ],
+ "links": [
+  {
+   "group": "Pricing",
+   "link_doctype": "Credit Discrepancy",
+   "link_fieldname": "model"
+  }
+ ],
+ "modified": "2026-09-23 17:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "Grove",
+ "name": "Model Pricing",
+ "naming_rule": "Random",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "email": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "System Manager",
+   "share": 1,
+   "write": 1
+  }
+ ],
+ "row_format": "Dynamic",
+ "show_title_field_in_link": 1,
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": [],
+ "title_field": "model",
+ "track_changes": 1
+}

@@ -5,40 +5,18 @@
  "editable_grid": 1,
  "engine": "InnoDB",
  "field_order": [
-  "gateway_server",
-  "prompt_tokens",
-  "completion_tokens",
-  "cached_tokens",
+  "redis",
   "request_count",
   "last_pulled"
  ],
  "fields": [
   {
    "columns": 3,
-   "description": "The gateway these tokens were drained through. Gateways on one Gateway Store share their counters, so a store's usage lands on the writer it was drained through.",
-   "fieldname": "gateway_server",
-   "fieldtype": "Link",
+   "description": "The Gateway Store this usage was drained from, or the gateway's own name for a box on its own Redis. Gateways on one store share their counters, so usage is the store's, never one box's.",
+   "fieldname": "redis",
+   "fieldtype": "Data",
    "in_list_view": 1,
-   "label": "Gateway Server",
-   "options": "Gateway Server"
-  },
-  {
-   "fieldname": "prompt_tokens",
-   "fieldtype": "Int",
-   "in_list_view": 1,
-   "label": "Prompt Tokens"
-  },
-  {
-   "fieldname": "completion_tokens",
-   "fieldtype": "Int",
-   "in_list_view": 1,
-   "label": "Completion Tokens"
-  },
-  {
-   "fieldname": "cached_tokens",
-   "fieldtype": "Int",
-   "in_list_view": 1,
-   "label": "Cached Tokens"
+   "label": "Store"
   },
   {
    "fieldname": "request_count",
@@ -47,7 +25,7 @@
    "label": "Requests"
   },
   {
-   "description": "Cumulative this month for this gateway; incremented each drain.",
+   "description": "When this store was last drained into this record.",
    "fieldname": "last_pulled",
    "fieldtype": "Datetime",
    "label": "Last Pulled"
@@ -55,7 +33,7 @@
  ],
  "istable": 1,
  "links": [],
- "modified": "2026-09-17 16:41:00.000000",
+ "modified": "2026-09-23 13:00:00.000000",
  "modified_by": "Administrator",
  "module": "Grove",
  "name": "Usage Gateway Row",

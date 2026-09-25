@@ -1,5 +1,7 @@
-# Copyright (c) 2026, Grove and contributors
+# Copyright (c) 2026, Frappe and contributors
 # For license information, please see license.txt
+
+from datetime import datetime, timezone
 
 import frappe
 from frappe.model.document import Document
@@ -8,8 +10,6 @@ from grove import failure
 from grove.server import Server
 
 REDIS_PORT = 6379
-# What a gateway with no store in its Network runs on: its own Redis.
-LOOPBACK_REDIS = {"redis_addr": f"127.0.0.1:{REDIS_PORT}", "redis_password": "", "redis_shared": False}
 
 
 class GatewayStore(Server, Document):
@@ -59,7 +59,6 @@ class GatewayStore(Server, Document):
 
 	@property
 	def archive_blockers(self):
-		"""A gateway on this store authenticates nothing without it."""
 		gateways = frappe.get_all(
 			"Gateway Server",
 			filters={"gateway_store": self.name, "status": ("!=", "Terminated")},
@@ -83,7 +82,6 @@ class GatewayStore(Server, Document):
 		return {
 			"redis_addr": f"{self.listen_ip}:{REDIS_PORT}",
 			"redis_password": self.get_password("redis_password"),
-			"redis_shared": True,
 		}
 
 	@frappe.whitelist()
@@ -104,6 +102,23 @@ class GatewayStore(Server, Document):
 			},
 		)
 		frappe.db.set_value(self.doctype, self.name, "status", "Active" if rc == 0 else "Broken")
+		return play_name, rc
+
+	@failure.reports_failure()
+	def backup(self):
+		"""Worker: a point-in-time RDB off the live Redis, under gateway-store/<name>/ in the weights
+		bucket. Raises on a failed play so the hour's miss fails the job, not just the Play."""
+		settings = frappe.get_single("Grove Settings")
+		play_name, rc = self.run_playbook(
+			"backup.yml",
+			extravars={
+				"redis_password": self.get_password("redis_password"),
+				"backup_uri": backup_uri(settings.weights_bucket, self.name),
+				"backup_env": settings.weights_s3_write_environment,
+			},
+		)
+		if rc != 0:
+			frappe.throw(f"Backup play {play_name} exited {rc}.")
 		return play_name, rc
 
 
@@ -127,8 +142,15 @@ def store_writers(store):
 	)
 
 
-def gateway_redis_variables(store):
-	"""A gateway's Redis: the store's when it has one, else its own on loopback."""
-	if not store:
-		return dict(LOOPBACK_REDIS)
-	return frappe.get_doc("Gateway Store", store).redis_variables
+def backup_uri(bucket, store, at=None):
+	"""Per store, UTC-stamped, so a listing sorts by time."""
+	stamp = (at or datetime.now(timezone.utc)).strftime("%Y%m%dT%H%M%SZ")
+	return f"{bucket}/gateway-store/{store}/{stamp}.rdb"
+
+
+def backup_all():
+	"""Hourly: every Active store, one job each. Off until the bucket and Mirror keys are set."""
+	if not frappe.get_single("Grove Settings").weights_s3_write_environment:
+		return
+	for name in frappe.get_all("Gateway Store", filters={"status": "Active"}, pluck="name"):
+		frappe.enqueue_doc("Gateway Store", name, "backup", queue="long", timeout=600)

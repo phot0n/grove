@@ -1,4 +1,4 @@
-# Copyright (c) 2026, Grove and contributors
+# Copyright (c) 2026, Frappe and contributors
 # See license.txt
 """Shared helpers. Pure — no site needed."""
 
@@ -6,7 +6,6 @@ import re
 import unittest
 
 from grove.utils import (
-	is_dns_name,
 	is_env_key,
 	is_env_value,
 	is_id_safe,
@@ -84,21 +83,6 @@ class TestValidateIdSafeName(unittest.TestCase):
 		# Frappe raises "Name is required" straight after, and says it better than this would.
 		for blank in ("", None):
 			validate_id_safe_name("Inference Server", blank)
-
-
-class TestIsDnsName(unittest.TestCase):
-	"""What can go in an nginx server_name and a certificate subject. Everything rejected here
-	would otherwise be caught by `openresty -t` on a box that is already serving traffic."""
-
-	def test_accepts_a_bare_name(self):
-		for name in ("grove.example.com", "api.grove.example.com", "use1-p1.grove.example.com", "localhost"):
-			self.assertTrue(is_dns_name(name), name)
-
-	def test_rejects_anything_that_is_not_one(self):
-		for name in ("", None, "https://api.grove.example.com", "api.grove.example.com/",
-			"api.grove.example.com:443", "grove.example.com.", "api..grove.example.com",
-			"-api.grove.example.com", "api_1.grove.example.com"):
-			self.assertFalse(is_dns_name(name), name)
 
 
 class TestIsLabelUnder(unittest.TestCase):

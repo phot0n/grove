@@ -1,4 +1,4 @@
-# Copyright (c) 2026, Grove and contributors
+# Copyright (c) 2026, Frappe and contributors
 # See license.txt
 """What an inference box is handed: the vllm role's engine templates, and the nginx front that
 publishes them. Pure — renders the files, no site and no box.
