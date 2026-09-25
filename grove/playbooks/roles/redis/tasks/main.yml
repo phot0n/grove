@@ -9,6 +9,10 @@
 # projections the control plane can push again. appendfsync everysec: a crash can lose up to a
 # second of counts, traded for no fsync per request. The marker predates this role; renaming it
 # would write a second block on every existing gateway.
+#
+# save: Redis 7's own default, pinned so a package upgrade cannot move it. One pair per line —
+# 6.x ignores the one-line form. dump.rdb is a courtesy copy: with AOF on, a restart loads the
+# AOF, and the hourly backup (gateway_store/backup.yml) takes its own fresh sync.
 - name: redis zero-loss persistence
   ansible.builtin.blockinfile:
     path: /etc/redis/redis.conf
@@ -17,6 +21,9 @@
       appendonly yes
       appendfsync everysec
       maxmemory-policy noeviction
+      save 3600 1
+      save 300 100
+      save 60 10000
 
 # A shared store only. bind and requirepass are read at start, so a change restarts: AOF is
 # already on by then, so the restart keeps the data.
@@ -55,7 +62,8 @@
   ansible.builtin.shell: |
     set -eu
     changed=0
-    for setting in "appendonly yes" "appendfsync everysec" "maxmemory-policy noeviction"; do
+    for setting in "appendonly yes" "appendfsync everysec" "maxmemory-policy noeviction" \
+                   "save 3600 1 300 100 60 10000"; do
       key=${setting%% *}
       want=${setting#* }
       have=$(redis-cli config get "$key" | tail -1)
